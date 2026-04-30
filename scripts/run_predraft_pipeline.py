@@ -185,8 +185,11 @@ async def run_agent(name: str, teams: list[str] | None) -> None:
         from backend.agents.roster_changes import RosterChangesAgent
         from backend.agents.team_systems import NFL_TEAMS
         agent = RosterChangesAgent(dry_run=False)
-        for team in (teams or NFL_TEAMS):
-            await agent.run_for_team(team)
+        if teams:
+            for team in teams:
+                await agent.run_for_team(team)
+        else:
+            await agent.run_all_teams()  # pre-loads OTC transactions before team loop
 
     # Remaining agents will be wired in as they are built (Stages 5-8)
 

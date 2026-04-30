@@ -193,3 +193,115 @@ async def get_all_transactions(years: list[int]) -> list[dict]:
             t["year"] = year
             combined.append(t)
     return combined
+
+
+# ---------------------------------------------------------------------------
+# Module-level transactions cache — populated by preload_transactions()
+# ---------------------------------------------------------------------------
+
+_TXN_CACHE: dict[int, list[dict]] = {}
+
+# Last 2 meaningful words of each team slug — used to match OTC team column
+_TEAM_MATCH_WORDS: dict[str, list[str]] = {
+    abbr: slug.replace("-", " ").split()[-2:]
+    for abbr, slug in TEAM_SLUGS.items()
+}
+
+
+async def preload_transactions(years: list[int]) -> None:
+    """
+    Pre-load OTC transaction data into the module-level cache.
+    Call once from run_all_teams() before processing individual teams.
+    """
+    for year in years:
+        if year not in _TXN_CACHE:
+            txns = await get_transactions(year)
+            _TXN_CACHE[year] = txns
+            logger.info("Cached %d OTC transactions for %d", len(txns), year)
+
+
+def get_transactions_summary(team: str, year: int) -> list[dict]:
+    """
+    Sync. Filter cached transactions to those relevant to `team`.
+    Returns [] if preload_transactions() has not been called yet.
+
+    Returns compact dicts with keys: player, position, type, aav, date.
+    """
+    all_txns = _TXN_CACHE.get(year, [])
+    if not all_txns:
+        return []
+
+    team_words = _TEAM_MATCH_WORDS.get(team.upper(), [])
+    if not team_words:
+        return []
+
+    result = []
+    for t in all_txns:
+        t_team = (t.get("team") or "").lower()
+        if any(word in t_team for word in team_words):
+            result.append({
+                "player":   t.get("player_name", ""),
+                "position": t.get("position", ""),
+                "type":     t.get("transaction_type", ""),
+                "aav":      t.get("aav", ""),
+                "date":     t.get("date", ""),
+            })
+
+    return result
+
+
+def get_skill_roster_summary(team: str) -> list[dict]:
+    """
+    Sync. Return current skill-position players for a team from the nfl_data parquet cache.
+
+    Returns list of dicts with keys: name, position, age (optional).
+    Uses fetch_rosters() which is sync and parquet-cached — no network call.
+    """
+    import pandas as pd
+    from backend.integrations.nfl_data import fetch_rosters
+    from backend.utils.seasons import get_current_season
+
+    season = get_current_season()
+    try:
+        rosters = fetch_rosters(season)
+    except Exception as exc:
+        logger.warning("Could not load rosters for skill roster summary: %s", exc)
+        return []
+
+    # nfl_data_py column name varies by version
+    team_col = next((c for c in ("team", "team_abbr") if c in rosters.columns), None)
+    name_col = next((c for c in ("full_name", "player_name") if c in rosters.columns), None)
+
+    if not team_col or not name_col:
+        logger.warning("Roster DataFrame missing expected columns: %s", list(rosters.columns))
+        return []
+
+    skill_pos = {"QB", "WR", "RB", "TE"}
+    mask = rosters[team_col].str.upper() == team.upper()
+    if "position" in rosters.columns:
+        mask &= rosters["position"].isin(skill_pos)
+
+    team_df = rosters[mask].copy()
+    if team_df.empty:
+        return []
+
+    # Latest week entry per player (most current depth chart)
+    if "week" in team_df.columns:
+        team_df = (
+            team_df.sort_values("week", ascending=False)
+            .drop_duplicates(subset=[name_col])
+        )
+
+    result = []
+    for _, row in team_df.iterrows():
+        name     = str(row.get(name_col, "")).strip()
+        position = str(row.get("position", "")).strip()
+        if not name or position not in skill_pos:
+            continue
+        entry: dict = {"name": name, "position": position}
+        age_val = row.get("age")
+        if age_val is not None and pd.notna(age_val):
+            entry["age"] = int(age_val)
+        result.append(entry)
+
+    return result

@@ -335,6 +335,10 @@ class RosterChangesAgent(BaseAgent):
         analysis_seasons = get_analysis_seasons(3)
         current_season   = get_current_season()
 
+        # Pre-load OTC transactions once for all teams
+        logger.info("Pre-loading OTC transactions for %d...", analysis_year)
+        await overthecap.preload_transactions([analysis_year])
+
         logger.info("Pre-loading NFL data caches for seasons %s...", analysis_seasons)
         for season in analysis_seasons:
             try:
