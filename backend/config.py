@@ -8,10 +8,10 @@ class Settings(BaseSettings):
     # Anthropic
     anthropic_api_key: str
 
-    # Yahoo Fantasy API
+    # Yahoo Fantasy API — all optional until Stage 10
     yahoo_client_id: Optional[str] = None
     yahoo_client_secret: Optional[str] = None
-    yahoo_redirect_uri: str = "http://localhost:8000/auth/yahoo/callback"
+    yahoo_redirect_uri: Optional[str] = None
     yahoo_league_id: Optional[str] = None
     yahoo_refresh_token: Optional[str] = None
 
