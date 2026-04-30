@@ -59,7 +59,7 @@ AGENT_SPECS: dict[str, dict] = {
         "max_tokens": 1000,
         "est_input_tokens": 400,
         "api_calls": 32,
-        "status": "not_built",
+        "status": "built",
         "description": "Injury risk profiles and risk-adjusted value modifiers",
     },
     "schedule": {
@@ -201,7 +201,16 @@ async def run_agent(name: str, teams: list[str] | None) -> None:
         else:
             await agent.run_all_teams()
 
-    # Remaining agents will be wired in as they are built (Stages 6-8)
+    elif name == "injury_risk":
+        from backend.agents.injury_risk import InjuryRiskAgent
+        agent = InjuryRiskAgent(dry_run=False)
+        if teams:
+            for team in teams:
+                await agent.run_for_team(team)
+        else:
+            await agent.run_all_teams()
+
+    # Remaining agents will be wired in as they are built (Stages 7-8)
 
     elapsed = time.monotonic() - t0
     print(f"[{name}] Done in {elapsed:.1f}s.\n")

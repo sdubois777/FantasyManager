@@ -162,8 +162,8 @@ Update this section as stages complete.
 - [x] Stage 3: Team Systems agent
 - [x] Stage 4: Roster Changes agent
 - [x] Stage 5: Player Profiles agent
-- [ ] Stage 6: Injury Risk agent ← current
-- [ ] Stage 7: Schedule agent
+- [x] Stage 6: Injury Risk agent
+- [ ] Stage 7: Schedule agent ← current
 - [ ] Stage 8: Beat Reporter agent
 - [ ] Stage 9: Valuation pass
 - [ ] Stage 10: Yahoo API integration
