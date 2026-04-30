@@ -65,7 +65,7 @@ AGENT_SPECS: dict[str, dict] = {
     "schedule": {
         "model": "haiku",
         "model_id": "claude-haiku-4-5-20251001",
-        "max_tokens": 800,
+        "max_tokens": 1500,
         "est_input_tokens": 400,
         "api_calls": 32,
         "status": "built",

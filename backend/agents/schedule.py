@@ -210,7 +210,7 @@ def lookup_def_grade(
 class ScheduleAgent(BaseAgent):
     AGENT_NAME       = "schedule"
     AGENT_MODEL      = HAIKU
-    AGENT_MAX_TOKENS = 800
+    AGENT_MAX_TOKENS = 1500
 
     # Pattern 3: pre-warm once in run_all_teams(), reuse per team
     _data_cache: ClassVar[dict] = {}
@@ -355,15 +355,26 @@ class ScheduleAgent(BaseAgent):
         self._data_cache["schedule_df"] = pd.DataFrame()
 
     def _load_def_grades(self, current_season: int) -> None:
-        """Compute defensive grades from the most recently completed season's weekly data."""
-        try:
-            weekly = nfl_data.fetch_weekly_stats(current_season)
-            grades = compute_def_grades(weekly)
-            self._data_cache["def_grades"] = grades
-            logger.info("Computed defensive grades from %d weekly data", current_season)
-        except Exception as exc:
-            logger.warning("Could not compute defensive grades: %s", exc)
-            self._data_cache["def_grades"] = pd.DataFrame()
+        """Compute defensive grades from the most recently completed season's weekly data.
+        Falls back to current_season - 1 if current_season data is unavailable."""
+        for yr in (current_season, current_season - 1):
+            try:
+                weekly = nfl_data.fetch_weekly_stats(yr)
+                grades = compute_def_grades(weekly)
+                if not grades.empty:
+                    self._data_cache["def_grades"] = grades
+                    if yr != current_season:
+                        logger.warning(
+                            "%d weekly data unavailable — using %d for defensive grades", current_season, yr
+                        )
+                    else:
+                        logger.info("Computed defensive grades from %d weekly data", yr)
+                    return
+            except Exception as exc:
+                logger.warning("Could not compute defensive grades from %d: %s", yr, exc)
+
+        logger.error("No weekly data available for %d or %d", current_season, current_season - 1)
+        self._data_cache["def_grades"] = pd.DataFrame()
 
     # ------------------------------------------------------------------
     # Context builder — all Python, zero API calls
@@ -567,7 +578,8 @@ async def _write_schedules(result: dict, context: dict, team: str) -> int:
         names_and_teams = [(p["name"], team) for p in players]
         id_map = await _bulk_resolve_player_ids(session, names_and_teams)
 
-        written = 0
+        written       = 0
+        processed_ids: set[str] = set()   # guard against duplicate player_id in roster
         for player_info in players:
             pname     = player_info["name"]
             pos       = player_info.get("position", "WR")
@@ -576,17 +588,22 @@ async def _write_schedules(result: dict, context: dict, team: str) -> int:
                 logger.debug("Could not resolve player: %s (%s)", pname, team)
                 continue
 
+            if player_id in processed_ids:
+                logger.debug("Skipping duplicate player_id for %s (%s)", pname, team)
+                continue
+            processed_ids.add(player_id)
+
             grades = pos_grades.get(pos, pos_grades.get("WR", {}))
             if not grades:
                 continue
 
-            # Upsert PlayerSchedule
+            # Upsert PlayerSchedule — use scalars().first() in case stale duplicates exist
             existing = (await session.execute(
                 select(PlayerSchedule).where(
                     PlayerSchedule.player_id == player_id,
                     PlayerSchedule.season_year == analysis_year,
                 )
-            )).scalar_one_or_none()
+            )).scalars().first()
 
             if existing:
                 record = existing
