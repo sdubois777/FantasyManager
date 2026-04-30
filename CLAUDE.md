@@ -161,8 +161,8 @@ Update this section as stages complete.
 - [x] Stage 2: Data ingestion
 - [x] Stage 3: Team Systems agent
 - [x] Stage 4: Roster Changes agent
-- [ ] Stage 5: Player Profiles agent ← current
-- [ ] Stage 6: Injury Risk agent
+- [x] Stage 5: Player Profiles agent
+- [ ] Stage 6: Injury Risk agent ← current
 - [ ] Stage 7: Schedule agent
 - [ ] Stage 8: Beat Reporter agent
 - [ ] Stage 9: Valuation pass
