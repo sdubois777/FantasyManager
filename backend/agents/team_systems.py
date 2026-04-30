@@ -393,7 +393,10 @@ async def _upsert_team_system(session: AsyncSession, data: dict) -> None:
     record.compound_risk_flag          = bool(data.get("compound_risk_flag", False))
     record.oc_name                     = data.get("oc_name")
     record.oc_scheme                   = data.get("oc_scheme")
-    record.oc_run_pass_split_tendency  = data.get("oc_run_pass_split_tendency")
+    _split = data.get("oc_run_pass_split_tendency")
+    if _split is not None and _split > 1:
+        _split = round(_split / 100, 3)  # model returned 45 instead of 0.45
+    record.oc_run_pass_split_tendency  = _split
     record.personnel_tendency          = data.get("personnel_tendency")
     record.red_zone_philosophy         = data.get("red_zone_philosophy")
     record.system_ceiling              = data.get("system_ceiling")
