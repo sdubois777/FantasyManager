@@ -612,6 +612,7 @@ async def _write_schedules(result: dict, context: dict, team: str) -> int:
                 session.add(record)
 
             record.bye_week                    = bye_week
+            record.bye_in_playoff_window       = bool(bye_week and int(bye_week) in PLAYOFF_WINDOW)
             record.early_window_grade          = grades.get("early_window_grade")
             record.early_window_favorable_weeks = grades.get("early_window_favorable_weeks") or []
             record.early_window_tough_weeks    = grades.get("early_window_tough_weeks") or []

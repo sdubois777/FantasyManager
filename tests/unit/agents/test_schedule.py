@@ -234,8 +234,8 @@ async def test_position_specific_grades_stored_separately():
     p_rb.name = "Dalvin Cook"
 
     r_bulk        = MagicMock(); r_bulk.scalars.return_value.all.return_value = [p_wr, p_rb]
-    r_no_exist_wr = MagicMock(); r_no_exist_wr.scalar_one_or_none.return_value = None
-    r_no_exist_rb = MagicMock(); r_no_exist_rb.scalar_one_or_none.return_value = None
+    r_no_exist_wr = MagicMock(); r_no_exist_wr.scalars.return_value.first.return_value = None
+    r_no_exist_rb = MagicMock(); r_no_exist_rb.scalars.return_value.first.return_value = None
 
     mock_session = AsyncMock()
     mock_session.execute = AsyncMock(side_effect=[r_bulk, r_no_exist_wr, r_no_exist_rb])
@@ -731,7 +731,7 @@ async def test_write_schedules_inserts_new_record():
 
     mock_player = _make_player("Justin Jefferson", "MIN")
     r_bulk      = MagicMock(); r_bulk.scalars.return_value.all.return_value = [mock_player]
-    r_no_exist  = MagicMock(); r_no_exist.scalar_one_or_none.return_value = None
+    r_no_exist  = MagicMock(); r_no_exist.scalars.return_value.first.return_value = None
 
     mock_session = AsyncMock()
     mock_session.execute = AsyncMock(side_effect=[r_bulk, r_no_exist])
@@ -758,7 +758,7 @@ async def test_write_schedules_updates_existing_record():
     existing.playoff_window_grade = "favorable"  # old value
 
     r_bulk   = MagicMock(); r_bulk.scalars.return_value.all.return_value = [mock_player]
-    r_exist  = MagicMock(); r_exist.scalar_one_or_none.return_value = existing
+    r_exist  = MagicMock(); r_exist.scalars.return_value.first.return_value = existing
 
     mock_session = AsyncMock()
     mock_session.execute = AsyncMock(side_effect=[r_bulk, r_exist])
@@ -782,7 +782,7 @@ async def test_write_schedules_qb_uses_wr_grades():
 
     mock_player = _make_player("Justin Herbert", "LAC", "QB")
     r_bulk      = MagicMock(); r_bulk.scalars.return_value.all.return_value = [mock_player]
-    r_no_exist  = MagicMock(); r_no_exist.scalar_one_or_none.return_value = None
+    r_no_exist  = MagicMock(); r_no_exist.scalars.return_value.first.return_value = None
 
     mock_session = AsyncMock()
     mock_session.execute = AsyncMock(side_effect=[r_bulk, r_no_exist])
@@ -895,3 +895,65 @@ def test_get_agent_returns_schedule_agent():
     agent = _get_agent(dry_run=True)
     assert isinstance(agent, ScheduleAgent)
     assert agent.dry_run is True
+
+
+# ---------------------------------------------------------------------------
+# bye_in_playoff_window — Gap 2 fix
+# ---------------------------------------------------------------------------
+
+async def test_bye_in_playoff_window_true_when_bye_in_weeks_14_to_17():
+    """bye_in_playoff_window must be True when bye falls in the playoff window (weeks 14-17)."""
+    from backend.models.player import PlayerSchedule
+
+    assert hasattr(PlayerSchedule, "bye_in_playoff_window"), (
+        "PlayerSchedule.bye_in_playoff_window is missing — add it as a first-class column"
+    )
+
+    result  = _make_result(bye_week=14)
+    context = {"players": [{"name": "Justin Jefferson", "position": "WR"}], "bye_week": 14}
+
+    mock_player = _make_player("Justin Jefferson", "MIN")
+    r_bulk      = MagicMock(); r_bulk.scalars.return_value.all.return_value = [mock_player]
+    r_no_exist  = MagicMock(); r_no_exist.scalars.return_value.first.return_value = None
+
+    added: list = []
+    mock_session = AsyncMock()
+    mock_session.execute = AsyncMock(side_effect=[r_bulk, r_no_exist])
+    mock_session.add     = MagicMock(side_effect=added.append)
+
+    mock_ctx = MagicMock()
+    mock_ctx.__aenter__ = AsyncMock(return_value=mock_session)
+    mock_ctx.__aexit__  = AsyncMock(return_value=False)
+
+    with patch("backend.agents.schedule.AsyncSessionLocal", return_value=mock_ctx), \
+         patch("backend.agents.schedule.get_analysis_year", return_value=2026):
+        await _write_schedules(result, context, "MIN")
+
+    assert len(added) == 1
+    assert added[0].bye_in_playoff_window is True
+
+
+async def test_bye_in_playoff_window_false_when_bye_not_in_playoff_window():
+    """bye_in_playoff_window must be False when bye is NOT in weeks 14-17."""
+    result  = _make_result(bye_week=9)
+    context = {"players": [{"name": "Davante Adams", "position": "WR"}], "bye_week": 9}
+
+    mock_player = _make_player("Davante Adams", "CHI")
+    r_bulk      = MagicMock(); r_bulk.scalars.return_value.all.return_value = [mock_player]
+    r_no_exist  = MagicMock(); r_no_exist.scalars.return_value.first.return_value = None
+
+    added: list = []
+    mock_session = AsyncMock()
+    mock_session.execute = AsyncMock(side_effect=[r_bulk, r_no_exist])
+    mock_session.add     = MagicMock(side_effect=added.append)
+
+    mock_ctx = MagicMock()
+    mock_ctx.__aenter__ = AsyncMock(return_value=mock_session)
+    mock_ctx.__aexit__  = AsyncMock(return_value=False)
+
+    with patch("backend.agents.schedule.AsyncSessionLocal", return_value=mock_ctx), \
+         patch("backend.agents.schedule.get_analysis_year", return_value=2026):
+        await _write_schedules(result, context, "CHI")
+
+    assert len(added) == 1
+    assert added[0].bye_in_playoff_window is False
