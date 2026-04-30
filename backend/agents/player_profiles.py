@@ -271,6 +271,40 @@ class PlayerProfilesAgent(BaseAgent):
         return flags_by_player
 
     # ------------------------------------------------------------------
+    # On-demand cache loader — used by single-team runs
+    # ------------------------------------------------------------------
+
+    def _ensure_cache_loaded(self, analysis_seasons: list[int], current_season: int) -> None:
+        """Load data caches if not already populated (single-team runs bypass run_all_teams)."""
+        for season in analysis_seasons:
+            if f"target_share_{season}" not in self._data_cache:
+                try:
+                    self._data_cache[f"target_share_{season}"] = nfl_data.compute_target_share(season)
+                    logger.info("Loaded target_share %d on demand", season)
+                except Exception as exc:
+                    logger.warning("Could not load target_share %d: %s", season, exc)
+            if f"weekly_{season}" not in self._data_cache:
+                try:
+                    self._data_cache[f"weekly_{season}"] = nfl_data.fetch_weekly_stats(season)
+                    logger.info("Loaded weekly_stats %d on demand", season)
+                except Exception as exc:
+                    logger.warning("Could not load weekly_stats %d: %s", season, exc)
+
+        if f"rosters_{current_season}" not in self._data_cache:
+            try:
+                self._data_cache[f"rosters_{current_season}"] = nfl_data.fetch_rosters(current_season)
+                logger.info("Loaded rosters %d on demand", current_season)
+            except Exception as exc:
+                logger.warning("Could not load rosters %d: %s", current_season, exc)
+
+        if f"snap_pct_{current_season}" not in self._data_cache:
+            try:
+                self._data_cache[f"snap_pct_{current_season}"] = nfl_data.compute_snap_pct(current_season)
+                logger.info("Loaded snap_pct %d on demand", current_season)
+            except Exception as exc:
+                logger.warning("Could not load snap_pct %d: %s", current_season, exc)
+
+    # ------------------------------------------------------------------
     # Context builder — all Python, zero API calls
     # ------------------------------------------------------------------
 
@@ -279,6 +313,8 @@ class PlayerProfilesAgent(BaseAgent):
         analysis_seasons = get_analysis_seasons(3)
         current_season   = get_current_season()
         analysis_year    = get_analysis_year()
+
+        self._ensure_cache_loaded(analysis_seasons, current_season)
 
         team_system = await self._get_team_system(team)
         dep_flags   = await self._get_team_dependency_flags(team)
