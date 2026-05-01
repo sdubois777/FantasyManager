@@ -50,3 +50,10 @@ logs/
 # Data cache
 data/cache/
 *.parquet
+
+# Coverage
+.coverage
+htmlcov/
+
+# Claude Code auto-memory
+.claude/
