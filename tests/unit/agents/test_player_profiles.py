@@ -1084,17 +1084,24 @@ async def test_write_profiles_inserts_record():
     mock_player_row.breakout_flag = False
     mock_player_row.situation_score = None
 
-    # bulk resolve returns [mock_player_row]; profile upsert → None (new); player update → row
+    # New delete-first flow: 4 execute calls in order:
+    # 1. select(Player).where(team_abbr == team)  → team player list for delete
+    # 2. select(PlayerProfile).where(player_id.in_(...))  → existing profiles (empty → nothing deleted)
+    # 3. select(Player).where(or_(...))  → bulk ID resolution
+    # 4. select(Player).where(id == player_id)  → parent Player row update
+    r_team_players = MagicMock()
+    r_team_players.scalars.return_value.all.return_value = [mock_player_row]
+    r_existing_profiles = MagicMock()
+    r_existing_profiles.scalars.return_value.all.return_value = []   # nothing to delete
     r_bulk = MagicMock()
     r_bulk.scalars.return_value.all.return_value = [mock_player_row]
-    r_no_existing = MagicMock()
-    r_no_existing.scalar_one_or_none.return_value = None
     r_player = MagicMock()
     r_player.scalar_one_or_none.return_value = mock_player_row
 
     mock_session = AsyncMock()
-    mock_session.execute = AsyncMock(side_effect=[r_bulk, r_no_existing, r_player])
+    mock_session.execute = AsyncMock(side_effect=[r_team_players, r_existing_profiles, r_bulk, r_player])
     mock_session.add = MagicMock()
+    mock_session.delete = MagicMock()
     mock_session.commit = AsyncMock()
 
     mock_ctx = MagicMock()

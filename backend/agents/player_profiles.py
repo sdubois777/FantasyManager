@@ -733,7 +733,7 @@ async def _bulk_resolve_player_ids(
 async def _write_profiles(
     profiles: list[dict], context: dict, team: str
 ) -> int:
-    """Bulk upsert player_profiles — one DB transaction per team."""
+    """Write player_profiles for one team — deletes stale records then inserts fresh ones."""
     if not profiles:
         return 0
 
@@ -743,6 +743,26 @@ async def _write_profiles(
     }
 
     async with AsyncSessionLocal() as session:
+        # Delete all existing profiles for this team's players before re-inserting.
+        # This prevents accumulation across multiple runs where the model may profile
+        # different players each time (e.g. depth-chart shuffles or token-limit cuts).
+        team_players = (
+            await session.execute(select(Player).where(Player.team_abbr == team))
+        ).scalars().all()
+        team_player_ids = [p.id for p in team_players]
+        if team_player_ids:
+            existing = (
+                await session.execute(
+                    select(PlayerProfile).where(
+                        PlayerProfile.player_id.in_(team_player_ids)
+                    )
+                )
+            ).scalars().all()
+            for ep in existing:
+                await session.delete(ep)
+            if existing:
+                logger.debug("%s: deleted %d stale profile(s) before rewrite", team, len(existing))
+
         names_and_teams = [(p.get("player_name", ""), team) for p in profiles]
         id_map = await _bulk_resolve_player_ids(session, names_and_teams)
 
@@ -780,19 +800,9 @@ async def _write_profiles(
                 clean_baseline = _compute_clean_baseline(seasons)
                 rookie_prof    = {}
 
-            # Upsert PlayerProfile
-            existing = (await session.execute(
-                select(PlayerProfile).where(
-                    PlayerProfile.player_id == player_id,
-                    PlayerProfile.season_year == analysis_year,
-                )
-            )).scalar_one_or_none()
-
-            if existing:
-                record = existing
-            else:
-                record = PlayerProfile(player_id=player_id, season_year=analysis_year)
-                session.add(record)
+            # Always insert fresh (stale records for this team were deleted above)
+            record = PlayerProfile(player_id=player_id, season_year=analysis_year)
+            session.add(record)
 
             # Veteran fields — from model output (rookies use defaults from rookie_prof)
             effective = rookie_prof if is_rookie else prof
