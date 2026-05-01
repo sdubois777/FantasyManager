@@ -77,7 +77,7 @@ AGENT_SPECS: dict[str, dict] = {
         "max_tokens": 300,
         "est_input_tokens": 200,
         "api_calls": None,  # variable — RSS feed-driven
-        "status": "not_built",
+        "status": "built",
         "description": "Beat reporter signals (daily RSS ingestion)",
     },
 }
@@ -219,7 +219,12 @@ async def run_agent(name: str, teams: list[str] | None) -> None:
         else:
             await agent.run_all_teams()
 
-    # Remaining agents will be wired in as they are built (Stage 8)
+    elif name == "beat_reporter":
+        from backend.agents.beat_reporter import BeatReporterAgent
+        agent = BeatReporterAgent(dry_run=False)
+        # Beat reporter is not team-batched — ignores --team flag, runs all feeds
+        signals = await agent.run()
+        print(f"[{name}] {signals} new signal(s) written.")
 
     elapsed = time.monotonic() - t0
     print(f"[{name}] Done in {elapsed:.1f}s.\n")

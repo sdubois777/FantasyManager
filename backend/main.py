@@ -25,9 +25,12 @@ app.add_middleware(
 
 app.include_router(pipeline.router)
 
+_scheduler = None
+
 
 @app.on_event("startup")
 async def startup_checks():
+    global _scheduler
     missing = []
     if not settings.yahoo_client_id:
         missing.append("YAHOO_CLIENT_ID")
@@ -46,6 +49,20 @@ async def startup_checks():
         settings.environment,
         len(missing),
     )
+
+    # Start Beat Reporter daily scheduler (7am cron)
+    from backend.agents.beat_reporter import setup_scheduler
+    _scheduler = setup_scheduler()
+    _scheduler.start()
+    logger.info("Beat Reporter scheduler started (daily at 7am)")
+
+
+@app.on_event("shutdown")
+async def shutdown_checks():
+    global _scheduler
+    if _scheduler and _scheduler.running:
+        _scheduler.shutdown(wait=False)
+        logger.info("Beat Reporter scheduler stopped")
 
 
 @app.get("/health")
