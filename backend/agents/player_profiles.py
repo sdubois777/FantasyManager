@@ -46,7 +46,7 @@ SKILL_POSITIONS = {"WR", "RB", "TE"}
 SYSTEM_PROMPT = """You are a fantasy football player analyst building a pre-draft research database.
 
 You receive pre-aggregated multi-season stats for every skill-position player on one NFL team.
-Produce a JSON array — one profile object per player. Skip players with no season data at all.
+Produce a JSON array — one profile object per player.
 
 Each object must match this schema exactly:
 {
@@ -65,19 +65,34 @@ Each object must match this schema exactly:
   "situation_score": "string (strong/moderate/weak/volatile)"
 }
 
-role_classification values:
-  WR: wr1_alpha, slot_specialist, deep_threat, possession_wr2, gadget
-  RB: workhorse, early_down_thumper, pass_catching_specialist, committee_back
-  TE: te1_inline, te1_pass_catcher, te2_blocker, te2_flex
+role_classification MUST match the player's actual position — never cross-assign roles:
+  WR players → use only: wr1_alpha, slot_specialist, deep_threat, possession_wr2, gadget
+  RB players → use only: workhorse, early_down_thumper, pass_catching_specialist, committee_back
+  TE players → use only: te1_inline, te1_pass_catcher, te2_blocker, te2_flex
 
 Rules:
-- anomalous_seasons_excluded: include year integers where provided data shows games < 10 OR backup_qb_season=true
-- clean_season_baseline: average stats across non-excluded seasons. If no clean seasons exist, use all available.
-- breakout_flag = true if ANY of: Year 2 or 3 player, path opened by departure in dependency_flags, new scheme elevates this player type, efficiency already exceeds production statistics
-- situation_score: strong for high system grade + elite QB + no displacement; volatile or weak for displaced/committee flags or rookie QB; moderate otherwise
+- anomalous_seasons_excluded: include year integers where data shows games < 10 OR backup_qb_season=true
+- clean_season_baseline: project stats from non-excluded seasons. If no clean seasons exist, use all available.
+  "ppr_points" is the projected season TOTAL (not per-game). Example: a WR2 over 17 games ≈ 200.0.
+- breakout_flag = true if ANY of: Year 2 or 3 player, path opened by departure in dependency_flags,
+  new scheme elevates this player type, efficiency metrics already exceed production statistics.
+- situation_score: strong for high system grade + elite QB + no displacement;
+  volatile or weak for displaced/committee flags or rookie QB; moderate otherwise.
 - Age curve peaks: RB 24-26, WR 24-29, TE 26-29. ascending = before peak; descending = past peak.
-- Contract year flag (contract_year=true) → slight upward bias in trajectory
-- compound_risk_flag on team → all players lean toward volatile/weak
+- Contract year flag (contract_year=true) → slight upward bias in trajectory.
+- compound_risk_flag on team → all players lean toward volatile/weak situation_score.
+
+Additional NGS efficiency data in player seasons (when present):
+  avg_separation: average yards of separation at catch point; higher = elite route running.
+  avg_yac_above_expectation: yards after catch above model expectation; positive = elite YAC.
+  rush_yards_over_expected_per_att: rushing yards over expected; positive = above-avg vision/burst.
+Use these numeric signals to inform separation_score, yards_after_catch_score, and efficiency_signal.
+
+For players where all seasons show games=0 (rookies or new acquisitions with no NFL history):
+  - Still include them; classify by position, team system, and dependency_flags.
+  - Set career_trajectory="volatile" unless a clear signal exists.
+  - Set clean_season_baseline to position-typical conservative estimates.
+  - Set breakout_flag=true if any dependency_flag has type "beneficiary".
 
 Output ONLY a valid JSON array. No explanation, no preamble, no markdown fences.
 Your entire response must be parseable by json.loads()."""
@@ -224,6 +239,56 @@ class PlayerProfilesAgent(BaseAgent):
         except (TypeError, ValueError):
             return None
 
+    def _get_ngs_receiving_stats(self, player_name: str, team: str, season: int) -> dict:
+        """Return NGS receiving metrics (separation, YAC) from cached aggregated data."""
+        ngs = self._data_cache.get(f"ngs_receiving_{season}")
+        if ngs is None or ngs.empty:
+            return {}
+
+        last = player_name.split()[-1]
+        mask = ngs["player_display_name"].str.contains(last, case=False, na=False)
+        if "team_abbr" in ngs.columns:
+            mask = mask & (ngs["team_abbr"].str.upper() == team.upper())
+        rows = ngs[mask]
+        if rows.empty:
+            return {}
+
+        row = rows.iloc[0]
+        result = {}
+        for col in ("avg_separation", "avg_yac_above_expectation"):
+            v = row.get(col)
+            try:
+                if v is not None and pd.notna(v):
+                    result[col] = round(float(v), 2)
+            except (TypeError, ValueError):
+                pass
+        return result
+
+    def _get_ngs_rushing_stats(self, player_name: str, team: str, season: int) -> dict:
+        """Return NGS rushing metrics (yards over expected) from cached aggregated data."""
+        ngs = self._data_cache.get(f"ngs_rushing_{season}")
+        if ngs is None or ngs.empty:
+            return {}
+
+        last = player_name.split()[-1]
+        mask = ngs["player_display_name"].str.contains(last, case=False, na=False)
+        if "team_abbr" in ngs.columns:
+            mask = mask & (ngs["team_abbr"].str.upper() == team.upper())
+        rows = ngs[mask]
+        if rows.empty:
+            return {}
+
+        row = rows.iloc[0]
+        result = {}
+        for col in ("rush_yards_over_expected_per_att", "rush_pct_over_expected"):
+            v = row.get(col)
+            try:
+                if v is not None and pd.notna(v):
+                    result[col] = round(float(v), 2)
+            except (TypeError, ValueError):
+                pass
+        return result
+
     # ------------------------------------------------------------------
     # Async DB helpers
     # ------------------------------------------------------------------
@@ -252,7 +317,6 @@ class PlayerProfilesAgent(BaseAgent):
         from backend.models.dependency import PlayerDependency
 
         async with AsyncSessionLocal() as session:
-            # Join dependency → player to filter by team
             result = await session.execute(
                 select(PlayerDependency, Player.name)
                 .join(Player, PlayerDependency.player_id == Player.id)
@@ -271,6 +335,21 @@ class PlayerProfilesAgent(BaseAgent):
         return flags_by_player
 
     # ------------------------------------------------------------------
+    # NGS cache aggregation — weekly NGS → season-level per player
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _aggregate_ngs(raw: pd.DataFrame, avg_cols: list[str]) -> pd.DataFrame:
+        """Aggregate weekly NGS data to season-level means per player+team."""
+        group_cols = [c for c in ("player_display_name", "team_abbr") if c in raw.columns]
+        if not group_cols or raw.empty:
+            return pd.DataFrame()
+        valid_cols = [c for c in avg_cols if c in raw.columns]
+        if not valid_cols:
+            return pd.DataFrame()
+        return raw.groupby(group_cols)[valid_cols].mean().reset_index()
+
+    # ------------------------------------------------------------------
     # On-demand cache loader — used by single-team runs
     # ------------------------------------------------------------------
 
@@ -283,12 +362,33 @@ class PlayerProfilesAgent(BaseAgent):
                     logger.info("Loaded target_share %d on demand", season)
                 except Exception as exc:
                     logger.warning("Could not load target_share %d: %s", season, exc)
+
             if f"weekly_{season}" not in self._data_cache:
                 try:
                     self._data_cache[f"weekly_{season}"] = nfl_data.fetch_weekly_stats(season)
                     logger.info("Loaded weekly_stats %d on demand", season)
                 except Exception as exc:
                     logger.warning("Could not load weekly_stats %d: %s", season, exc)
+
+            if f"ngs_receiving_{season}" not in self._data_cache:
+                try:
+                    raw = nfl_data.fetch_ngs_data("receiving", season)
+                    self._data_cache[f"ngs_receiving_{season}"] = self._aggregate_ngs(
+                        raw, ["avg_separation", "avg_yac_above_expectation"]
+                    )
+                    logger.info("Loaded ngs_receiving %d on demand", season)
+                except Exception as exc:
+                    logger.warning("Could not load ngs_receiving %d: %s", season, exc)
+
+            if f"ngs_rushing_{season}" not in self._data_cache:
+                try:
+                    raw = nfl_data.fetch_ngs_data("rushing", season)
+                    self._data_cache[f"ngs_rushing_{season}"] = self._aggregate_ngs(
+                        raw, ["rush_yards_over_expected_per_att", "rush_pct_over_expected"]
+                    )
+                    logger.info("Loaded ngs_rushing %d on demand", season)
+                except Exception as exc:
+                    logger.warning("Could not load ngs_rushing %d: %s", season, exc)
 
         if f"rosters_{current_season}" not in self._data_cache:
             try:
@@ -339,6 +439,16 @@ class PlayerProfilesAgent(BaseAgent):
                 if stats:
                     stats["year"]             = season
                     stats["backup_qb_season"] = backup_qb_flags.get(season, False)
+                    # Attach NGS efficiency data per position
+                    pos = info["position"]
+                    if pos in ("WR", "TE"):
+                        ngs = self._get_ngs_receiving_stats(pname, team, season)
+                        if ngs:
+                            stats.update(ngs)
+                    elif pos == "RB":
+                        ngs = self._get_ngs_rushing_stats(pname, team, season)
+                        if ngs:
+                            stats.update(ngs)
                     seasons_data.append(stats)
                 else:
                     seasons_data.append({
@@ -348,8 +458,11 @@ class PlayerProfilesAgent(BaseAgent):
                         "note":             "no data",
                     })
 
-            # Skip players with no data across all analysis seasons
-            if all(s.get("games", 0) == 0 for s in seasons_data):
+            # Skip only players with zero history AND no dependency flags
+            # (rookies with dependency flags still get profiled; pure depth with nothing to say are skipped)
+            has_any_data    = any(s.get("games", 0) > 0 for s in seasons_data)
+            has_flags       = bool(dep_flags.get(pname, []))
+            if not has_any_data and not has_flags:
                 continue
 
             players.append({
@@ -441,6 +554,26 @@ class PlayerProfilesAgent(BaseAgent):
                     logger.info("Cached weekly_stats %d", season)
                 except Exception as exc:
                     logger.warning("Could not pre-load weekly_stats %d: %s", season, exc)
+
+            if f"ngs_receiving_{season}" not in self._data_cache:
+                try:
+                    raw = nfl_data.fetch_ngs_data("receiving", season)
+                    self._data_cache[f"ngs_receiving_{season}"] = self._aggregate_ngs(
+                        raw, ["avg_separation", "avg_yac_above_expectation"]
+                    )
+                    logger.info("Cached ngs_receiving %d", season)
+                except Exception as exc:
+                    logger.warning("Could not pre-load ngs_receiving %d: %s", season, exc)
+
+            if f"ngs_rushing_{season}" not in self._data_cache:
+                try:
+                    raw = nfl_data.fetch_ngs_data("rushing", season)
+                    self._data_cache[f"ngs_rushing_{season}"] = self._aggregate_ngs(
+                        raw, ["rush_yards_over_expected_per_att", "rush_pct_over_expected"]
+                    )
+                    logger.info("Cached ngs_rushing %d", season)
+                except Exception as exc:
+                    logger.warning("Could not pre-load ngs_rushing %d: %s", season, exc)
 
         if f"rosters_{current_season}" not in self._data_cache:
             try:

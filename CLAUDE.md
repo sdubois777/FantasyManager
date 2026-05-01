@@ -165,7 +165,7 @@ Update this section as stages complete.
 - [x] Stage 5: Player Profiles agent
 - [x] Stage 6: Injury Risk agent
 - [x] Stage 7: Schedule agent
-- [ ] Stage 8: Beat Reporter agent ← current
+- [x] Stage 8: Beat Reporter agent
 - [x] Stage 9: Valuation pass
 - [ ] Stage 10: Yahoo API integration
 - [ ] Stage 11: Playwright draft bridge
