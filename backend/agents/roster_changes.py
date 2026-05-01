@@ -427,10 +427,16 @@ async def _bulk_resolve_player_ids(
 
 
 async def _write_flags(flags: list[dict]) -> int:
-    """Bulk upsert — one DB transaction for all flags from one team."""
+    """Replace all dependency flags for the affected players in one DB transaction.
+
+    Delete-then-insert ensures re-runs (including cache hits) are idempotent.
+    All flags in one batch belong to the same team, so we delete by resolved
+    player IDs + season_year before inserting the fresh set.
+    """
     if not flags:
         return 0
 
+    from sqlalchemy import delete as sa_delete
     analysis_year = get_analysis_year()
 
     async with AsyncSessionLocal() as session:
@@ -441,6 +447,22 @@ async def _write_flags(flags: list[dict]) -> int:
             names_and_teams.append((f.get("trigger_player_name", ""), f.get("trigger_player_team")))
 
         id_map = await _bulk_resolve_player_ids(session, names_and_teams)
+
+        # Collect the player IDs that will be written so we can purge stale rows first
+        player_ids_in_batch: set = set()
+        for flag in flags:
+            pid = id_map.get((flag.get("player_name", ""), flag.get("player_team")))
+            if pid:
+                player_ids_in_batch.add(pid)
+
+        # Delete existing flags for these players / season to prevent duplicates on re-run
+        if player_ids_in_batch:
+            await session.execute(
+                sa_delete(PlayerDependency).where(
+                    PlayerDependency.player_id.in_(player_ids_in_batch),
+                    PlayerDependency.season_year == analysis_year,
+                )
+            )
 
         written = 0
         for flag in flags:
