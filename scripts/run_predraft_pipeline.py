@@ -80,6 +80,15 @@ AGENT_SPECS: dict[str, dict] = {
         "status": "built",
         "description": "Beat reporter signals (daily RSS ingestion)",
     },
+    "valuation": {
+        "model": "none",
+        "model_id": "none",
+        "max_tokens": 0,
+        "est_input_tokens": 0,
+        "api_calls": 0,  # pure Python — no API calls
+        "status": "built",
+        "description": "Draft bible valuation pass (bid ceilings, tiers, value gap)",
+    },
 }
 
 PIPELINE_ORDER = [
@@ -89,6 +98,7 @@ PIPELINE_ORDER = [
     "injury_risk",
     "schedule",
     "beat_reporter",
+    "valuation",
 ]
 
 # Cost per million tokens
@@ -126,6 +136,9 @@ def print_dry_run(agents: list[str], single_team: bool) -> None:
         if spec["api_calls"] is None:
             calls_str = "variable"
             cost_str  = "variable"
+        elif spec["api_calls"] == 0:
+            calls_str = "0"
+            cost_str  = "$0.0000"
         else:
             calls = scope_calls
             cost  = _estimate_cost(spec, calls)
@@ -226,6 +239,15 @@ async def run_agent(name: str, teams: list[str] | None) -> None:
         signals = await agent.run()
         print(f"[{name}] {signals} new signal(s) written.")
 
+    elif name == "valuation":
+        from backend.engines.valuation import run_valuation_pass
+        result = await run_valuation_pass()
+        print(
+            f"[{name}] {result['updated']} player(s) updated, "
+            f"{result['skipped']} skipped "
+            f"(analysis_year={result['analysis_year']})."
+        )
+
     elapsed = time.monotonic() - t0
     print(f"[{name}] Done in {elapsed:.1f}s.\n")
 
@@ -240,7 +262,7 @@ async def main() -> None:
         "--agent",
         default="all",
         metavar="NAME",
-        help="Agent to run: all | team_systems | roster_changes | player_profiles | injury_risk | schedule | beat_reporter",
+        help="Agent to run: all | team_systems | roster_changes | player_profiles | injury_risk | schedule | beat_reporter | valuation",
     )
     parser.add_argument(
         "--team",
