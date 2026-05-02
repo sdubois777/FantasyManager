@@ -97,3 +97,45 @@ async def run_team_systems_single(team_abbr: str):
         message=f"Team Systems Agent completed for {team}",
         details=data,
     )
+
+
+@router.post("/sync-yahoo-players", response_model=PipelineResponse)
+async def sync_yahoo_players():
+    """
+    Pull Yahoo player universe and match IDs to draft bible records.
+    Updates yahoo_player_id on matched player rows.
+    Requires YAHOO_REFRESH_TOKEN to be set in .env.
+    """
+    from backend.database import AsyncSessionLocal
+    from backend.integrations.yahoo_api import sync_yahoo_player_ids
+
+    async with AsyncSessionLocal() as session:
+        result = await sync_yahoo_player_ids(session)
+
+    return PipelineResponse(
+        status="complete",
+        message=(
+            f"Yahoo player sync done — "
+            f"{result['matched']} matched, {result['unmatched']} unmatched"
+        ),
+        details=result,
+    )
+
+
+@router.post("/sync-league-settings", response_model=PipelineResponse)
+async def sync_league_settings():
+    """
+    Pull league settings from Yahoo and upsert into league_settings table.
+    Requires YAHOO_REFRESH_TOKEN to be set in .env.
+    """
+    from backend.database import AsyncSessionLocal
+    from backend.integrations.yahoo_api import sync_league_settings as _sync
+
+    async with AsyncSessionLocal() as session:
+        result = await _sync(session)
+
+    return PipelineResponse(
+        status="complete",
+        message=f"League settings synced — {result['league_name']} ({result['scoring_format']}, {result['team_count']} teams)",
+        details=result,
+    )
