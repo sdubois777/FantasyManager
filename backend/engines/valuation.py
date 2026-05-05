@@ -288,6 +288,10 @@ async def run_valuation_pass(
             pos = player.position
             if pos not in DRAFTABLE_POSITIONS:
                 continue
+            # Free agents (team_abbr="FA" or None) are undraftable — skip.
+            # They'll be cleared by the stale-value sweep below.
+            if not player.team_abbr or player.team_abbr == "FA":
+                continue
             ppr = _extract_ppr(player.profile)
             # FIX 4: Apply injury discount to PPR baseline for players with
             # post-ACL or major injury recovery flags

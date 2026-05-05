@@ -272,19 +272,21 @@ def _make_player(
     risk_modifier: float | None = None,
     post_acl_flag: bool = False,
     workload_cliff_flag: bool = False,
+    team_abbr: str = "NYG",
 ) -> MagicMock:
     """Helper: create a mock Player with nested profile + injury_profile."""
     global _player_counter
     _player_counter += 1
-    player = MagicMock(spec=["id", "name", "position", "profile", "injury_profile",
-                              "market_value", "tier", "baseline_value",
-                              "risk_adjusted_value", "recommended_bid_ceiling",
-                              "let_go_threshold", "elite_anchor_weight",
-                              "positional_scarcity_modifier", "value_gap",
-                              "value_gap_signal", "data_confidence"])
+    player = MagicMock(spec=["id", "name", "position", "team_abbr", "profile",
+                              "injury_profile", "market_value", "tier",
+                              "baseline_value", "risk_adjusted_value",
+                              "recommended_bid_ceiling", "let_go_threshold",
+                              "elite_anchor_weight", "positional_scarcity_modifier",
+                              "value_gap", "value_gap_signal", "data_confidence"])
     player.id           = _player_counter
     player.name         = f"Player_{_player_counter}"
     player.position     = position
+    player.team_abbr    = team_abbr
     player.market_value = Decimal(str(market_value)) if market_value is not None else None
 
     profile = MagicMock()
@@ -571,3 +573,37 @@ async def test_hard_cap_applied_in_valuation_pass():
 
     # Ceiling should be capped to $80 for RB
     assert rb_elite.recommended_bid_ceiling <= Decimal("80")
+
+
+@pytest.mark.asyncio
+async def test_free_agents_get_zero_value():
+    """Free agents (team_abbr='FA' or None) should be skipped and cleared."""
+    rb_active = _make_player("RB", ppr_points=250, team_abbr="NYG")
+    rb_fa = _make_player("RB", ppr_points=250, team_abbr="FA")
+    rb_fa.baseline_value = Decimal("50.00")  # stale value from before FA
+    rb_none = _make_player("RB", ppr_points=250, team_abbr=None)
+    rb_none.baseline_value = Decimal("40.00")
+
+    mock_players = [rb_active, rb_fa, rb_none]
+    session = AsyncMock()
+    session.__aenter__ = AsyncMock(return_value=session)
+    session.__aexit__ = AsyncMock(return_value=False)
+    session.execute = AsyncMock(
+        return_value=MagicMock(scalars=MagicMock(return_value=MagicMock(all=MagicMock(return_value=mock_players))))
+    )
+    session.add = MagicMock()
+    session.commit = AsyncMock()
+
+    with patch("backend.engines.valuation.AsyncSessionLocal", return_value=session):
+        result = await run_valuation_pass()
+
+    # Only the active player should be valued
+    assert result["updated"] == 1
+    # Both FA players should have stale values cleared
+    assert result["cleared"] == 2
+    assert rb_fa.baseline_value is None
+    assert rb_fa.tier is None
+    assert rb_none.baseline_value is None
+    assert rb_none.tier is None
+    # Active player should have a value
+    assert rb_active.baseline_value is not None
