@@ -193,7 +193,12 @@ class BaseAgent:
                 )
             )
             hit = result.scalar_one_or_none()
-            return hit.output_json if hit else None
+            if hit is None:
+                return None
+            # Touch timestamp so pipeline status reflects last run time
+            hit.created_at = datetime.now(timezone.utc)
+            await session.commit()
+            return hit.output_json
 
     async def _write_cache(self, input_hash: str, output: str, entity_id: str) -> None:
         from backend.models.agent_cache import AgentCache

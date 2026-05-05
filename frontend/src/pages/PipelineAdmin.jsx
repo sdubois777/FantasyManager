@@ -15,6 +15,12 @@ const AGENT_LABELS = {
 export default function PipelineAdmin() {
   const queryClient = useQueryClient()
   const [costDays, setCostDays] = useState(30)
+  const [toast, setToast] = useState(null)
+
+  const showToast = (message, type = 'success') => {
+    setToast({ message, type })
+    setTimeout(() => setToast(null), 4000)
+  }
 
   const { data: statusData, isLoading: statusLoading } = useQuery({
     queryKey: ['pipeline-status'],
@@ -29,8 +35,12 @@ export default function PipelineAdmin() {
 
   const runMutation = useMutation({
     mutationFn: ({ agent }) => triggerPipelineRun(agent),
-    onSuccess: () => {
+    onSuccess: (data, { agent }) => {
+      showToast(`${AGENT_LABELS[agent] || agent} started`)
       queryClient.invalidateQueries({ queryKey: ['pipeline-status'] })
+    },
+    onError: (err) => {
+      showToast(`Failed: ${err.message}`, 'error')
     },
   })
 
@@ -42,7 +52,11 @@ export default function PipelineAdmin() {
       }
     },
     onSuccess: () => {
+      showToast('All agents started')
       queryClient.invalidateQueries({ queryKey: ['pipeline-status'] })
+    },
+    onError: (err) => {
+      showToast(`Failed: ${err.message}`, 'error')
     },
   })
 
@@ -193,6 +207,17 @@ export default function PipelineAdmin() {
           </>
         )}
       </div>
+
+      {/* Toast notification */}
+      {toast && (
+        <div className={`fixed bottom-6 right-6 z-50 px-4 py-2.5 rounded-lg shadow-lg text-sm font-medium animate-fade-in ${
+          toast.type === 'error'
+            ? 'bg-red-600/90 text-white'
+            : 'bg-emerald-600/90 text-white'
+        }`}>
+          {toast.message}
+        </div>
+      )}
     </div>
   )
 }
