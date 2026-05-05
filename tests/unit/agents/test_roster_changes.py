@@ -700,3 +700,261 @@ async def test_low_capital_pick_no_displacement():
     }
     flags = await agent._generate_rookie_displacement_flags(pick, "WR", "low", context)
     assert flags == []
+
+
+# ===========================================================================
+# _sync_player_teams tests
+# ===========================================================================
+
+
+@pytest.mark.asyncio
+async def test_sync_player_teams_updates_arrival():
+    """Signing transaction updates player team_abbr to the new team."""
+    agent = RosterChangesAgent()
+
+    transactions = [
+        {"player": "Keenan Allen", "type": "Signed", "position": "WR", "aav": "23000000", "date": "2026-03-15"},
+    ]
+
+    mock_player = MagicMock()
+    mock_player.name = "Keenan Allen"
+    mock_player.team_abbr = "CHI"
+
+    mock_result = MagicMock()
+    mock_result.scalar_one_or_none.return_value = mock_player
+
+    mock_session = AsyncMock()
+    mock_session.execute = AsyncMock(return_value=mock_result)
+    mock_session.commit = AsyncMock()
+    mock_ctx = MagicMock()
+    mock_ctx.__aenter__ = AsyncMock(return_value=mock_session)
+    mock_ctx.__aexit__ = AsyncMock(return_value=False)
+
+    with patch("backend.agents.roster_changes.AsyncSessionLocal", return_value=mock_ctx):
+        count = await agent._sync_player_teams(transactions, "LAC")
+
+    assert count == 1
+    assert mock_player.team_abbr == "LAC"
+    mock_session.commit.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_sync_player_teams_handles_release():
+    """Released transaction sets player team_abbr to FA."""
+    agent = RosterChangesAgent()
+
+    transactions = [
+        {"player": "Old Player", "type": "Released", "position": "WR", "aav": "", "date": "2026-03-10"},
+    ]
+
+    mock_player = MagicMock()
+    mock_player.name = "Old Player"
+    mock_player.team_abbr = "LAC"
+
+    mock_result = MagicMock()
+    mock_result.scalar_one_or_none.return_value = mock_player
+
+    mock_session = AsyncMock()
+    mock_session.execute = AsyncMock(return_value=mock_result)
+    mock_session.commit = AsyncMock()
+    mock_ctx = MagicMock()
+    mock_ctx.__aenter__ = AsyncMock(return_value=mock_session)
+    mock_ctx.__aexit__ = AsyncMock(return_value=False)
+
+    with patch("backend.agents.roster_changes.AsyncSessionLocal", return_value=mock_ctx):
+        count = await agent._sync_player_teams(transactions, "LAC")
+
+    assert count == 1
+    assert mock_player.team_abbr == "FA"
+
+
+@pytest.mark.asyncio
+async def test_sync_player_teams_skips_restructure():
+    """Restructured transactions are not team changes — should be skipped."""
+    agent = RosterChangesAgent()
+
+    transactions = [
+        {"player": "Some Player", "type": "Restructured", "position": "QB", "aav": "", "date": "2026-02-01"},
+    ]
+
+    mock_session = AsyncMock()
+    mock_session.commit = AsyncMock()
+    mock_ctx = MagicMock()
+    mock_ctx.__aenter__ = AsyncMock(return_value=mock_session)
+    mock_ctx.__aexit__ = AsyncMock(return_value=False)
+
+    with patch("backend.agents.roster_changes.AsyncSessionLocal", return_value=mock_ctx):
+        count = await agent._sync_player_teams(transactions, "LAC")
+
+    assert count == 0
+    mock_session.commit.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_sync_player_teams_skips_already_correct():
+    """Player already on the correct team should not be counted as updated."""
+    agent = RosterChangesAgent()
+
+    transactions = [
+        {"player": "Stable Player", "type": "Signed", "position": "WR", "aav": "", "date": "2026-03-01"},
+    ]
+
+    mock_player = MagicMock()
+    mock_player.name = "Stable Player"
+    mock_player.team_abbr = "LAC"  # already on LAC
+
+    mock_result = MagicMock()
+    mock_result.scalar_one_or_none.return_value = mock_player
+
+    mock_session = AsyncMock()
+    mock_session.execute = AsyncMock(return_value=mock_result)
+    mock_session.commit = AsyncMock()
+    mock_ctx = MagicMock()
+    mock_ctx.__aenter__ = AsyncMock(return_value=mock_session)
+    mock_ctx.__aexit__ = AsyncMock(return_value=False)
+
+    with patch("backend.agents.roster_changes.AsyncSessionLocal", return_value=mock_ctx):
+        count = await agent._sync_player_teams(transactions, "LAC")
+
+    assert count == 0
+    mock_session.commit.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_sync_player_teams_called_in_run_for_team():
+    """_sync_player_teams must be called at the end of run_for_team."""
+    agent = RosterChangesAgent()
+    context = {
+        "team": "LAC",
+        "transactions": [{"player": "Test", "type": "Signed"}],
+    }
+
+    with patch.object(agent, "_build_team_context", new=AsyncMock(return_value=context)), \
+         patch.object(agent, "call_once", new=AsyncMock(return_value="[]")), \
+         patch("backend.agents.roster_changes._write_flags", new=AsyncMock(return_value=0)), \
+         patch.object(agent, "_sync_player_teams", new=AsyncMock(return_value=0)) as mock_sync:
+        await agent.run_for_team("LAC")
+
+    mock_sync.assert_called_once_with(
+        [{"player": "Test", "type": "Signed"}], "LAC"
+    )
+
+
+@pytest.mark.asyncio
+async def test_sync_player_teams_handles_trade():
+    """Traded transaction updates player team_abbr to the acquiring team."""
+    agent = RosterChangesAgent()
+
+    transactions = [
+        {"player": "Mike Evans", "type": "Traded", "position": "WR", "aav": "", "date": "2026-03-20"},
+    ]
+
+    mock_player = MagicMock()
+    mock_player.name = "Mike Evans"
+    mock_player.team_abbr = "TB"
+
+    mock_result = MagicMock()
+    mock_result.scalar_one_or_none.return_value = mock_player
+
+    mock_session = AsyncMock()
+    mock_session.execute = AsyncMock(return_value=mock_result)
+    mock_session.commit = AsyncMock()
+    mock_ctx = MagicMock()
+    mock_ctx.__aenter__ = AsyncMock(return_value=mock_session)
+    mock_ctx.__aexit__ = AsyncMock(return_value=False)
+
+    with patch("backend.agents.roster_changes.AsyncSessionLocal", return_value=mock_ctx):
+        count = await agent._sync_player_teams(transactions, "SF")
+
+    assert count == 1
+    assert mock_player.team_abbr == "SF"
+    mock_session.commit.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_sync_player_teams_sets_updated_at():
+    """Team sync must set updated_at timestamp on modified players."""
+    agent = RosterChangesAgent()
+
+    transactions = [
+        {"player": "Davante Adams", "type": "Signed", "position": "WR", "aav": "", "date": "2026-03-15"},
+    ]
+
+    mock_player = MagicMock()
+    mock_player.name = "Davante Adams"
+    mock_player.team_abbr = "LV"
+    mock_player.updated_at = None
+
+    mock_result = MagicMock()
+    mock_result.scalar_one_or_none.return_value = mock_player
+
+    mock_session = AsyncMock()
+    mock_session.execute = AsyncMock(return_value=mock_result)
+    mock_session.commit = AsyncMock()
+    mock_ctx = MagicMock()
+    mock_ctx.__aenter__ = AsyncMock(return_value=mock_session)
+    mock_ctx.__aexit__ = AsyncMock(return_value=False)
+
+    with patch("backend.agents.roster_changes.AsyncSessionLocal", return_value=mock_ctx):
+        await agent._sync_player_teams(transactions, "NYJ")
+
+    assert mock_player.updated_at is not None
+    assert mock_player.team_abbr == "NYJ"
+
+
+@pytest.mark.asyncio
+async def test_sync_player_teams_empty_type_exact_match_only():
+    """OTC cap tables (empty type) use exact name match — no last-name fallback."""
+    agent = RosterChangesAgent()
+
+    transactions = [
+        {"player": "Mike Evans", "type": "", "position": "", "aav": "", "date": ""},
+    ]
+
+    mock_player = MagicMock()
+    mock_player.name = "Mike Evans"
+    mock_player.team_abbr = "TB"
+
+    mock_result = MagicMock()
+    mock_result.scalar_one_or_none.return_value = mock_player
+
+    mock_session = AsyncMock()
+    mock_session.execute = AsyncMock(return_value=mock_result)
+    mock_session.commit = AsyncMock()
+    mock_ctx = MagicMock()
+    mock_ctx.__aenter__ = AsyncMock(return_value=mock_session)
+    mock_ctx.__aexit__ = AsyncMock(return_value=False)
+
+    with patch("backend.agents.roster_changes.AsyncSessionLocal", return_value=mock_ctx):
+        count = await agent._sync_player_teams(transactions, "SF")
+
+    assert count == 1
+    assert mock_player.team_abbr == "SF"
+    mock_session.commit.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_sync_player_teams_no_last_name_fallback():
+    """Exact name miss must NOT fall back to last-name ilike — prevents cross-player confusion."""
+    agent = RosterChangesAgent()
+
+    # "Julian Love" is on SEA cap but our DB has "Jordan Love" on GB
+    transactions = [
+        {"player": "Julian Love", "type": "", "position": "", "aav": "", "date": ""},
+    ]
+
+    mock_result = MagicMock()
+    mock_result.scalar_one_or_none.return_value = None  # no exact match
+
+    mock_session = AsyncMock()
+    mock_session.execute = AsyncMock(return_value=mock_result)
+    mock_session.commit = AsyncMock()
+    mock_ctx = MagicMock()
+    mock_ctx.__aenter__ = AsyncMock(return_value=mock_session)
+    mock_ctx.__aexit__ = AsyncMock(return_value=False)
+
+    with patch("backend.agents.roster_changes.AsyncSessionLocal", return_value=mock_ctx):
+        count = await agent._sync_player_teams(transactions, "SEA")
+
+    assert count == 0
+    mock_session.commit.assert_not_called()

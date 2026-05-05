@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+from datetime import datetime, timezone
 from typing import ClassVar
 
 import feedparser
@@ -215,6 +216,23 @@ async def _update_player_notes(player_id: str, signal: dict) -> None:
         await session.commit()
 
 
+async def _update_player_team(player_id: str, new_team: str) -> None:
+    """Update a player's team_abbr when a transaction signal confirms a team change."""
+    if not player_id or not new_team:
+        return
+    async with AsyncSessionLocal() as session:
+        player = await session.get(Player, player_id)
+        if not player or player.team_abbr == new_team.upper():
+            return
+        logger.info(
+            "Beat reporter team sync: %s — %s → %s",
+            player.name, player.team_abbr, new_team.upper(),
+        )
+        player.team_abbr = new_team.upper()
+        player.updated_at = datetime.now(timezone.utc)
+        await session.commit()
+
+
 async def _update_injury_recovery(player_id: str, signal: dict) -> None:
     """
     For injury_flag signals, update recovery_assessment on PlayerInjuryProfile.
@@ -319,6 +337,9 @@ class BeatReporterAgent(BaseAgent):
                 if player_id:
                     await _update_player_notes(player_id, signal)
                     await _update_injury_recovery(player_id, signal)
+                    # Update team_abbr on transaction signals
+                    if signal.get("signal_type") == "transaction" and signal.get("player_team"):
+                        await _update_player_team(player_id, signal["player_team"])
 
         logger.info("Beat Reporter: %d new signal(s) written", written)
         return written

@@ -23,6 +23,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+from datetime import datetime, timezone
 from typing import ClassVar
 
 from sqlalchemy import select
@@ -605,6 +606,76 @@ class RosterChangesAgent(BaseAgent):
         )
 
     # ------------------------------------------------------------------
+    # Team assignment sync — update team_abbr from transactions
+    # ------------------------------------------------------------------
+
+    async def _sync_player_teams(
+        self,
+        transactions: list[dict],
+        team_abbr: str,
+    ) -> int:
+        """
+        Update team_abbr for any player who changed teams.
+        OTC transactions are the source of truth for current roster.
+        Returns count of players updated.
+
+        When the transaction type is empty (OTC cap table format),
+        presence in the team's list is treated as an arrival — but only
+        exact name matches are used to avoid cross-player confusion
+        (e.g. "Julian Love" matching "Jordan Love" via last-name fallback).
+        """
+        ARRIVAL_KEYWORDS = {"sign", "claim", "draft", "trad"}
+        DEPARTURE_KEYWORDS = {"release", "waiv", "retire", "cut"}
+
+        updated = 0
+        async with AsyncSessionLocal() as session:
+            for txn in transactions:
+                player_name = (txn.get("player") or "").strip()
+                txn_type = (txn.get("type") or "").lower().strip()
+
+                if not player_name:
+                    continue
+
+                # Determine new team based on transaction type
+                new_team: str | None = None
+                if txn_type:
+                    if any(kw in txn_type for kw in ARRIVAL_KEYWORDS):
+                        new_team = team_abbr.upper()
+                    elif any(kw in txn_type for kw in DEPARTURE_KEYWORDS):
+                        new_team = "FA"
+                else:
+                    # OTC cap tables have empty type — presence in team's
+                    # transaction list means the player is on this team
+                    new_team = team_abbr.upper()
+
+                if not new_team:
+                    continue
+
+                # Exact name match only — no last-name fallback for team
+                # syncing to avoid cross-player confusion (e.g. "Julian
+                # Love" on SEA cap table matching "Jordan Love" on GB)
+                result = await session.execute(
+                    select(Player).where(Player.name == player_name)
+                )
+                player = result.scalar_one_or_none()
+
+                if not player or player.team_abbr == new_team:
+                    continue
+
+                logger.info(
+                    "Team updated: %s — %s → %s",
+                    player.name, player.team_abbr, new_team,
+                )
+                player.team_abbr = new_team
+                player.updated_at = datetime.now(timezone.utc)
+                updated += 1
+
+            if updated > 0:
+                await session.commit()
+
+        return updated
+
+    # ------------------------------------------------------------------
     # Per-team runner — exactly ONE call_once()
     # ------------------------------------------------------------------
 
@@ -653,6 +724,19 @@ class RosterChangesAgent(BaseAgent):
                     )
 
             written = await _write_flags(flags)
+
+            # Sync player team assignments from transactions
+            try:
+                synced = await self._sync_player_teams(
+                    context.get("transactions", []), team_abbr
+                )
+                if synced:
+                    logger.info(
+                        "%s: %d player team(s) synced", team_abbr, synced
+                    )
+            except Exception as exc:
+                logger.warning("Team sync failed for %s: %s", team_abbr, exc)
+
             logger.info(
                 "%s: %d flags generated, %d written", team_abbr, len(flags), written
             )

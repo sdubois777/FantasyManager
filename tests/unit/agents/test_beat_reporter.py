@@ -20,6 +20,7 @@ from backend.agents.beat_reporter import (
     _resolve_player,
     _update_injury_recovery,
     _update_player_notes,
+    _update_player_team,
     _write_signal,
     run,
     setup_scheduler,
@@ -636,3 +637,112 @@ async def test_run_module_shim_is_async():
     import inspect
     from backend.agents import beat_reporter
     assert inspect.iscoroutinefunction(beat_reporter.run)
+
+
+# ---------------------------------------------------------------------------
+# _update_player_team
+# ---------------------------------------------------------------------------
+
+async def test_update_player_team_sets_new_team():
+    """Transaction signal should update the player's team_abbr."""
+    mock_player = MagicMock()
+    mock_player.name = "Davante Adams"
+    mock_player.team_abbr = "LV"
+
+    mock_session = AsyncMock()
+    mock_session.get = AsyncMock(return_value=mock_player)
+    mock_ctx = MagicMock()
+    mock_ctx.__aenter__ = AsyncMock(return_value=mock_session)
+    mock_ctx.__aexit__ = AsyncMock(return_value=False)
+
+    with patch("backend.agents.beat_reporter.AsyncSessionLocal", return_value=mock_ctx):
+        await _update_player_team("player-uuid", "NYJ")
+
+    assert mock_player.team_abbr == "NYJ"
+    assert mock_player.updated_at is not None
+    mock_session.commit.assert_called_once()
+
+
+async def test_update_player_team_skips_same_team():
+    """If player is already on the correct team, no update needed."""
+    mock_player = MagicMock()
+    mock_player.name = "Patrick Mahomes"
+    mock_player.team_abbr = "KC"
+
+    mock_session = AsyncMock()
+    mock_session.get = AsyncMock(return_value=mock_player)
+    mock_ctx = MagicMock()
+    mock_ctx.__aenter__ = AsyncMock(return_value=mock_session)
+    mock_ctx.__aexit__ = AsyncMock(return_value=False)
+
+    with patch("backend.agents.beat_reporter.AsyncSessionLocal", return_value=mock_ctx):
+        await _update_player_team("player-uuid", "KC")
+
+    mock_session.commit.assert_not_called()
+
+
+async def test_update_player_team_skips_missing_player():
+    """If player_id doesn't resolve, no crash, no commit."""
+    mock_session = AsyncMock()
+    mock_session.get = AsyncMock(return_value=None)
+    mock_ctx = MagicMock()
+    mock_ctx.__aenter__ = AsyncMock(return_value=mock_session)
+    mock_ctx.__aexit__ = AsyncMock(return_value=False)
+
+    with patch("backend.agents.beat_reporter.AsyncSessionLocal", return_value=mock_ctx):
+        await _update_player_team("bad-uuid", "NYJ")
+
+    mock_session.commit.assert_not_called()
+
+
+async def test_update_player_team_noop_on_empty_args():
+    """Empty player_id or new_team should be a no-op."""
+    await _update_player_team("", "NYJ")
+    await _update_player_team("uuid", "")
+    await _update_player_team(None, "NYJ")
+
+
+async def test_run_calls_update_player_team_on_transaction():
+    """When run() processes a transaction signal, it should call _update_player_team."""
+    agent = BeatReporterAgent(dry_run=False)
+    article = _make_article(title="Davante Adams signs with Jets")
+
+    signal_json = '{"player_name": "Davante Adams", "player_team": "NYJ", "signal_type": "transaction", "confidence": "high", "summary": "Adams signs with NYJ."}'
+
+    mock_player = _make_player("Davante Adams", "LV", "uuid-lv")
+    player_map = {"adams": [mock_player]}
+
+    with patch("backend.agents.beat_reporter._fetch_all_feeds", return_value=[article]), \
+         patch("backend.agents.beat_reporter._load_seen_articles", new_callable=AsyncMock, return_value=set()), \
+         patch("backend.agents.beat_reporter._load_player_map", new_callable=AsyncMock, return_value=player_map), \
+         patch.object(agent, "call_once", new_callable=AsyncMock, return_value=signal_json), \
+         patch("backend.agents.beat_reporter._write_signal", new_callable=AsyncMock, return_value=True), \
+         patch("backend.agents.beat_reporter._update_player_notes", new_callable=AsyncMock), \
+         patch("backend.agents.beat_reporter._update_injury_recovery", new_callable=AsyncMock), \
+         patch("backend.agents.beat_reporter._update_player_team", new_callable=AsyncMock) as mock_team:
+        await agent.run()
+
+    mock_team.assert_called_once_with("uuid-lv", "NYJ")
+
+
+async def test_run_skips_team_update_for_non_transaction():
+    """Non-transaction signals should NOT call _update_player_team."""
+    agent = BeatReporterAgent(dry_run=False)
+    article = _make_article(title="Mahomes limited")
+
+    signal_json = '{"player_name": "Patrick Mahomes", "player_team": "KC", "signal_type": "injury_flag", "confidence": "high", "summary": "Mahomes limited."}'
+
+    mock_player = _make_player("Patrick Mahomes", "KC", "uuid-kc")
+    player_map = {"mahomes": [mock_player]}
+
+    with patch("backend.agents.beat_reporter._fetch_all_feeds", return_value=[article]), \
+         patch("backend.agents.beat_reporter._load_seen_articles", new_callable=AsyncMock, return_value=set()), \
+         patch("backend.agents.beat_reporter._load_player_map", new_callable=AsyncMock, return_value=player_map), \
+         patch.object(agent, "call_once", new_callable=AsyncMock, return_value=signal_json), \
+         patch("backend.agents.beat_reporter._write_signal", new_callable=AsyncMock, return_value=True), \
+         patch("backend.agents.beat_reporter._update_player_notes", new_callable=AsyncMock), \
+         patch("backend.agents.beat_reporter._update_injury_recovery", new_callable=AsyncMock), \
+         patch("backend.agents.beat_reporter._update_player_team", new_callable=AsyncMock) as mock_team:
+        await agent.run()
+
+    mock_team.assert_not_called()
