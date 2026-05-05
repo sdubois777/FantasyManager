@@ -64,7 +64,7 @@ POSITION_BUDGET_SHARE: dict[str, float] = {
     "TE": 0.10,
 }
 
-# Maximum realistic bid per position — any ceiling above $80 is a calculation error
+# Maximum realistic bid per position — hard cap enforced (not just logged)
 # per LEAGUE_RULES.md Rule #1 and #3
 MAX_REALISTIC_BID: dict[str, int] = {
     "RB": 80,
@@ -74,6 +74,19 @@ MAX_REALISTIC_BID: dict[str, int] = {
     "K":   2,
     "DEF": 2,
 }
+
+# Minimum replacement-level PPR per game — sanity floor for dynamic computation.
+# If the dynamically computed replacement PPR/game falls below these values,
+# something is wrong with the data (too few profiles, skewed sample).
+REPLACEMENT_LEVEL_PPR_PER_GAME: dict[str, float] = {
+    "QB": 18.0,
+    "RB": 8.0,
+    "WR": 7.0,
+    "TE": 5.0,
+}
+
+# Injury recovery discount applied to PPR baseline for players with major injuries
+POST_MAJOR_INJURY_DISCOUNT = 0.75  # 25% discount
 
 # Replacement rank cutoff — lowest draftable starter at each position
 REPLACEMENT_RANK: dict[str, int] = {
@@ -269,11 +282,17 @@ async def run_valuation_pass(
         pos_groups: dict[str, list[tuple[Player, float]]] = {
             p: [] for p in DRAFTABLE_POSITIONS
         }
+        valued_player_ids: set = set()
+
         for player in players:
             pos = player.position
             if pos not in DRAFTABLE_POSITIONS:
                 continue
             ppr = _extract_ppr(player.profile)
+            # FIX 4: Apply injury discount to PPR baseline for players with
+            # post-ACL or major injury recovery flags
+            if ppr > 0:
+                ppr = _apply_injury_discount(ppr, player.injury_profile, player.profile)
             if ppr > 0:
                 pos_groups[pos].append((player, ppr))
 
@@ -289,6 +308,18 @@ async def run_valuation_pass(
                 repl_ppr = group[repl_rank - 1][1]
             else:
                 repl_ppr = group[-1][1] if group else 0.0
+
+            # FIX 2: Verify replacement level against per-game floor.
+            # If dynamic value is unreasonably low, use floor × 17 games.
+            ppg_floor = REPLACEMENT_LEVEL_PPR_PER_GAME.get(pos, 5.0)
+            season_floor = ppg_floor * 17
+            if repl_ppr < season_floor:
+                logger.warning(
+                    "REPLACEMENT LEVEL LOW: %s dynamic=%.1f < floor=%.1f (%.1f ppg × 17). "
+                    "Using floor.",
+                    pos, repl_ppr, season_floor, ppg_floor,
+                )
+                repl_ppr = season_floor
 
             total_par = sum(max(0.0, ppr - repl_ppr) for _, ppr in group)
             pos_budget = total_budget * POSITION_BUDGET_SHARE[pos]
@@ -321,16 +352,17 @@ async def run_valuation_pass(
 
                 ceiling  = compute_bid_ceiling(sv, player.market_value, tier, pos, rm)
 
-                # Sanity check: any bid ceiling above $80 is a calculation error
-                # per docs/rules/LEAGUE_RULES.md Rule #1
+                # FIX 5: Hard cap enforcement — cap ceiling to MAX_REALISTIC_BID
                 max_bid = MAX_REALISTIC_BID.get(pos, 80)
-                if ceiling > Decimal(str(max_bid)):
-                    logger.warning(
-                        "BID CEILING SANITY FAIL: %s (%s T%d) ceiling=$%s exceeds max $%d — "
-                        "check calibration. sv=$%s, total_par=%.1f, pool=$%.0f",
+                max_bid_dec = Decimal(str(max_bid))
+                if ceiling > max_bid_dec:
+                    logger.info(
+                        "BID CEILING CAPPED: %s (%s T%d) ceiling=$%s → $%d max. "
+                        "sv=$%s, total_par=%.1f, pool=$%.0f",
                         player.name, pos, tier, ceiling, max_bid,
                         sv, ctx["total_par"], ctx["position_budget"],
                     )
+                    ceiling = max_bid_dec
 
                 let_go   = compute_let_go_threshold(ceiling)
                 gap, sig = compute_value_gap(sv, player.market_value)
@@ -351,26 +383,41 @@ async def run_valuation_pass(
                 player.data_confidence            = _confidence(player)
 
                 session.add(player)
+                valued_player_ids.add(player.id)
                 processed += 1
                 updated   += 1
 
-        # Players with no profile (no ppr_points) — skip, count
+        # Clear stale valuations for players that were skipped (no profile or
+        # below usage threshold). This prevents ghost values from previous runs.
+        cleared = 0
         for player in players:
-            if player.position in DRAFTABLE_POSITIONS:
-                ppr = _extract_ppr(player.profile)
-                if ppr <= 0:
-                    skipped += 1
+            if player.position in DRAFTABLE_POSITIONS and player.id not in valued_player_ids:
+                if player.baseline_value is not None:
+                    player.tier                       = None
+                    player.baseline_value             = None
+                    player.risk_adjusted_value        = None
+                    player.recommended_bid_ceiling    = None
+                    player.let_go_threshold           = None
+                    player.elite_anchor_weight        = None
+                    player.positional_scarcity_modifier = None
+                    player.value_gap                  = None
+                    player.value_gap_signal           = None
+                    player.data_confidence            = "low"
+                    session.add(player)
+                    cleared += 1
+                skipped += 1
 
         await session.commit()
 
     logger.info(
-        "Valuation pass (%d): %d updated, %d skipped, analysis_year=%d",
-        processed, updated, skipped, analysis_year,
+        "Valuation pass (%d): %d updated, %d skipped, %d cleared, analysis_year=%d",
+        processed, updated, skipped, cleared, analysis_year,
     )
     return {
         "processed":     processed,
         "updated":       updated,
         "skipped":       skipped,
+        "cleared":       cleared,
         "analysis_year": analysis_year,
     }
 
@@ -396,6 +443,41 @@ def _get_risk_modifier(injury_profile: Optional[PlayerInjuryProfile]) -> Optiona
     if not injury_profile or injury_profile.risk_adjusted_value_modifier is None:
         return None
     return Decimal(str(injury_profile.risk_adjusted_value_modifier))
+
+
+def _apply_injury_discount(
+    ppr: float,
+    injury_profile: Optional[PlayerInjuryProfile],
+    profile: Optional[PlayerProfile],
+) -> float:
+    """
+    FIX 4: Apply injury recovery discount to PPR baseline.
+
+    Players with post_acl_flag or other major injury indicators get their
+    baseline discounted by POST_MAJOR_INJURY_DISCOUNT (25% reduction).
+    This ensures the discount affects the baseline dollar value, not just
+    the risk modifier overlay.
+
+    Also applies discount if the profile's clean_season_baseline has the
+    'declining' flag (set by career decline detection in player_profiles).
+    """
+    discount = 1.0
+
+    # Check injury profile for major injury flags
+    if injury_profile:
+        if injury_profile.post_acl_flag:
+            discount *= POST_MAJOR_INJURY_DISCOUNT
+        elif injury_profile.workload_cliff_flag:
+            discount *= 0.85  # 15% discount for workload cliff
+
+    # Check profile for career decline flag
+    if profile and profile.clean_season_baseline:
+        if profile.clean_season_baseline.get("declining"):
+            # Only apply decline discount if injury discount hasn't already been applied
+            if discount >= 1.0:
+                discount *= 0.85  # 15% decline discount
+
+    return ppr * discount
 
 
 def _confidence(player: Player) -> str:

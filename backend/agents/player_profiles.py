@@ -952,6 +952,9 @@ def _compute_season_averages(
     return ts3yr, ts_last, ay3yr
 
 
+_MINIMUM_TOUCHES_FOR_PROJECTION = 50  # career receptions + carries across all seasons
+
+
 def _compute_clean_baseline(seasons: list[dict]) -> dict:
     """
     Compute clean_season_baseline as an average across clean seasons.
@@ -959,9 +962,25 @@ def _compute_clean_baseline(seasons: list[dict]) -> dict:
     Clean season = games >= 10 AND NOT backup_qb_season.
     Falls back to all seasons with games > 0 if no clean seasons exist.
 
+    Minimum usage threshold: player must have at least 50 career touches
+    (receptions + carries) to receive a projection. This prevents low-usage
+    players (e.g. Jermar Jefferson with 21 career attempts) from getting
+    inflated baselines.
+
+    Career decline detection: if the most recent season's PPR is below 65%
+    of the career peak, weight recent season at 60% and career average at 40%
+    instead of flat averaging. This prevents aging/injured players (e.g. Chubb)
+    from projecting at their peak.
+
     PPR formula (LEAGUE_RULES.md Rule #7):
         ppr_points = receptions × 1 + (rec_yards + rush_yards) × 0.1 + (rec_tds + rush_tds) × 6
     """
+    # --- Minimum usage threshold ---
+    total_receptions = sum(s.get("receptions", 0) for s in seasons)
+    total_carries = sum(s.get("carries", 0) for s in seasons)
+    if total_receptions + total_carries < _MINIMUM_TOUCHES_FOR_PROJECTION:
+        return {}
+
     clean = [
         s for s in seasons
         if s.get("games", 0) >= 10 and not s.get("backup_qb_season", False)
@@ -971,23 +990,59 @@ def _compute_clean_baseline(seasons: list[dict]) -> dict:
     if not clean:
         return {}
 
-    n = len(clean)
-    rec       = sum(s.get("receptions", 0) for s in clean) / n
-    rec_yards = sum(s.get("rec_yards",  0) for s in clean) / n
-    rec_tds   = sum(s.get("rec_tds",    0) for s in clean) / n
-    rush_yards = sum(s.get("rush_yards", 0) for s in clean) / n
-    rush_tds   = sum(s.get("rush_tds",  0) for s in clean) / n
+    def _season_ppr(s: dict) -> float:
+        rec = s.get("receptions", 0)
+        rec_yds = s.get("rec_yards", 0)
+        rec_td = s.get("rec_tds", 0)
+        rush_yds = s.get("rush_yards", 0)
+        rush_td = s.get("rush_tds", 0)
+        return rec * 1.0 + (rec_yds + rush_yds) * 0.1 + (rec_td + rush_td) * 6.0
+
+    # --- Career decline detection ---
+    # Sort by year (most recent last) to identify recent vs peak
+    sorted_clean = sorted(clean, key=lambda s: s.get("year", 0))
+    season_pprs = [_season_ppr(s) for s in sorted_clean]
+    peak_ppr = max(season_pprs) if season_pprs else 0
+    recent_ppr = season_pprs[-1] if season_pprs else 0
+
+    is_declining = peak_ppr > 0 and recent_ppr < peak_ppr * 0.65
+
+    if is_declining and len(sorted_clean) >= 2:
+        # Weight recent season 60%, career average 40%
+        recent = sorted_clean[-1]
+        career_n = len(sorted_clean)
+        career_rec = sum(s.get("receptions", 0) for s in sorted_clean) / career_n
+        career_rec_yards = sum(s.get("rec_yards", 0) for s in sorted_clean) / career_n
+        career_rec_tds = sum(s.get("rec_tds", 0) for s in sorted_clean) / career_n
+        career_rush_yards = sum(s.get("rush_yards", 0) for s in sorted_clean) / career_n
+        career_rush_tds = sum(s.get("rush_tds", 0) for s in sorted_clean) / career_n
+
+        rec = recent.get("receptions", 0) * 0.6 + career_rec * 0.4
+        rec_yards = recent.get("rec_yards", 0) * 0.6 + career_rec_yards * 0.4
+        rec_tds = recent.get("rec_tds", 0) * 0.6 + career_rec_tds * 0.4
+        rush_yards = recent.get("rush_yards", 0) * 0.6 + career_rush_yards * 0.4
+        rush_tds = recent.get("rush_tds", 0) * 0.6 + career_rush_tds * 0.4
+    else:
+        n = len(clean)
+        rec = sum(s.get("receptions", 0) for s in clean) / n
+        rec_yards = sum(s.get("rec_yards", 0) for s in clean) / n
+        rec_tds = sum(s.get("rec_tds", 0) for s in clean) / n
+        rush_yards = sum(s.get("rush_yards", 0) for s in clean) / n
+        rush_tds = sum(s.get("rush_tds", 0) for s in clean) / n
 
     yards = rec_yards + rush_yards
     tds   = rec_tds + rush_tds
     ppr   = rec * 1.0 + yards * 0.1 + tds * 6.0
 
-    return {
+    result = {
         "receptions":  round(rec, 1),
         "yards":       round(yards, 1),
         "touchdowns":  round(tds, 1),
         "ppr_points":  round(ppr, 1),
     }
+    if is_declining:
+        result["declining"] = True
+    return result
 
 
 # ---------------------------------------------------------------------------

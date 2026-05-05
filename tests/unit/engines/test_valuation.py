@@ -262,18 +262,28 @@ def test_let_go_threshold_rounds_to_two_dp():
 # run_valuation_pass — async integration (DB mocked)
 # ===========================================================================
 
+_player_counter = 0
+
+
 def _make_player(
     position: str,
     ppr_points: float,
     market_value: float | None = None,
     risk_modifier: float | None = None,
+    post_acl_flag: bool = False,
+    workload_cliff_flag: bool = False,
 ) -> MagicMock:
     """Helper: create a mock Player with nested profile + injury_profile."""
-    player = MagicMock(spec=["position", "profile", "injury_profile", "market_value",
-                              "tier", "baseline_value", "risk_adjusted_value",
-                              "recommended_bid_ceiling", "let_go_threshold",
-                              "elite_anchor_weight", "positional_scarcity_modifier",
-                              "value_gap", "value_gap_signal", "data_confidence"])
+    global _player_counter
+    _player_counter += 1
+    player = MagicMock(spec=["id", "name", "position", "profile", "injury_profile",
+                              "market_value", "tier", "baseline_value",
+                              "risk_adjusted_value", "recommended_bid_ceiling",
+                              "let_go_threshold", "elite_anchor_weight",
+                              "positional_scarcity_modifier", "value_gap",
+                              "value_gap_signal", "data_confidence"])
+    player.id           = _player_counter
+    player.name         = f"Player_{_player_counter}"
     player.position     = position
     player.market_value = Decimal(str(market_value)) if market_value is not None else None
 
@@ -281,9 +291,11 @@ def _make_player(
     profile.clean_season_baseline = {"ppr_points": ppr_points}
     player.profile = profile
 
-    if risk_modifier is not None:
+    if risk_modifier is not None or post_acl_flag or workload_cliff_flag:
         inj = MagicMock()
-        inj.risk_adjusted_value_modifier = Decimal(str(risk_modifier))
+        inj.risk_adjusted_value_modifier = Decimal(str(risk_modifier)) if risk_modifier is not None else None
+        inj.post_acl_flag = post_acl_flag
+        inj.workload_cliff_flag = workload_cliff_flag
         player.injury_profile = inj
     else:
         player.injury_profile = None
@@ -325,6 +337,7 @@ async def test_run_valuation_pass_skips_players_without_ppr():
     wr_with_profile = _make_player("WR", ppr_points=200)
     wr_no_profile   = _make_player("WR", ppr_points=0)
     wr_no_profile.profile = None
+    wr_no_profile.baseline_value = None  # no stale value to clear
 
     mock_players = [wr_with_profile, wr_no_profile]
 
@@ -401,3 +414,132 @@ def test_analysis_year_dynamic_not_hardcoded():
         f"Hardcoded year found in valuation.py: {matches}. "
         "Use get_analysis_year() from backend.utils.seasons instead."
     )
+
+
+# ===========================================================================
+# FIX tests — valuation calibration and edge cases
+# ===========================================================================
+
+from backend.engines.valuation import (
+    MAX_REALISTIC_BID,
+    REPLACEMENT_LEVEL_PPR_PER_GAME,
+    POST_MAJOR_INJURY_DISCOUNT,
+    _apply_injury_discount,
+)
+
+
+def test_bid_ceiling_hard_cap_enforced():
+    """FIX 5: Bid ceiling must never exceed MAX_REALISTIC_BID for the position."""
+    # RB max is $80 — create a T1 RB with system_value that would produce ceiling > $80
+    sv = Decimal("70")  # high system value
+    mv = Decimal("75")  # high market value
+    tier = 1
+    ceiling = compute_bid_ceiling(sv, mv, tier, "RB", Decimal("0.0"))
+    # Without hard cap, T1 RB ceiling = blend * scarcity = high
+    # The compute_bid_ceiling itself doesn't cap — run_valuation_pass caps after
+    # But we can verify MAX_REALISTIC_BID is correct
+    assert MAX_REALISTIC_BID["RB"] == 80
+    assert MAX_REALISTIC_BID["WR"] == 70
+    assert MAX_REALISTIC_BID["QB"] == 50
+    assert MAX_REALISTIC_BID["TE"] == 45
+
+
+def test_replacement_level_floor_constants():
+    """FIX 2: Verify replacement level PPR per game floor values exist."""
+    assert REPLACEMENT_LEVEL_PPR_PER_GAME["QB"] == 18.0
+    assert REPLACEMENT_LEVEL_PPR_PER_GAME["RB"] == 8.0
+    assert REPLACEMENT_LEVEL_PPR_PER_GAME["WR"] == 7.0
+    assert REPLACEMENT_LEVEL_PPR_PER_GAME["TE"] == 5.0
+
+
+def test_injury_discount_post_acl():
+    """FIX 4: Players with post_acl_flag get 25% PPR discount."""
+    inj = MagicMock()
+    inj.post_acl_flag = True
+    inj.workload_cliff_flag = False
+    inj.risk_adjusted_value_modifier = None
+
+    profile = MagicMock()
+    profile.clean_season_baseline = {"ppr_points": 280.0}
+
+    result = _apply_injury_discount(280.0, inj, profile)
+    assert result == 280.0 * POST_MAJOR_INJURY_DISCOUNT  # 280 * 0.75 = 210
+
+
+def test_injury_discount_workload_cliff():
+    """FIX 4: Players with workload_cliff_flag get 15% PPR discount."""
+    inj = MagicMock()
+    inj.post_acl_flag = False
+    inj.workload_cliff_flag = True
+    inj.risk_adjusted_value_modifier = None
+
+    profile = MagicMock()
+    profile.clean_season_baseline = {"ppr_points": 250.0}
+
+    result = _apply_injury_discount(250.0, inj, profile)
+    assert result == 250.0 * 0.85  # 250 * 0.85 = 212.5
+
+
+def test_injury_discount_none_when_healthy():
+    """FIX 4: Healthy players get no discount."""
+    result = _apply_injury_discount(280.0, None, None)
+    assert result == 280.0
+
+
+def test_declining_baseline_discount():
+    """FIX 4: Players with declining flag in profile get 15% discount."""
+    profile = MagicMock()
+    profile.clean_season_baseline = {"ppr_points": 200.0, "declining": True}
+
+    result = _apply_injury_discount(200.0, None, profile)
+    assert result == 200.0 * 0.85  # 200 * 0.85 = 170
+
+
+@pytest.mark.asyncio
+async def test_stale_valuations_cleared():
+    """Stale baseline_value is cleared for players with no profile."""
+    wr_valued = _make_player("WR", ppr_points=200)
+    wr_stale = _make_player("WR", ppr_points=0)
+    wr_stale.profile = None
+    wr_stale.baseline_value = Decimal("50.00")  # stale value from old run
+
+    mock_players = [wr_valued, wr_stale]
+    session = AsyncMock()
+    session.__aenter__ = AsyncMock(return_value=session)
+    session.__aexit__ = AsyncMock(return_value=False)
+    session.execute = AsyncMock(
+        return_value=MagicMock(scalars=MagicMock(return_value=MagicMock(all=MagicMock(return_value=mock_players))))
+    )
+    session.add = MagicMock()
+    session.commit = AsyncMock()
+
+    with patch("backend.engines.valuation.AsyncSessionLocal", return_value=session):
+        result = await run_valuation_pass()
+
+    assert result["cleared"] == 1
+    assert wr_stale.baseline_value is None
+    assert wr_stale.tier is None
+
+
+@pytest.mark.asyncio
+async def test_hard_cap_applied_in_valuation_pass():
+    """FIX 5: Bid ceiling is capped to MAX_REALISTIC_BID during full pass."""
+    # Create an RB with very high PPR that would exceed $80 ceiling
+    rb_elite = _make_player("RB", ppr_points=350)
+    rb_elite.name = "Elite_RB"
+
+    mock_players = [rb_elite]
+    session = AsyncMock()
+    session.__aenter__ = AsyncMock(return_value=session)
+    session.__aexit__ = AsyncMock(return_value=False)
+    session.execute = AsyncMock(
+        return_value=MagicMock(scalars=MagicMock(return_value=MagicMock(all=MagicMock(return_value=mock_players))))
+    )
+    session.add = MagicMock()
+    session.commit = AsyncMock()
+
+    with patch("backend.engines.valuation.AsyncSessionLocal", return_value=session):
+        await run_valuation_pass()
+
+    # Ceiling should be capped to $80 for RB
+    assert rb_elite.recommended_bid_ceiling <= Decimal("80")

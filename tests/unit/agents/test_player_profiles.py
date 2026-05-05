@@ -1225,7 +1225,8 @@ def test_veteran_not_routed_to_rookie_branch():
     """Veteran uses clean_season_baseline from NFL history, not comp data."""
     seasons = [
         {"year": 2024, "games": 16, "receptions": 80, "rec_yards": 1000,
-         "rec_tds": 7, "rush_yards": 0, "rush_tds": 0, "backup_qb_season": False},
+         "rec_tds": 7, "rush_yards": 0, "rush_tds": 0, "carries": 0,
+         "backup_qb_season": False},
     ]
     baseline = _compute_clean_baseline(seasons)
     assert baseline["ppr_points"] > 0
@@ -1333,3 +1334,90 @@ def test_average_profile_low_capital_not_breakout_candidate():
     player = _make_rookie(college_grade="average", capital_signal="low")
     result = _build_rookie_profile(player, {})
     assert result["breakout_flag"] is False
+
+
+# ===========================================================================
+# FIX 1: Minimum usage threshold
+# ===========================================================================
+
+from backend.agents.player_profiles import _MINIMUM_TOUCHES_FOR_PROJECTION
+
+
+def test_minimum_touches_threshold_filters_low_usage():
+    """FIX 1: Player with < 50 career touches returns empty baseline."""
+    # Jermar Jefferson scenario: 21 career carries, 0 receptions
+    seasons = [
+        {"year": 2022, "games": 12, "receptions": 0, "rec_yards": 0,
+         "rec_tds": 0, "rush_yards": 80, "rush_tds": 0, "carries": 10,
+         "backup_qb_season": False},
+        {"year": 2023, "games": 14, "receptions": 0, "rec_yards": 0,
+         "rec_tds": 0, "rush_yards": 40, "rush_tds": 0, "carries": 11,
+         "backup_qb_season": False},
+    ]
+    baseline = _compute_clean_baseline(seasons)
+    assert baseline == {}, (
+        f"Player with {sum(s.get('carries', 0) + s.get('receptions', 0) for s in seasons)} "
+        f"career touches should get empty baseline, got: {baseline}"
+    )
+
+
+def test_minimum_touches_threshold_allows_sufficient_usage():
+    """FIX 1: Player with >= 50 career touches gets a valid baseline."""
+    seasons = [
+        {"year": 2024, "games": 16, "receptions": 30, "rec_yards": 300,
+         "rec_tds": 2, "rush_yards": 400, "rush_tds": 3, "carries": 80,
+         "backup_qb_season": False},
+    ]
+    baseline = _compute_clean_baseline(seasons)
+    assert baseline != {}
+    assert baseline["ppr_points"] > 0
+
+
+def test_minimum_touches_constant_is_50():
+    """FIX 1: Threshold constant is 50."""
+    assert _MINIMUM_TOUCHES_FOR_PROJECTION == 50
+
+
+# ===========================================================================
+# FIX 3: Career decline detection
+# ===========================================================================
+
+
+def test_career_decline_weights_recent_season():
+    """FIX 3: When recent PPR < 65% of peak, weight recent 60% / career 40%."""
+    # Peak season: 300 PPR. Recent season: 150 PPR (50% of peak → declining)
+    seasons = [
+        {"year": 2022, "games": 16, "receptions": 80, "rec_yards": 1200,
+         "rec_tds": 10, "rush_yards": 0, "rush_tds": 0, "carries": 0,
+         "backup_qb_season": False},  # PPR = 80 + 120 + 60 = 260
+        {"year": 2023, "games": 16, "receptions": 100, "rec_yards": 1400,
+         "rec_tds": 12, "rush_yards": 0, "rush_tds": 0, "carries": 0,
+         "backup_qb_season": False},  # PPR = 100 + 140 + 72 = 312 (peak)
+        {"year": 2024, "games": 16, "receptions": 30, "rec_yards": 400,
+         "rec_tds": 2, "rush_yards": 0, "rush_tds": 0, "carries": 0,
+         "backup_qb_season": False},  # PPR = 30 + 40 + 12 = 82 (declining)
+    ]
+    baseline = _compute_clean_baseline(seasons)
+    assert baseline.get("declining") is True
+
+    # Flat average would be (260 + 312 + 82) / 3 = 218
+    flat_avg = (260 + 312 + 82) / 3
+    # Decline-weighted should be closer to recent (82) than flat average
+    assert baseline["ppr_points"] < flat_avg, (
+        f"Decline-weighted PPR ({baseline['ppr_points']}) should be below "
+        f"flat average ({flat_avg})"
+    )
+
+
+def test_no_decline_flag_when_stable():
+    """FIX 3: Stable player does NOT get declining flag."""
+    seasons = [
+        {"year": 2023, "games": 16, "receptions": 80, "rec_yards": 1000,
+         "rec_tds": 7, "rush_yards": 0, "rush_tds": 0, "carries": 0,
+         "backup_qb_season": False},
+        {"year": 2024, "games": 16, "receptions": 85, "rec_yards": 1050,
+         "rec_tds": 8, "rush_yards": 0, "rush_tds": 0, "carries": 0,
+         "backup_qb_season": False},
+    ]
+    baseline = _compute_clean_baseline(seasons)
+    assert "declining" not in baseline
