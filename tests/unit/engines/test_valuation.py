@@ -460,6 +460,7 @@ def test_injury_discount_post_acl():
     inj.risk_adjusted_value_modifier = None
 
     profile = MagicMock()
+    profile.career_trajectory = "established"
     profile.clean_season_baseline = {"ppr_points": 280.0}
 
     result = _apply_injury_discount(280.0, inj, profile)
@@ -474,6 +475,7 @@ def test_injury_discount_workload_cliff():
     inj.risk_adjusted_value_modifier = None
 
     profile = MagicMock()
+    profile.career_trajectory = "established"
     profile.clean_season_baseline = {"ppr_points": 250.0}
 
     result = _apply_injury_discount(250.0, inj, profile)
@@ -487,12 +489,38 @@ def test_injury_discount_none_when_healthy():
 
 
 def test_declining_baseline_discount():
-    """FIX 4: Players with declining flag in profile get 15% discount."""
+    """FIX 4: Players with declining flag in baseline get 15% discount."""
     profile = MagicMock()
+    profile.career_trajectory = "established"
     profile.clean_season_baseline = {"ppr_points": 200.0, "declining": True}
 
     result = _apply_injury_discount(200.0, None, profile)
     assert result == 200.0 * 0.85  # 200 * 0.85 = 170
+
+
+def test_career_trajectory_declining_discount():
+    """Players with career_trajectory='declining' get 15% discount even without baseline flag."""
+    profile = MagicMock()
+    profile.career_trajectory = "declining"
+    profile.clean_season_baseline = {"ppr_points": 280.0}  # no "declining" key
+
+    result = _apply_injury_discount(280.0, None, profile)
+    assert result == 280.0 * 0.85  # 238
+
+
+def test_post_acl_plus_declining_stacks():
+    """POST_ACL (25%) + declining (15%) stack multiplicatively, floored at 0.60."""
+    inj = MagicMock()
+    inj.post_acl_flag = True
+    inj.workload_cliff_flag = False
+
+    profile = MagicMock()
+    profile.career_trajectory = "declining"
+    profile.clean_season_baseline = {"ppr_points": 280.0}
+
+    result = _apply_injury_discount(280.0, inj, profile)
+    # 0.75 * 0.85 = 0.6375, floored at 0.60
+    assert result == 280.0 * 0.6375
 
 
 @pytest.mark.asyncio

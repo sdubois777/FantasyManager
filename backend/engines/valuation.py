@@ -451,15 +451,13 @@ def _apply_injury_discount(
     profile: Optional[PlayerProfile],
 ) -> float:
     """
-    FIX 4: Apply injury recovery discount to PPR baseline.
+    Apply injury and decline discounts to PPR baseline.
 
-    Players with post_acl_flag or other major injury indicators get their
-    baseline discounted by POST_MAJOR_INJURY_DISCOUNT (25% reduction).
-    This ensures the discount affects the baseline dollar value, not just
-    the risk modifier overlay.
-
-    Also applies discount if the profile's clean_season_baseline has the
-    'declining' flag (set by career decline detection in player_profiles).
+    Discount sources (applied multiplicatively, capped at 0.60):
+    - post_acl_flag:      25% discount (POST_MAJOR_INJURY_DISCOUNT)
+    - workload_cliff_flag: 15% discount
+    - career_trajectory = "declining": 15% discount (AI model assessment)
+    - clean_season_baseline "declining" flag: 15% discount (Python-computed)
     """
     discount = 1.0
 
@@ -470,12 +468,18 @@ def _apply_injury_discount(
         elif injury_profile.workload_cliff_flag:
             discount *= 0.85  # 15% discount for workload cliff
 
-    # Check profile for career decline flag
-    if profile and profile.clean_season_baseline:
-        if profile.clean_season_baseline.get("declining"):
-            # Only apply decline discount if injury discount hasn't already been applied
-            if discount >= 1.0:
-                discount *= 0.85  # 15% decline discount
+    # Check profile for career decline — two sources:
+    # 1. AI model's career_trajectory assessment (catches cases like Chubb
+    #    where only peak seasons are "clean" but model sees overall decline)
+    # 2. Python-computed declining flag in clean_season_baseline
+    if profile:
+        if profile.career_trajectory == "declining":
+            discount *= 0.85  # 15% decline discount
+        elif profile.clean_season_baseline and profile.clean_season_baseline.get("declining"):
+            discount *= 0.85  # 15% decline discount
+
+    # Floor: never discount more than 40%
+    discount = max(discount, 0.60)
 
     return ppr * discount
 

@@ -230,9 +230,10 @@ def compute_pattern_flags(
         for seasons_list in soft_tissue_by_area.values()
     )
 
-    # POST_ACL: ACL injury in the most recent analysis season or the one before
+    # POST_ACL: ACL injury within ~2 seasons (covers 18-month recovery window).
+    # In May 2026 with current_season=2025, this catches 2023+ ACLs.
     current = get_current_season()
-    post_acl = any(s >= current - 1 for s in acl_seasons)
+    post_acl = any(s >= current - 2 for s in acl_seasons)
 
     pos_upper = (position or "").upper()
     is_rb = pos_upper in {"RB", "HB", "FB"}
@@ -334,8 +335,15 @@ class InjuryRiskAgent(BaseAgent):
 
         mask = df[name_col].str.contains(last, case=False, na=False)
         if team_col:
-            mask = mask & (df[team_col].str.upper() == team.upper())
-        player_df = df[mask]
+            team_mask = mask & (df[team_col].str.upper() == team.upper())
+            player_df = df[team_mask]
+            # Fallback: if no injuries found under current team, try any team.
+            # This handles traded players (e.g. Chubb CLE→HOU) whose injuries
+            # were recorded under their previous team.
+            if player_df.empty:
+                player_df = df[mask]
+        else:
+            player_df = df[mask]
 
         if player_df.empty:
             return {"season": season, "injuries": [], "games_missed": 0}
