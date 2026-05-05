@@ -33,9 +33,10 @@ export default function DraftBoard() {
   const openPlayerDetail = useUIStore((s) => s.openPlayerDetail)
   const selectedPlayerId = useUIStore((s) => s.selectedPlayerId)
   const detailPanelOpen = useUIStore((s) => s.detailPanelOpen)
-  const isWatchlisted = usePreferencesStore((s) => s.isWatchlisted)
+  const watchlist = usePreferencesStore((s) => s.watchlist)
   const addToWatchlist = usePreferencesStore((s) => s.addToWatchlist)
   const removeFromWatchlist = usePreferencesStore((s) => s.removeFromWatchlist)
+  const isWatchlisted = (id) => watchlist.some((w) => w.player_id === id)
   const setGlobalStrategy = usePreferencesStore((s) => s.setStrategy)
 
   const { data, isLoading } = useQuery({

@@ -11,7 +11,7 @@ import ValueComparisonBar from './shared/ValueComparisonBar'
 
 export default function PlayerDetailPanel({ playerId }) {
   const close = useUIStore((s) => s.closePlayerDetail)
-  const isWatchlisted = usePreferencesStore((s) => s.isWatchlisted(playerId))
+  const isWatchlisted = usePreferencesStore((s) => s.watchlist.some((w) => w.player_id === playerId))
   const addToWatchlist = usePreferencesStore((s) => s.addToWatchlist)
   const removeFromWatchlist = usePreferencesStore((s) => s.removeFromWatchlist)
   const prefillForPlayer = useAssistantStore((s) => s.prefillForPlayer)

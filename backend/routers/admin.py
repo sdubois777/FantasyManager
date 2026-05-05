@@ -112,25 +112,51 @@ async def get_pipeline_status():
 
 @router.post("/pipeline/run", response_model=PipelineRunResponse)
 async def trigger_pipeline_run(body: PipelineRunRequest):
-    """Trigger a pipeline agent run (async, returns immediately)."""
+    """Trigger a pipeline agent run in the background."""
     if body.agent_name not in KNOWN_AGENTS:
         raise HTTPException(
             status_code=400,
             detail=f"Unknown agent. Must be one of: {KNOWN_AGENTS}",
         )
 
-    # Import and run the agent asynchronously
-    # For now, return accepted status — actual async execution would use
-    # a background task or task queue in production
+    import asyncio
+
+    async def _run_agent():
+        try:
+            if body.agent_name == "team_systems":
+                from backend.agents.team_systems import run_all_teams
+                await run_all_teams()
+            elif body.agent_name == "roster_changes":
+                from backend.agents.roster_changes import run_all_teams
+                await run_all_teams(concurrency=2)
+            elif body.agent_name == "player_profiles":
+                from backend.agents.player_profiles import run_all_teams
+                await run_all_teams()
+            elif body.agent_name == "injury_risk":
+                from backend.agents.injury_risk import run_all_teams
+                await run_all_teams()
+            elif body.agent_name == "schedule":
+                from backend.agents.schedule import run_all_teams
+                await run_all_teams()
+            elif body.agent_name == "beat_reporter":
+                from backend.agents.beat_reporter import run
+                await run()
+            logger.info("Pipeline run completed: agent=%s", body.agent_name)
+        except Exception as exc:
+            logger.error("Pipeline run failed: agent=%s error=%s", body.agent_name, exc)
+
+    # Fire and forget — run in background
+    asyncio.create_task(_run_agent())
+
     logger.info(
-        "Pipeline run requested: agent=%s team=%s",
+        "Pipeline run started: agent=%s team=%s",
         body.agent_name,
         body.team_abbr or "all",
     )
 
     return PipelineRunResponse(
-        status="accepted",
-        message=f"Pipeline run queued for {body.agent_name}"
+        status="started",
+        message=f"Pipeline run started for {body.agent_name}"
         + (f" (team: {body.team_abbr})" if body.team_abbr else " (all teams)"),
     )
 

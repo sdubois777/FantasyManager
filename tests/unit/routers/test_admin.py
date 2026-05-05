@@ -59,7 +59,7 @@ async def test_trigger_pipeline_run():
 
     assert resp.status_code == 200
     data = resp.json()
-    assert data["status"] == "accepted"
+    assert data["status"] == "started"
     assert "team_systems" in data["message"]
 
 
