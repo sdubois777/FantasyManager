@@ -41,6 +41,17 @@ def _mock_player(
     player.value_gap_signal = value_gap_signal
     player.situation_score = "strong"
     player.let_go_threshold = Decimal("78.20")
+    player.ceiling_value = Decimal("85.00")
+    player.floor_value = Decimal("55.00")
+    player.risk_adjusted_value = Decimal("63.90")
+    player.positional_scarcity_modifier = None
+    player.breakout_flag = False
+    player.is_rookie = False
+    player.draft_capital_signal = None
+    player.historical_comp_names = None
+    player.comp_yr1_avg_ppg = None
+    player.landing_spot_modifier = None
+    player.projection_confidence = None
     player.notes = "Elite three-down back"
 
     # Profile
@@ -48,6 +59,17 @@ def _mock_player(
     profile.role_classification = "bellcow"
     profile.career_trajectory = "peak"
     profile.clean_season_baseline = {"ppr_points": 310.5, "receptions": 85, "yards": 1800, "tds": 12}
+    profile.target_share_last_season = None
+    profile.snap_percentage = None
+    profile.efficiency_signal = None
+    profile.positional_scarcity_tier = None
+    profile.breakout_flag = False
+    profile.breakout_reasoning = None
+    profile.is_rookie = False
+    profile.year1_role = None
+    profile.breakout_window = None
+    profile.ceiling_value_ppr = None
+    profile.floor_value_ppr = None
     player.profile = profile
 
     # Injury
@@ -55,7 +77,12 @@ def _mock_player(
     inj.overall_risk_level = "moderate"
     inj.post_acl_flag = False
     inj.workload_cliff_flag = True
+    inj.high_mileage_flag = False
+    inj.career_carry_count = None
+    inj.pattern_flags = []
+    inj.recovery_assessment = None
     inj.risk_adjusted_value_modifier = Decimal("-0.10")
+    inj.risk_notes = None
     player.injury_profile = inj
 
     # Schedule
@@ -63,7 +90,10 @@ def _mock_player(
     sched.early_window_grade = "favorable"
     sched.full_season_grade = "neutral"
     sched.playoff_window_grade = "favorable"
+    sched.bye_week = 9
     sched.bye_in_playoff_window = False
+    sched.schedule_score = None
+    sched.playoff_matchups = None
     player.schedule = sched
 
     # Dependencies
@@ -78,13 +108,13 @@ def _mock_player(
 
 def test_format_player_context_includes_name_and_position():
     player = _mock_player()
-    result = _format_player_context(player)
+    result = _format_player_context(player, {})
     assert "PLAYER: Saquon Barkley (RB, PHI)" in result
 
 
 def test_format_player_context_includes_valuation():
     player = _mock_player()
-    result = _format_player_context(player)
+    result = _format_player_context(player, {})
     assert "Tier: 1" in result
     assert "Bid ceiling: $68" in result
     assert "System value: $71" in result
@@ -93,27 +123,27 @@ def test_format_player_context_includes_valuation():
 
 def test_format_player_context_includes_injury():
     player = _mock_player()
-    result = _format_player_context(player)
+    result = _format_player_context(player, {})
     assert "Injury risk: moderate" in result
     assert "WORKLOAD_CLIFF" in result
 
 
 def test_format_player_context_includes_schedule():
     player = _mock_player()
-    result = _format_player_context(player)
+    result = _format_player_context(player, {})
     assert "Playoffs: favorable" in result
 
 
 def test_format_player_context_includes_flags():
     player = _mock_player()
-    result = _format_player_context(player)
+    result = _format_player_context(player, {})
     assert "WORKLOAD_CLIFF" in result
     assert "High career touch count" in result
 
 
 def test_format_player_context_includes_notes():
     player = _mock_player()
-    result = _format_player_context(player)
+    result = _format_player_context(player, {})
     assert "Elite three-down back" in result
 
 
@@ -125,7 +155,7 @@ def test_format_player_context_handles_free_agent():
     player.market_value = None
     player.value_gap = None
     player.value_gap_signal = None
-    result = _format_player_context(player)
+    result = _format_player_context(player, {})
     assert "FA" in result
 
 
@@ -136,7 +166,7 @@ def test_format_player_context_handles_no_profile():
     player.schedule = None
     player.dependencies = []
     player.notes = None
-    result = _format_player_context(player)
+    result = _format_player_context(player, {})
     assert "Saquon Barkley" in result
 
 
@@ -184,12 +214,12 @@ async def test_build_context_includes_explicit_players():
         session.__aenter__ = AsyncMock(return_value=session)
         session.__aexit__ = AsyncMock(return_value=False)
 
-        # First call: explicit player lookup, second: mentioned players, third: value gaps, fourth: signals
+        # Call order: 1=team_systems, 2=explicit player, 3+=mentioned/gaps/signals
         call_count = [0]
         async def mock_execute(stmt):
             call_count[0] += 1
             result = MagicMock()
-            if call_count[0] == 1:
+            if call_count[0] == 2:
                 # Return the player for explicit lookup
                 result.scalars = MagicMock(return_value=MagicMock(all=MagicMock(return_value=[mock_player])))
             else:
