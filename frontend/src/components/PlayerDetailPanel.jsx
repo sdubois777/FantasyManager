@@ -198,11 +198,15 @@ export default function PlayerDetailPanel({ playerId }) {
                       {dep.reasoning && (
                         <div className="text-xs text-slate-500 mt-1">{dep.reasoning}</div>
                       )}
-                      {dep.value_impact_pct != null && (
-                        <div className={`text-xs mt-1 ${dep.value_impact_pct > 0 ? 'text-emerald-400' : 'text-red-400'}`}>
-                          Impact: {dep.value_impact_pct > 0 ? '+' : ''}{Math.round(dep.value_impact_pct <= 1 ? dep.value_impact_pct * 100 : dep.value_impact_pct)}%
-                        </div>
-                      )}
+                      {dep.value_impact_pct != null && (() => {
+                        const v = dep.value_impact_pct
+                        const pct = Math.round(Math.abs(v) > 1 ? v : v * 100)
+                        return (
+                          <div className={`text-xs mt-1 ${pct > 0 ? 'text-emerald-400' : 'text-red-400'}`}>
+                            Impact: {pct > 0 ? '+' : ''}{pct}%
+                          </div>
+                        )
+                      })()}
                     </div>
                   ))}
                 </div>
