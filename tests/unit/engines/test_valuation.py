@@ -278,8 +278,8 @@ def _make_player(
     global _player_counter
     _player_counter += 1
     player = MagicMock(spec=["id", "name", "position", "team_abbr", "profile",
-                              "injury_profile", "market_value", "tier",
-                              "baseline_value", "risk_adjusted_value",
+                              "injury_profile", "dependencies", "market_value",
+                              "tier", "baseline_value", "risk_adjusted_value",
                               "recommended_bid_ceiling", "let_go_threshold",
                               "elite_anchor_weight", "positional_scarcity_modifier",
                               "value_gap", "value_gap_signal", "data_confidence"])
@@ -292,6 +292,7 @@ def _make_player(
     profile = MagicMock()
     profile.clean_season_baseline = {"ppr_points": ppr_points}
     player.profile = profile
+    player.dependencies = []
 
     if risk_modifier is not None or post_acl_flag or workload_cliff_flag:
         inj = MagicMock()
@@ -427,6 +428,7 @@ from backend.engines.valuation import (
     REPLACEMENT_LEVEL_PPR_PER_GAME,
     POST_MAJOR_INJURY_DISCOUNT,
     _apply_injury_discount,
+    _apply_dependency_adjustment,
     get_draftable_pool_sizes,
     calculate_replacement_level,
     sanity_check_valuations,
@@ -815,3 +817,72 @@ def test_sanity_check_flags_inflated_total():
 
     warnings = sanity_check_valuations(players, 2220.0)
     assert any("exceeds pool" in w for w in warnings)
+
+
+# ===========================================================================
+# _apply_dependency_adjustment
+# ===========================================================================
+
+def _make_dep(flag_type, trigger_condition, value_impact_pct):
+    """Create a mock PlayerDependency."""
+    dep = MagicMock()
+    dep.flag_type = flag_type
+    dep.trigger_condition = trigger_condition
+    dep.value_impact_pct = Decimal(str(value_impact_pct))
+    return dep
+
+
+def test_dependency_adjustment_beneficiary_departed():
+    """BENEFICIARY + departed_team applies positive adjustment."""
+    dep = _make_dep("beneficiary", "departed_team", 0.35)
+    result = _apply_dependency_adjustment(250.0, [dep])
+    assert result == pytest.approx(337.5)  # 250 × 1.35
+
+
+def test_dependency_adjustment_displaced():
+    """DISPLACED + active_and_healthy applies negative adjustment."""
+    dep = _make_dep("displaced", "active_and_healthy", -0.25)
+    result = _apply_dependency_adjustment(300.0, [dep])
+    assert result == pytest.approx(225.0)  # 300 × 0.75
+
+
+def test_dependency_adjustment_contingent_skipped():
+    """CONTINGENT flags are skipped pre-draft."""
+    dep = _make_dep("contingent", "injured", 0.20)
+    result = _apply_dependency_adjustment(300.0, [dep])
+    assert result == 300.0  # no change
+
+
+def test_dependency_adjustment_scheme_fit_half_weight():
+    """SCHEME_FIT applied at half weight pre-draft."""
+    dep = _make_dep("scheme_fit", "active_and_healthy", 0.20)
+    result = _apply_dependency_adjustment(300.0, [dep])
+    assert result == pytest.approx(330.0)  # 300 × (1 + 0.20×0.5)
+
+
+def test_dependency_adjustment_multiple_flags():
+    """Multiple flags stack additively."""
+    dep1 = _make_dep("beneficiary", "departed_team", 0.35)
+    dep2 = _make_dep("displaced", "active_and_healthy", -0.15)
+    result = _apply_dependency_adjustment(250.0, [dep1, dep2])
+    assert result == pytest.approx(300.0)  # 250 × (1 + 0.35 - 0.15)
+
+
+def test_dependency_adjustment_no_dependencies():
+    """Empty dependency list returns PPR unchanged."""
+    result = _apply_dependency_adjustment(300.0, [])
+    assert result == 300.0
+
+
+def test_dependency_adjustment_floors_at_zero():
+    """Massive negative adjustment floors at 0."""
+    dep = _make_dep("displaced", "active_and_healthy", -150)  # -150% = normalized to -1.50
+    result = _apply_dependency_adjustment(200.0, [dep])
+    assert result == 0.0
+
+
+def test_dependency_adjustment_normalizes_whole_percentages():
+    """AI model outputs whole-number percentages (35 = 35%), normalize to fractions."""
+    dep = _make_dep("displaced", "active_and_healthy", -35)  # AI model format
+    result = _apply_dependency_adjustment(300.0, [dep])
+    assert result == pytest.approx(195.0)  # 300 × (1 - 0.35)

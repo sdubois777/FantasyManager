@@ -958,3 +958,152 @@ async def test_sync_player_teams_no_last_name_fallback():
 
     assert count == 0
     mock_session.commit.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Departure-based BENEFICIARY flags
+# ---------------------------------------------------------------------------
+
+import pandas as pd
+
+
+def _make_prev_roster_df(players: list[tuple[str, str, str, str]]) -> pd.DataFrame:
+    """Build a mock previous-season roster DataFrame.
+
+    Args:
+        players: list of (name, position, team, player_id) tuples.
+    """
+    return pd.DataFrame(players, columns=["full_name", "position", "team", "player_id"])
+
+
+def _make_target_share_df(players: list[tuple[str, str, str, int, int]]) -> pd.DataFrame:
+    """Build a mock target_share DataFrame.
+
+    Args:
+        players: list of (player_id, name, team, targets, carries) tuples.
+    """
+    return pd.DataFrame(players, columns=["player_id", "player_name", "recent_team", "total_targets", "total_carries"])
+
+
+@pytest.mark.asyncio
+async def test_handle_departures_generates_beneficiary():
+    """Departed WR with significant production generates BENEFICIARY flags."""
+    agent = RosterChangesAgent()
+    prev_df = _make_prev_roster_df([
+        ("Cooper Kupp", "WR", "LAR", "pid-1"),
+        ("Puka Nacua", "WR", "LAR", "pid-2"),
+        ("Tutu Atwell", "WR", "LAR", "pid-3"),
+        ("Kyren Williams", "RB", "LAR", "pid-4"),
+    ])
+    ts_df = _make_target_share_df([
+        ("pid-1", "C.Kupp", "LAR", 120, 0),
+        ("pid-2", "P.Nacua", "LAR", 150, 0),
+    ])
+    roster = [
+        {"name": "Puka Nacua", "position": "WR"},
+        {"name": "Tutu Atwell", "position": "WR"},
+        {"name": "Kyren Williams", "position": "RB"},
+    ]
+
+    with patch("backend.integrations.nfl_data.fetch_rosters", return_value=prev_df), \
+         patch("backend.integrations.nfl_data.compute_target_share", return_value=ts_df):
+        flags = await agent._handle_departures("LAR", roster)
+
+    assert len(flags) == 2
+    for f in flags:
+        assert f["flag_type"] == "beneficiary"
+        assert f["trigger_player_name"] == "Cooper Kupp"
+        assert f["trigger_condition"] == "departed_team"
+        assert f["effect_on_value"] == "positive"
+        assert f["player_position"] == "WR"
+    names = {f["player_name"] for f in flags}
+    assert names == {"Puka Nacua", "Tutu Atwell"}
+
+
+@pytest.mark.asyncio
+async def test_handle_departures_no_change_no_flags():
+    """When no one left the team, no BENEFICIARY flags are generated."""
+    agent = RosterChangesAgent()
+    prev_df = _make_prev_roster_df([
+        ("Puka Nacua", "WR", "LAR", "pid-1"),
+        ("Tutu Atwell", "WR", "LAR", "pid-2"),
+    ])
+    ts_df = _make_target_share_df([("pid-1", "P.Nacua", "LAR", 150, 0)])
+    roster = [
+        {"name": "Puka Nacua", "position": "WR"},
+        {"name": "Tutu Atwell", "position": "WR"},
+    ]
+
+    with patch("backend.integrations.nfl_data.fetch_rosters", return_value=prev_df), \
+         patch("backend.integrations.nfl_data.compute_target_share", return_value=ts_df):
+        flags = await agent._handle_departures("LAR", roster)
+
+    assert len(flags) == 0
+
+
+@pytest.mark.asyncio
+async def test_handle_departures_ignores_qb():
+    """QB departures do not generate BENEFICIARY flags (WR/RB/TE only)."""
+    agent = RosterChangesAgent()
+    prev_df = _make_prev_roster_df([
+        ("Old QB", "QB", "LAR", "pid-1"),
+        ("WR Guy", "WR", "LAR", "pid-2"),
+    ])
+    ts_df = _make_target_share_df([])
+    roster = [{"name": "WR Guy", "position": "WR"}]
+
+    with patch("backend.integrations.nfl_data.fetch_rosters", return_value=prev_df), \
+         patch("backend.integrations.nfl_data.compute_target_share", return_value=ts_df):
+        flags = await agent._handle_departures("LAR", roster)
+
+    assert len(flags) == 0
+
+
+@pytest.mark.asyncio
+async def test_handle_departures_skips_low_production():
+    """Depth WRs with <50 targets do not generate BENEFICIARY flags."""
+    agent = RosterChangesAgent()
+    prev_df = _make_prev_roster_df([
+        ("Cooper Kupp", "WR", "LAR", "pid-1"),
+        ("Depth Guy", "WR", "LAR", "pid-2"),
+        ("Puka Nacua", "WR", "LAR", "pid-3"),
+    ])
+    ts_df = _make_target_share_df([
+        ("pid-1", "C.Kupp", "LAR", 120, 0),   # significant
+        ("pid-2", "D.Guy", "LAR", 10, 0),      # depth — below 50 threshold
+    ])
+    roster = [{"name": "Puka Nacua", "position": "WR"}]
+
+    with patch("backend.integrations.nfl_data.fetch_rosters", return_value=prev_df), \
+         patch("backend.integrations.nfl_data.compute_target_share", return_value=ts_df):
+        flags = await agent._handle_departures("LAR", roster)
+
+    # Only Kupp departure generates flags, not Depth Guy
+    assert len(flags) == 1
+    assert flags[0]["trigger_player_name"] == "Cooper Kupp"
+
+
+@pytest.mark.asyncio
+async def test_handle_departures_impact_by_position():
+    """WR departure → 0.35 impact; RB departure → 0.25 impact."""
+    agent = RosterChangesAgent()
+
+    # WR scenario
+    wr_prev = _make_prev_roster_df([("WR Star", "WR", "LAR", "pid-1"), ("WR2", "WR", "LAR", "pid-2")])
+    wr_ts = _make_target_share_df([("pid-1", "W.Star", "LAR", 100, 0)])
+    wr_roster = [{"name": "WR2", "position": "WR"}]
+
+    # RB scenario
+    rb_prev = _make_prev_roster_df([("RB Star", "RB", "NYG", "pid-3"), ("RB2", "RB", "NYG", "pid-4")])
+    rb_ts = _make_target_share_df([("pid-3", "R.Star", "NYG", 0, 200)])
+    rb_roster = [{"name": "RB2", "position": "RB"}]
+
+    with patch("backend.integrations.nfl_data.fetch_rosters", return_value=wr_prev), \
+         patch("backend.integrations.nfl_data.compute_target_share", return_value=wr_ts):
+        wr_flags = await agent._handle_departures("LAR", wr_roster)
+    with patch("backend.integrations.nfl_data.fetch_rosters", return_value=rb_prev), \
+         patch("backend.integrations.nfl_data.compute_target_share", return_value=rb_ts):
+        rb_flags = await agent._handle_departures("NYG", rb_roster)
+
+    assert wr_flags[0]["value_impact_pct"] == 0.35
+    assert rb_flags[0]["value_impact_pct"] == 0.25

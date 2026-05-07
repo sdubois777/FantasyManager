@@ -676,6 +676,140 @@ class RosterChangesAgent(BaseAgent):
         return updated
 
     # ------------------------------------------------------------------
+    # Departure-based BENEFICIARY flags — Python-generated
+    # ------------------------------------------------------------------
+
+    async def _handle_departures(
+        self,
+        team_abbr: str,
+        roster: list[dict],
+    ) -> list[dict]:
+        """
+        Generate BENEFICIARY flags for incumbents when a significant starter
+        departs. Same pattern as _generate_rookie_displacement_flags — pure
+        Python, no API call.
+
+        Detection: compares previous season's roster (nfl_data_py) against
+        current roster. Only flags departures of players with meaningful
+        production (>=50 targets for WR/TE, >=80 carries for RB).
+        """
+        from backend.integrations.nfl_data import fetch_rosters, compute_target_share
+        from backend.utils.seasons import get_current_season
+
+        team = team_abbr.upper()
+        skill_pos = {"WR", "RB", "TE"}
+        current_names = {p["name"] for p in roster if p.get("position") in skill_pos}
+
+        prev_season = get_current_season() - 1
+
+        # Load previous roster
+        try:
+            prev_rosters = fetch_rosters(prev_season)
+        except Exception as exc:
+            logger.warning("Could not load %d rosters for departure detection: %s", prev_season, exc)
+            return []
+
+        team_col = next((c for c in ("team", "team_abbr") if c in prev_rosters.columns), None)
+        name_col = next((c for c in ("full_name", "player_name") if c in prev_rosters.columns), None)
+        if not team_col or not name_col:
+            return []
+
+        # Load target share for production filter — keyed by player_id
+        try:
+            ts_df = compute_target_share(prev_season)
+        except Exception:
+            ts_df = None
+
+        # Build production lookup: player_id -> (targets, carries)
+        prod_by_id: dict[str, tuple[int, int]] = {}
+        if ts_df is not None and "player_id" in ts_df.columns:
+            ts_team = "recent_team" if "recent_team" in ts_df.columns else "team"
+            team_mask = ts_df[ts_team].str.upper() == team if ts_team in ts_df.columns else True
+            for _, r in ts_df[team_mask].iterrows():
+                pid = str(r.get("player_id", "")).strip()
+                tgts = int(r.get("total_targets", 0) or 0)
+                carries = int(r.get("total_carries", 0) or 0)
+                if pid:
+                    existing = prod_by_id.get(pid, (0, 0))
+                    prod_by_id[pid] = (existing[0] + tgts, existing[1] + carries)
+
+        # Min production thresholds — only flag WR1/RB1/TE1 departures
+        MIN_TARGETS = 80   # ~5 targets/game — WR1/TE1 level
+        MIN_CARRIES = 150  # ~9 carries/game — RB1 level
+
+        mask = prev_rosters[team_col].str.upper() == team
+        if "position" in prev_rosters.columns:
+            mask &= prev_rosters["position"].isin(skill_pos)
+        prev_df = prev_rosters[mask].drop_duplicates(subset=[name_col])
+
+        flags: list[dict] = []
+        for _, row in prev_df.iterrows():
+            departed_name = str(row.get(name_col, "")).strip()
+            departed_pos = str(row.get("position", "")).strip()
+            if not departed_name or departed_pos not in skill_pos:
+                continue
+            if departed_name in current_names:
+                continue  # Still on the team
+
+            # Production filter: skip depth/practice squad players
+            pid = str(row.get("player_id", "")).strip()
+            tgts, carries = prod_by_id.get(pid, (0, 0))
+            if departed_pos in ("WR", "TE") and tgts < MIN_TARGETS:
+                continue
+            if departed_pos == "RB" and carries < MIN_CARRIES:
+                continue
+
+            logger.info(
+                "%s departure: %s (%s) — targets=%d, carries=%d",
+                team, departed_name, departed_pos, tgts, carries,
+            )
+
+            # Only flag top-3 same-position incumbents (by production)
+            same_pos = [
+                inc for inc in roster
+                if inc.get("position") == departed_pos
+                and inc.get("name") != departed_name
+            ]
+            # Sort incumbents by their production (descending)
+            for inc in same_pos:
+                inc_name = inc.get("name", "")
+                # Find incumbent's player_id from current roster
+                inc_pid = ""
+                if "player_id" in prev_rosters.columns:
+                    inc_row = prev_rosters[prev_rosters[name_col] == inc_name]
+                    if not inc_row.empty:
+                        inc_pid = str(inc_row.iloc[0].get("player_id", ""))
+                inc_tgts, inc_carries = prod_by_id.get(inc_pid, (0, 0))
+                inc["_prod_sort"] = inc_tgts + inc_carries
+            same_pos.sort(key=lambda x: x.get("_prod_sort", 0), reverse=True)
+
+            for inc in same_pos[:3]:  # top-3 beneficiaries only
+                flags.append({
+                    "player_name": inc["name"],
+                    "player_team": team,
+                    "player_position": departed_pos,
+                    "flag_type": "beneficiary",
+                    "trigger_player_name": departed_name,
+                    "trigger_player_team": team,
+                    "trigger_condition": "departed_team",
+                    "effect_on_value": "positive",
+                    "value_impact_pct": 0.35 if departed_pos == "WR" else 0.25,
+                    "confidence": "high",
+                    "reasoning": (
+                        f"{departed_name} departed {team} — "
+                        f"{inc['name']} inherits {departed_pos} role share"
+                    ),
+                    "season_year": get_analysis_year(),
+                })
+
+        if flags:
+            logger.info(
+                "%s: %d departure BENEFICIARY flags generated",
+                team_abbr, len(flags),
+            )
+        return flags
+
+    # ------------------------------------------------------------------
     # Per-team runner — exactly ONE call_once()
     # ------------------------------------------------------------------
 
@@ -724,6 +858,18 @@ class RosterChangesAgent(BaseAgent):
                     )
 
             written = await _write_flags(flags)
+
+            # Departure-based BENEFICIARY flags — Python-generated
+            try:
+                departure_flags = await self._handle_departures(
+                    team_abbr,
+                    context.get("current_roster", []),
+                )
+                if departure_flags:
+                    written += await _write_flags(departure_flags)
+                    flags.extend(departure_flags)
+            except Exception as exc:
+                logger.warning("Departure handler failed for %s: %s", team_abbr, exc)
 
             # Sync player team assignments from transactions
             try:

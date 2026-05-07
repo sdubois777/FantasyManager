@@ -406,6 +406,7 @@ async def run_valuation_pass(
             .options(
                 selectinload(Player.profile),
                 selectinload(Player.injury_profile),
+                selectinload(Player.dependencies),
             )
         )
         players: list[Player] = (await session.execute(stmt)).scalars().all()
@@ -429,6 +430,8 @@ async def run_valuation_pass(
             # post-ACL or major injury recovery flags
             if ppr > 0:
                 ppr = _apply_injury_discount(ppr, player.injury_profile, player.profile)
+            if ppr > 0:
+                ppr = _apply_dependency_adjustment(ppr, player.dependencies)
             if ppr > 0:
                 pos_groups[pos].append((player, ppr))
 
@@ -631,6 +634,49 @@ def _apply_injury_discount(
     discount = max(discount, 0.60)
 
     return ppr * discount
+
+
+def _apply_dependency_adjustment(ppr: float, dependencies: list) -> float:
+    """
+    Apply pre-draft dependency flag adjustments to projected PPR.
+
+    Rules:
+    - BENEFICIARY + departed_team → apply immediately (positive)
+    - DISPLACED + active_and_healthy → apply immediately (negative)
+    - SCHEME_FIT → half weight pre-draft
+    - CONTINGENT, injured/absent BENEFICIARY → skip (live-draft only)
+    """
+    if not dependencies:
+        return ppr
+
+    total_adj = 0.0
+    for dep in dependencies:
+        flag = dep.flag_type
+        trigger = dep.trigger_condition or ""
+        impact = float(dep.value_impact_pct or 0)
+
+        # Normalize: AI model outputs whole percentages (35 = 35%),
+        # Python-generated flags use fractions (0.35 = 35%).
+        if abs(impact) > 1.0:
+            impact /= 100.0
+
+        if flag == "beneficiary" and trigger == "departed_team":
+            total_adj += impact
+        elif flag == "displaced" and trigger == "active_and_healthy":
+            total_adj += impact
+        elif flag == "scheme_fit":
+            total_adj += impact * 0.5
+        # contingent, injured/absent beneficiary → skip pre-draft
+
+    if total_adj == 0.0:
+        return ppr
+
+    adjusted = ppr * (1.0 + total_adj)
+    logger.info(
+        "Dependency adjustment: %.1f → %.1f (%+.0f%%)",
+        ppr, adjusted, total_adj * 100,
+    )
+    return max(adjusted, 0.0)
 
 
 def _confidence(player: Player) -> str:
