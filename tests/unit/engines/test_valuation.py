@@ -886,3 +886,121 @@ def test_dependency_adjustment_normalizes_whole_percentages():
     dep = _make_dep("displaced", "active_and_healthy", -35)  # AI model format
     result = _apply_dependency_adjustment(300.0, [dep])
     assert result == pytest.approx(195.0)  # 300 × (1 - 0.35)
+
+
+# ===========================================================================
+# Replacement level floor enforcement
+# ===========================================================================
+
+
+def test_replacement_level_floor_values():
+    """LEAGUE_RULES.md replacement floors: QB=18, RB=8, WR=7, TE=5 PPR/game."""
+    assert REPLACEMENT_LEVEL_PPR_PER_GAME["QB"] * 17 == pytest.approx(306.0)
+    assert REPLACEMENT_LEVEL_PPR_PER_GAME["RB"] * 17 == pytest.approx(136.0)
+    assert REPLACEMENT_LEVEL_PPR_PER_GAME["WR"] * 17 == pytest.approx(119.0)
+    assert REPLACEMENT_LEVEL_PPR_PER_GAME["TE"] * 17 == pytest.approx(85.0)
+
+
+@pytest.mark.asyncio
+async def test_replacement_floor_enforced_wr():
+    """
+    WR replacement level is max(dynamic, 119).
+    With 70 WRs where #60 projects 84 PPR, floor should kick in at 119.
+    """
+    # 70 WRs: top player 320 PPR, descending ~3.5 per rank
+    # Player #60 would be at 320 - 59*3.5 = 113.5, below 119 floor
+    mock_players = [
+        _make_player("WR", ppr_points=320 - i * 3.5) for i in range(70)
+    ]
+
+    session = AsyncMock()
+    session.__aenter__ = AsyncMock(return_value=session)
+    session.__aexit__ = AsyncMock(return_value=False)
+    session.execute = AsyncMock(
+        return_value=MagicMock(scalars=MagicMock(return_value=MagicMock(all=MagicMock(return_value=mock_players))))
+    )
+    session.add = MagicMock()
+    session.commit = AsyncMock()
+
+    with patch("backend.engines.valuation.AsyncSessionLocal", return_value=session):
+        result = await run_valuation_pass()
+
+    # Replacement level should be 119 (floor), not ~113.5 (dynamic)
+    assert result["replacement_levels"]["WR"] == pytest.approx(119.0)
+
+
+@pytest.mark.asyncio
+async def test_replacement_floor_enforced_rb():
+    """RB replacement floor = 8.0 × 17 = 136 PPR."""
+    mock_players = [
+        _make_player("RB", ppr_points=300 - i * 4) for i in range(60)
+    ]
+
+    session = AsyncMock()
+    session.__aenter__ = AsyncMock(return_value=session)
+    session.__aexit__ = AsyncMock(return_value=False)
+    session.execute = AsyncMock(
+        return_value=MagicMock(scalars=MagicMock(return_value=MagicMock(all=MagicMock(return_value=mock_players))))
+    )
+    session.add = MagicMock()
+    session.commit = AsyncMock()
+
+    with patch("backend.engines.valuation.AsyncSessionLocal", return_value=session):
+        result = await run_valuation_pass()
+
+    assert result["replacement_levels"]["RB"] >= 136.0
+
+
+@pytest.mark.asyncio
+async def test_replacement_floor_not_applied_when_dynamic_higher():
+    """When dynamic replacement > floor, use dynamic (floor is a minimum, not a target)."""
+    # Only 5 WRs — all high PPR. Dynamic replacement will be well above 119.
+    mock_players = [
+        _make_player("WR", ppr_points=320 - i * 10) for i in range(5)
+    ]
+
+    session = AsyncMock()
+    session.__aenter__ = AsyncMock(return_value=session)
+    session.__aexit__ = AsyncMock(return_value=False)
+    session.execute = AsyncMock(
+        return_value=MagicMock(scalars=MagicMock(return_value=MagicMock(all=MagicMock(return_value=mock_players))))
+    )
+    session.add = MagicMock()
+    session.commit = AsyncMock()
+
+    with patch("backend.engines.valuation.AsyncSessionLocal", return_value=session):
+        result = await run_valuation_pass()
+
+    # Last WR = 320 - 4*10 = 280. Dynamic replacement = 280 > 119 floor
+    assert result["replacement_levels"]["WR"] == pytest.approx(280.0)
+
+
+@pytest.mark.asyncio
+async def test_low_ppr_wrs_get_dollar_1():
+    """WRs projecting below the 119 PPR floor get $1 system value."""
+    mock_players = [
+        _make_player("WR", ppr_points=300),  # above floor
+        _make_player("WR", ppr_points=100),  # below 119 floor
+        _make_player("WR", ppr_points=80),   # well below floor
+    ]
+    mock_players[0].name = "Star_WR"
+    mock_players[1].name = "Below_Floor_WR"
+    mock_players[2].name = "Deep_Bench_WR"
+
+    session = AsyncMock()
+    session.__aenter__ = AsyncMock(return_value=session)
+    session.__aexit__ = AsyncMock(return_value=False)
+    session.execute = AsyncMock(
+        return_value=MagicMock(scalars=MagicMock(return_value=MagicMock(all=MagicMock(return_value=mock_players))))
+    )
+    session.add = MagicMock()
+    session.commit = AsyncMock()
+
+    with patch("backend.engines.valuation.AsyncSessionLocal", return_value=session):
+        await run_valuation_pass()
+
+    # Players below replacement floor get $1
+    assert mock_players[1].baseline_value == Decimal("1.00")
+    assert mock_players[2].baseline_value == Decimal("1.00")
+    # Star WR gets meaningful value
+    assert mock_players[0].baseline_value > Decimal("1.00")

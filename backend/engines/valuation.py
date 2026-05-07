@@ -446,7 +446,22 @@ async def run_valuation_pass(
         for pos, group in pos_groups.items():
             pool_size = pool_sizes.get(pos, len(group))
             sorted_pprs = [ppr for _, ppr in group]
-            repl_ppr = calculate_replacement_level(sorted_pprs, pool_size)
+            dynamic_repl = calculate_replacement_level(sorted_pprs, pool_size)
+
+            # Enforce LEAGUE_RULES.md replacement floor (PPR/game × 17 games)
+            floor_ppr = REPLACEMENT_LEVEL_PPR_PER_GAME.get(pos, 0.0) * 17
+            repl_ppr = max(dynamic_repl, floor_ppr)
+            if repl_ppr > dynamic_repl:
+                repl_name = "?"
+                if len(sorted_pprs) >= pool_size:
+                    # Find the replacement player's name for logging
+                    repl_name = group[pool_size - 1][0].name
+                logger.info(
+                    "%s replacement floor enforced: dynamic=%.1f "
+                    "(#%d %s) < floor=%.1f (%.1f PPG × 17)",
+                    pos, dynamic_repl, pool_size, repl_name,
+                    floor_ppr, REPLACEMENT_LEVEL_PPR_PER_GAME[pos],
+                )
 
             total_par = sum(max(0.0, ppr - repl_ppr) for _, ppr in group)
             pos_budget = total_budget * POSITION_BUDGET_SHARE[pos]
