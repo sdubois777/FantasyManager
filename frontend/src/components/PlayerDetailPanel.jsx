@@ -200,7 +200,7 @@ export default function PlayerDetailPanel({ playerId }) {
                       )}
                       {dep.value_impact_pct != null && (
                         <div className={`text-xs mt-1 ${dep.value_impact_pct > 0 ? 'text-emerald-400' : 'text-red-400'}`}>
-                          Impact: {dep.value_impact_pct > 0 ? '+' : ''}{dep.value_impact_pct.toFixed(0)}%
+                          Impact: {dep.value_impact_pct > 0 ? '+' : ''}{Math.round(dep.value_impact_pct <= 1 ? dep.value_impact_pct * 100 : dep.value_impact_pct)}%
                         </div>
                       )}
                     </div>
