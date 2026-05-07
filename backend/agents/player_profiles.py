@@ -1,20 +1,22 @@
 """
-Agent 3: Player Profiles Agent
+Agent 3: Player Profiles — Synthesis Agent
 
-Builds a complete individual profile for every draftable skill-position player.
-Inherits team system context from Agent 1 and dependency flags from Agent 2.
+Synthesizes ALL upstream agent outputs into forward-looking PPR projections.
+Runs LAST in the pipeline (after team_systems, roster_changes, injury_risk,
+schedule, and beat_reporter) so it has access to every signal.
 
 Architecture:
-  - Model: Haiku (data extraction and classification)
-  - Max tokens: 1000 per team batch
-  - Pattern: pre-aggregate in Python → ONE call_once() per team → parse JSON array → write DB
+  - Two-pass model: Haiku batch for stable veterans, Sonnet per-player for complex cases
+  - Complex = rookies, dependency flags, contract year, high injury risk, beat reporter signals
+  - Pattern: pre-aggregate in Python → Haiku batch OR Sonnet per-player → parse JSON → write DB
   - Never uses run_agent() (that is for live draft only)
 
 Key outputs per player:
+  - AI-driven projected_ppr_points (forward-looking, not historical average)
   - Role classification (wr1_alpha, workhorse, etc.)
-  - Clean season baseline (strips injury-shortened and backup-QB seasons)
   - Breakout candidate detection
   - Efficiency signal, age curve, situation score
+  - Upside/downside PPR range (Sonnet players only)
 """
 from __future__ import annotations
 
@@ -28,23 +30,56 @@ import pandas as pd
 from sqlalchemy import select, or_
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.agents.base_agent import BaseAgent, parse_json_output, HAIKU
+from backend.agents.base_agent import BaseAgent, parse_json_output, HAIKU, SONNET
 from backend.agents.team_systems import NFL_TEAMS
 from backend.database import AsyncSessionLocal
 from backend.integrations import nfl_data
 from backend.integrations.nfl_data import normalize_player_name, build_player_lookup
-from backend.models.player import Player, PlayerProfile
+from backend.models.player import Player, PlayerProfile, PlayerInjuryProfile, PlayerSchedule
+from backend.models.dependency import PlayerDependency, BeatReporterSignal
 from backend.utils.seasons import get_current_season, get_analysis_seasons, get_analysis_year
 
 logger = logging.getLogger(__name__)
 
 SKILL_POSITIONS = {"QB", "WR", "RB", "TE"}
 
+
 # ---------------------------------------------------------------------------
-# System prompt
+# Model routing — which players need Sonnet-level reasoning
 # ---------------------------------------------------------------------------
 
-SYSTEM_PROMPT = """You are a fantasy football player analyst building a pre-draft research database.
+def needs_sonnet_reasoning(player: dict) -> bool:
+    """Determine if a player needs Sonnet-level causal reasoning.
+
+    Returns True for players whose projection depends on reasoning through
+    multiple interacting signals (dependency flags, injury risk, etc.).
+    Stable veterans with clean histories get cheaper Haiku batch processing.
+    """
+    if player.get("is_rookie"):
+        return True
+    if player.get("dependency_flags"):
+        return True
+    if player.get("contract_year"):
+        return True
+    injury = player.get("injury_profile", {})
+    if injury.get("overall_risk_level") in ("high", "volatile"):
+        return True
+    if injury.get("pattern_flags"):
+        return True
+    signals = player.get("beat_signals", [])
+    if any(s.get("confidence") == "high" for s in signals):
+        return True
+    team_sys = player.get("_team_system", {})
+    if team_sys.get("compound_risk_flag"):
+        return True
+    return False
+
+
+# ---------------------------------------------------------------------------
+# System prompts — Haiku (team batch) and Sonnet (per-player)
+# ---------------------------------------------------------------------------
+
+HAIKU_SYSTEM_PROMPT = """You are a fantasy football player analyst building a pre-draft research database.
 
 You receive pre-aggregated multi-season stats for every skill-position player on one NFL team.
 Produce a JSON array — one profile object per player.
@@ -97,6 +132,62 @@ For players where all seasons show games=0 (rookies or new acquisitions with no 
   - Set breakout_flag=true if any dependency_flag has type "beneficiary".
 
 Output ONLY a valid JSON array. No explanation, no preamble, no markdown fences.
+Your entire response must be parseable by json.loads()."""
+
+
+SONNET_SYSTEM_PROMPT = """You are a fantasy football projection analyst. You synthesize ALL available context
+to produce a forward-looking PPR projection for one NFL player.
+
+You receive:
+- Historical stats (3 seasons of per-game data)
+- Team system context (OC scheme, QB tier, O-line grades, compound_risk_flag)
+- Dependency flags (displaced, beneficiary, committee, etc. with impact reasoning)
+- Injury risk profile (pattern flags, risk level, recovery assessment)
+- Schedule grades (early/full/playoff windows)
+- Beat reporter signals (practice reports, depth chart changes)
+
+Your job: reason through ALL of these signals to produce a projected PPR total
+for the upcoming 17-game season. This is a forward projection that accounts for
+situation changes, role shifts, and risk factors — NOT a historical average.
+
+Output ONLY a valid JSON object:
+{
+  "player_name": "string",
+  "projected_ppr_points": float,
+  "projection_reasoning": "2-3 sentences explaining the key factors driving this projection",
+  "role_classification": "string",
+  "separation_score": "string (elite/above_avg/avg/below_avg)",
+  "yards_after_catch_score": "string (elite/above_avg/avg/below_avg)",
+  "efficiency_signal": "string (elite/above_avg/avg/below_avg)",
+  "age_curve_position": "string (ascending/peak/descending)",
+  "career_trajectory": "string (breakout/rising/established/declining/volatile)",
+  "anomalous_seasons_excluded": [int],
+  "breakout_flag": boolean,
+  "breakout_reasoning": "string or null",
+  "positional_scarcity_tier": "string (scarce/moderate/deep)",
+  "situation_score": "string (strong/moderate/weak/volatile)",
+  "confidence": "string (high/medium/low)",
+  "upside_ppr": float,
+  "downside_ppr": float
+}
+
+role_classification MUST match the player's actual position — never cross-assign roles:
+  QB players → use only: qb_elite, qb_starter, qb_streamer, qb_backup
+  WR players → use only: wr1_alpha, slot_specialist, deep_threat, possession_wr2, gadget
+  RB players → use only: workhorse, early_down_thumper, pass_catching_specialist, committee_back
+  TE players → use only: te1_inline, te1_pass_catcher, te2_blocker, te2_flex
+
+Rules:
+- projected_ppr_points is a season TOTAL for 17 games.
+  Typical ranges: QB elite ~350-400, WR1 alpha ~280-340, WR2 ~180-230, RB1 ~250-320, TE1 ~200-260.
+- A beneficiary flag with departed_team trigger = MORE opportunity → project HIGHER than historical baseline.
+- A displaced flag with active_and_healthy trigger = LESS opportunity → project LOWER.
+- compound_risk_flag on team system = reduce all skill position projections by 10-15%.
+- Injury risk "high" or "volatile" → weight downside more heavily, widen upside-downside gap.
+- upside_ppr = realistic best-case 17-game total; downside_ppr = realistic worst-case.
+- Age curve peaks: QB 26-32, RB 24-26, WR 24-29, TE 26-29.
+- Contract year (contract_year=true) → slight upward trajectory bias.
+- Output ONLY valid JSON. No preamble, no explanation, no markdown fences.
 Your entire response must be parseable by json.loads()."""
 
 
@@ -516,8 +607,6 @@ class PlayerProfilesAgent(BaseAgent):
 
     async def _get_team_dependency_flags(self, team: str) -> dict[str, list[dict]]:
         """Return {player_name: [compact_flag_dicts]} for all players on this team."""
-        from backend.models.dependency import PlayerDependency
-
         async with AsyncSessionLocal() as session:
             result = await session.execute(
                 select(PlayerDependency, Player.name)
@@ -535,6 +624,95 @@ class PlayerProfilesAgent(BaseAgent):
                 "confidence": dep.confidence,
             })
         return flags_by_player
+
+    async def _get_team_injury_profiles(self, team: str) -> dict[str, dict]:
+        """Return {player_name: injury_profile_dict} for all players on team.
+
+        One DB query per team — no N+1.
+        """
+        try:
+            async with AsyncSessionLocal() as session:
+                result = await session.execute(
+                    select(PlayerInjuryProfile, Player.name)
+                    .join(Player, PlayerInjuryProfile.player_id == Player.id)
+                    .where(Player.team_abbr == team)
+                )
+                rows = result.all()
+        except Exception as exc:
+            logger.debug("Could not load injury profiles for %s: %s", team, exc)
+            return {}
+
+        profiles: dict[str, dict] = {}
+        for ip, name in rows:
+            profiles[name] = {
+                "overall_risk_level": ip.overall_risk_level,
+                "risk_adjusted_value_modifier": float(ip.risk_adjusted_value_modifier or 0),
+                "pattern_flags": ip.pattern_flags or [],
+                "chronic_conditions": ip.chronic_conditions or [],
+                "workload_cliff_flag": ip.workload_cliff_flag,
+                "high_mileage_flag": ip.high_mileage_flag,
+                "post_acl_flag": ip.post_acl_flag,
+                "concussion_count": ip.concussion_count,
+                "recovery_assessment": ip.recovery_assessment,
+                "risk_notes": ip.risk_notes,
+            }
+        return profiles
+
+    async def _get_team_schedules(self, team: str) -> dict[str, dict]:
+        """Return {player_name: schedule_dict} for all players on team.
+
+        One DB query per team — no N+1.
+        """
+        try:
+            async with AsyncSessionLocal() as session:
+                result = await session.execute(
+                    select(PlayerSchedule, Player.name)
+                    .join(Player, PlayerSchedule.player_id == Player.id)
+                    .where(Player.team_abbr == team)
+                )
+                rows = result.all()
+        except Exception as exc:
+            logger.debug("Could not load schedules for %s: %s", team, exc)
+            return {}
+
+        schedules: dict[str, dict] = {}
+        for sched, name in rows:
+            schedules[name] = {
+                "early_window_grade": sched.early_window_grade,
+                "full_season_grade": sched.full_season_grade,
+                "playoff_window_grade": sched.playoff_window_grade,
+                "schedule_score": float(sched.schedule_score or 0),
+                "bye_week": sched.bye_week,
+                "bye_in_playoff_window": sched.bye_in_playoff_window,
+            }
+        return schedules
+
+    async def _get_team_beat_signals(self, team: str) -> dict[str, list[dict]]:
+        """Return {player_name: [signal_dicts]} for all players on team.
+
+        One DB query per team — no N+1.
+        """
+        try:
+            async with AsyncSessionLocal() as session:
+                result = await session.execute(
+                    select(BeatReporterSignal, Player.name)
+                    .join(Player, BeatReporterSignal.player_id == Player.id)
+                    .where(Player.team_abbr == team)
+                )
+                rows = result.all()
+        except Exception as exc:
+            logger.debug("Could not load beat signals for %s: %s", team, exc)
+            return {}
+
+        signals: dict[str, list[dict]] = {}
+        for sig, name in rows:
+            signals.setdefault(name, []).append({
+                "signal_type": sig.signal_type,
+                "raw_text": sig.raw_text,
+                "confidence": sig.confidence,
+                "source": sig.source,
+            })
+        return signals
 
     # ------------------------------------------------------------------
     # NGS cache aggregation — weekly NGS → season-level per player
@@ -625,9 +803,12 @@ class PlayerProfilesAgent(BaseAgent):
 
         self._ensure_cache_loaded(analysis_seasons, current_season)
 
-        team_system   = await self._get_team_system(team)
-        dep_flags     = await self._get_team_dependency_flags(team)
-        rookie_fields = await self._get_team_rookie_fields(team)
+        team_system      = await self._get_team_system(team)
+        dep_flags        = await self._get_team_dependency_flags(team)
+        rookie_fields    = await self._get_team_rookie_fields(team)
+        injury_profiles  = await self._get_team_injury_profiles(team)
+        schedules        = await self._get_team_schedules(team)
+        beat_signals     = await self._get_team_beat_signals(team)
 
         backup_qb_flags = {
             s: self._is_backup_qb_season(team, s) for s in analysis_seasons
@@ -704,6 +885,11 @@ class PlayerProfilesAgent(BaseAgent):
                 "seasons":          seasons_data,
                 "dependency_flags": dep_flags.get(pname, []),
                 "nfl_player_id":    nfl_pid,  # pass through for DB ID resolution
+                # Upstream agent context (for needs_sonnet_reasoning + AI projection)
+                "injury_profile":   injury_profiles.get(pname, {}),
+                "schedule":         schedules.get(pname, {}),
+                "beat_signals":     beat_signals.get(pname, []),
+                "_team_system":     team_system,
             }
             # Merge rookie evaluation fields from Agent 2 (if applicable)
             if pname in rookie_fields:
@@ -730,11 +916,16 @@ class PlayerProfilesAgent(BaseAgent):
         }
 
     # ------------------------------------------------------------------
-    # Per-team runner — exactly ONE call_once()
+    # Per-team runner — two-pass: Haiku batch + Sonnet per-player
     # ------------------------------------------------------------------
 
     async def run_for_team(self, team_abbr: str) -> int:
-        """Run for one team. Returns number of profile records written."""
+        """Run for one team. Returns number of profile records written.
+
+        Two-pass architecture:
+          1. Haiku batch — stable veterans with no complex signals
+          2. Sonnet per-player — rookies, flagged, contract year, high injury, etc.
+        """
         team = team_abbr.upper()
         logger.info("Building player profiles context for %s", team)
 
@@ -745,28 +936,69 @@ class PlayerProfilesAgent(BaseAgent):
                 logger.info("%s: no skill-position players with data, skipping", team)
                 return 0
 
-            raw = await self.call_once(
-                system=SYSTEM_PROMPT,
-                user=(
-                    f"Build player profiles for the {team} skill-position players "
-                    f"using this pre-aggregated data:\n\n"
-                    f"{json.dumps(context, default=str)}"
-                ),
-                input_data=context,
-                entity_id=team,
+            # Split players: Haiku batch vs Sonnet individual
+            haiku_players = []
+            sonnet_players = []
+            for p in context["players"]:
+                if needs_sonnet_reasoning(p):
+                    sonnet_players.append(p)
+                else:
+                    haiku_players.append(p)
+
+            logger.info(
+                "%s: %d haiku batch, %d sonnet individual",
+                team, len(haiku_players), len(sonnet_players),
             )
 
-            if not raw:
-                return 0  # dry_run
+            all_profiles: list[dict] = []
 
-            profiles = parse_json_output(raw)
-            if isinstance(profiles, dict):
-                profiles = [profiles]
-            if not isinstance(profiles, list):
-                logger.error("%s: unexpected output type: %s", team, type(profiles))
-                return 0
+            # Pass 1: Haiku team batch (stable veterans)
+            if haiku_players:
+                haiku_context = {**context, "players": haiku_players}
+                raw = await self.call_once(
+                    system=HAIKU_SYSTEM_PROMPT,
+                    user=(
+                        f"Build player profiles for the {team} skill-position players "
+                        f"using this pre-aggregated data:\n\n"
+                        f"{json.dumps(haiku_context, default=str)}"
+                    ),
+                    input_data=haiku_context,
+                    entity_id=f"{team}_haiku",
+                )
+                if raw:
+                    profiles = parse_json_output(raw)
+                    if isinstance(profiles, dict):
+                        profiles = [profiles]
+                    if isinstance(profiles, list):
+                        all_profiles.extend(profiles)
 
-            written = await _write_profiles(profiles, context, team)
+            # Pass 2: Sonnet per-player (complex players)
+            for player in sonnet_players:
+                player_context = {
+                    "team": team,
+                    "analysis_year": context["analysis_year"],
+                    "team_system": context["team_system"],
+                    "player": player,
+                }
+                raw = await self.call_once(
+                    system=SONNET_SYSTEM_PROMPT,
+                    user=(
+                        f"Project PPR for {player['name']} ({team}):\n\n"
+                        f"{json.dumps(player_context, default=str)}"
+                    ),
+                    input_data=player_context,
+                    entity_id=f"{team}_{player['name']}",
+                    model=SONNET,
+                    max_tokens=800,
+                )
+                if raw:
+                    prof = parse_json_output(raw)
+                    if isinstance(prof, list) and prof:
+                        prof = prof[0]
+                    if isinstance(prof, dict):
+                        all_profiles.append(prof)
+
+            written = await _write_profiles(all_profiles, context, team)
             logger.info("%s: %d profiles written", team, written)
             return written
 
@@ -992,21 +1224,47 @@ async def _write_profiles(
             seasons    = ctx_player.get("seasons", [])
             ts3yr, ts_last, ay3yr = _compute_season_averages(seasons, analysis_year)
 
-            # Route rookies to Python-computed rookie profile; veterans use model output
-            # backed by Python-computed clean season baseline (most reliable).
+            # Route: rookies → Python, Sonnet players → AI projection, Haiku → Python baseline
             is_rookie = bool(ctx_player.get("is_rookie", False))
+            has_ai_projection = bool(prof.get("projected_ppr_points"))
 
             if is_rookie:
                 # Use purely Python-computed rookie profile — model has no NFL data to work with
                 team_ctx = context.get("team_system", {})
                 rookie_prof = _build_rookie_profile(ctx_player, team_ctx)
                 clean_baseline = rookie_prof["clean_season_baseline"]
+            elif has_ai_projection:
+                # Sonnet-profiled player: AI drives the PPR projection
+                ai_ppr = float(prof["projected_ppr_points"])
+                rookie_prof = {}
+
+                # Compute Python baseline for sanity-checking and stat components
+                if ctx_player.get("position") == "QB":
+                    python_baseline = _compute_qb_baseline(seasons)
+                else:
+                    python_baseline = _compute_clean_baseline(seasons)
+
+                python_ppr = python_baseline.get("ppr_points", 0) if python_baseline else 0
+
+                # Sanity guard: log if AI diverges > 50% from Python baseline
+                if python_ppr > 0 and abs(ai_ppr - python_ppr) / python_ppr > 0.50:
+                    logger.warning(
+                        "AI projection %.1f diverges >50%% from baseline %.1f for %s (%s)",
+                        ai_ppr, python_ppr, pname, team,
+                    )
+
+                clean_baseline = python_baseline if python_baseline else {}
+                clean_baseline["ppr_points"] = round(ai_ppr, 1)
+                if prof.get("upside_ppr"):
+                    clean_baseline["upside_ppr"] = round(float(prof["upside_ppr"]), 1)
+                if prof.get("downside_ppr"):
+                    clean_baseline["downside_ppr"] = round(float(prof["downside_ppr"]), 1)
             elif ctx_player.get("position") == "QB":
                 # QB baseline uses fantasy_points_ppr (includes passing scoring)
                 clean_baseline = _compute_qb_baseline(seasons)
                 rookie_prof    = {}
             else:
-                # WR/RB/TE: compute clean_season_baseline in Python — do NOT trust model output.
+                # WR/RB/TE Haiku batch: compute clean_season_baseline in Python
                 # PPR formula: receptions×1 + (rec_yards+rush_yards)×0.1 + tds×6
                 clean_baseline = _compute_clean_baseline(seasons)
                 rookie_prof    = {}
@@ -1023,13 +1281,11 @@ async def _write_profiles(
             record.efficiency_signal          = effective.get("efficiency_signal")
             record.age_curve_position         = effective.get("age_curve_position")
             record.career_trajectory          = effective.get("career_trajectory")
-            # Use Python-computed baseline. If seasons are empty (e.g. player is
-            # not in our WR/RB/TE context), set to empty dict rather than
-            # falling back to the AI model's (possibly wrong) value.
             record.clean_season_baseline      = clean_baseline if clean_baseline else {}
             record.anomalous_seasons_excluded = effective.get("anomalous_seasons_excluded") or []
             record.breakout_flag              = bool(effective.get("breakout_flag", False))
             record.breakout_reasoning         = effective.get("breakout_reasoning")
+            record.projection_reasoning       = prof.get("projection_reasoning") if has_ai_projection else None
             record.positional_scarcity_tier   = effective.get("positional_scarcity_tier")
             record.target_share_3yr_avg       = _to_decimal(ts3yr)
             record.target_share_last_season   = _to_decimal(ts_last)
@@ -1038,8 +1294,12 @@ async def _write_profiles(
 
             # Rookie-specific columns
             record.is_rookie        = is_rookie
-            record.profile_source   = "college_comps" if is_rookie else "nfl_history"
-            record.confidence       = rookie_prof.get("confidence") if is_rookie else "medium"
+            record.profile_source   = "college_comps" if is_rookie else ("sonnet_projection" if has_ai_projection else "nfl_history")
+            record.confidence       = (
+                rookie_prof.get("confidence") if is_rookie
+                else prof.get("confidence", "medium") if has_ai_projection
+                else "medium"
+            )
             record.variance_flag    = bool(rookie_prof.get("variance_flag", False)) if is_rookie else False
             record.breakout_window  = rookie_prof.get("breakout_window") if is_rookie else None
             record.year1_role       = rookie_prof.get("year1_role") if is_rookie else None

@@ -137,6 +137,7 @@ class PlayerProfile(Base):
     # Breakout
     breakout_flag: Mapped[bool] = mapped_column(Boolean, default=False)
     breakout_reasoning: Mapped[Optional[str]] = mapped_column(Text)
+    projection_reasoning: Mapped[Optional[str]] = mapped_column(Text)
     positional_scarcity_tier: Mapped[Optional[str]] = mapped_column(String(20))  # scarce/moderate/deep
 
     # Rookie-specific profile fields (populated when is_rookie=True)

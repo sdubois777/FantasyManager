@@ -101,6 +101,83 @@ export default function PlayerDetailPanel({ playerId }) {
               />
             </Section>
 
+            {/* Projection */}
+            {player.profile?.clean_season_baseline?.ppr_points && (
+              <Section title="Projection">
+                {/* Source badge */}
+                <div className="flex items-center gap-2 mb-3">
+                  <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-medium ${
+                    player.profile.profile_source === 'sonnet_projection'
+                      ? 'bg-purple-500/15 text-purple-400'
+                      : player.profile.profile_source === 'college_comps'
+                        ? 'bg-amber-500/15 text-amber-400'
+                        : 'bg-slate-500/15 text-slate-400'
+                  }`}>
+                    {player.profile.profile_source === 'sonnet_projection' ? 'AI Projection'
+                      : player.profile.profile_source === 'college_comps' ? 'Rookie Comps'
+                      : 'Historical'}
+                  </span>
+                  {player.profile.confidence && (
+                    <span className="text-[10px] text-slate-500">
+                      {player.profile.confidence} confidence
+                    </span>
+                  )}
+                </div>
+
+                {/* PPR total */}
+                <div className="bg-[#1c1f2e] rounded p-3 mb-3">
+                  <div className="text-[10px] text-slate-500 mb-1">Projected PPR (17 games)</div>
+                  <div className="text-xl font-mono font-semibold text-blue-400">
+                    {player.profile.clean_season_baseline.ppr_points?.toFixed(1)}
+                  </div>
+                  {/* Upside/downside range bar */}
+                  {player.profile.clean_season_baseline.upside_ppr && (
+                    <div className="mt-2">
+                      <div className="flex justify-between text-[10px] text-slate-500 mb-1">
+                        <span>Floor: {player.profile.clean_season_baseline.downside_ppr?.toFixed(0)}</span>
+                        <span>Ceiling: {player.profile.clean_season_baseline.upside_ppr?.toFixed(0)}</span>
+                      </div>
+                      <div className="relative h-2 bg-[#161822] rounded-full overflow-hidden">
+                        {/* Full range bar (floor to ceiling) */}
+                        <div className="absolute h-full bg-blue-500/20 rounded-full"
+                          style={{
+                            left: `${(player.profile.clean_season_baseline.downside_ppr / player.profile.clean_season_baseline.upside_ppr) * 100 * 0.9}%`,
+                            right: '0%'
+                          }}
+                        />
+                        {/* Projection marker */}
+                        <div className="absolute h-full w-1 bg-blue-400 rounded-full"
+                          style={{
+                            left: `${(player.profile.clean_season_baseline.ppr_points / player.profile.clean_season_baseline.upside_ppr) * 100 * 0.9}%`
+                          }}
+                        />
+                      </div>
+                    </div>
+                  )}
+                </div>
+
+                {/* Reasoning */}
+                {player.profile.projection_reasoning && (
+                  <p className="text-xs text-slate-400 leading-relaxed mb-3">
+                    {player.profile.projection_reasoning}
+                  </p>
+                )}
+
+                {/* Career trajectory + key metrics */}
+                <div className="grid grid-cols-2 gap-2">
+                  {player.profile.career_trajectory && (
+                    <Stat label="Trajectory" value={player.profile.career_trajectory} />
+                  )}
+                  {player.profile.separation_score && (
+                    <Stat label="Separation" value={player.profile.separation_score} />
+                  )}
+                  {player.profile.yards_after_catch_score && (
+                    <Stat label="YAC" value={player.profile.yards_after_catch_score} />
+                  )}
+                </div>
+              </Section>
+            )}
+
             {/* Dependency flags */}
             {player.dependencies?.length > 0 && (
               <Section title="Dependency Flags">

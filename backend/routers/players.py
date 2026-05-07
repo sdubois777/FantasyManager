@@ -91,7 +91,12 @@ class ProfileDetail(BaseModel):
     clean_season_baseline: Optional[dict] = None
     breakout_flag: bool = False
     breakout_reasoning: Optional[str] = None
+    projection_reasoning: Optional[str] = None
     positional_scarcity_tier: Optional[str] = None
+    career_trajectory: Optional[str] = None
+    confidence: Optional[str] = None
+    separation_score: Optional[str] = None
+    yards_after_catch_score: Optional[str] = None
     is_rookie: bool = False
     profile_source: Optional[str] = None
     ceiling_value_ppr: Optional[float] = None
@@ -344,7 +349,12 @@ async def get_player(player_id: uuid.UUID):
             clean_season_baseline=p.clean_season_baseline,
             breakout_flag=p.breakout_flag or False,
             breakout_reasoning=p.breakout_reasoning,
+            projection_reasoning=p.projection_reasoning,
             positional_scarcity_tier=p.positional_scarcity_tier,
+            career_trajectory=p.career_trajectory,
+            confidence=p.confidence,
+            separation_score=p.separation_score,
+            yards_after_catch_score=p.yards_after_catch_score,
             is_rookie=p.is_rookie or False,
             profile_source=p.profile_source,
             ceiling_value_ppr=float(p.ceiling_value_ppr) if p.ceiling_value_ppr else None,

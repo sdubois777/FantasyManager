@@ -181,6 +181,9 @@ export default function DraftBoard() {
                         <span className="text-xs text-slate-400 font-mono w-14 text-right">
                           ${p.market_value?.toFixed(0) || '--'}
                         </span>
+                        <span className="text-xs text-slate-400 font-mono w-14 text-right">
+                          {p.ppr_points ? `${p.ppr_points.toFixed(0)} PPR` : ''}
+                        </span>
 
                         {/* Value gap indicator */}
                         <span

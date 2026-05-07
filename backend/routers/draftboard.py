@@ -15,7 +15,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import selectinload
 
 from backend.database import AsyncSessionLocal
-from backend.models.player import Player
+from backend.models.player import Player, PlayerProfile
 from backend.models.dependency import PlayerDependency
 
 logger = logging.getLogger(__name__)
@@ -45,6 +45,7 @@ class DraftBoardPlayer(BaseModel):
     value_gap_signal: Optional[str] = None
     breakout_flag: bool = False
     is_rookie: bool = False
+    ppr_points: Optional[float] = None
     injury_risk_level: Optional[str] = None
     flags: list[DraftBoardFlag] = []
     strategy_highlight: Optional[str] = None  # "primary" / "secondary" / "dimmed" / None
@@ -110,6 +111,7 @@ async def get_draftboard(
             .options(
                 selectinload(Player.dependencies),
                 selectinload(Player.injury_profile),
+                selectinload(Player.profile),
             )
         )
 
@@ -150,6 +152,12 @@ async def get_draftboard(
             market_value=float(p.market_value) if p.market_value else None,
             value_gap=float(p.value_gap) if p.value_gap else None,
             value_gap_signal=p.value_gap_signal,
+            ppr_points=(
+                float(p.profile.clean_season_baseline.get("ppr_points"))
+                if p.profile and p.profile.clean_season_baseline
+                and p.profile.clean_season_baseline.get("ppr_points") is not None
+                else None
+            ),
             breakout_flag=p.breakout_flag or False,
             is_rookie=p.is_rookie or False,
             injury_risk_level=p.injury_profile.overall_risk_level if p.injury_profile else None,
