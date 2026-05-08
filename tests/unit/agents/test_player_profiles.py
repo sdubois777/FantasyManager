@@ -1742,6 +1742,42 @@ def test_needs_sonnet_reasoning_empty_player():
     assert needs_sonnet_reasoning(player) is False
 
 
+def test_needs_sonnet_reasoning_qb_always():
+    """All QBs get Sonnet — they anchor offenses and need deeper reasoning."""
+    player = {
+        "name": "Patrick Mahomes",
+        "position": "QB",
+        "is_rookie": False,
+        "contract_year": False,
+        "dependency_flags": [],
+        "injury_profile": {"overall_risk_level": "low", "pattern_flags": []},
+        "beat_signals": [],
+        "_team_system": {"compound_risk_flag": False},
+    }
+    assert needs_sonnet_reasoning(player) is True
+
+
+def test_needs_sonnet_reasoning_qb_backup():
+    """Even backup QBs get Sonnet — minimal extra cost, consistent routing."""
+    player = {"name": "Joe Milton III", "position": "QB"}
+    assert needs_sonnet_reasoning(player) is True
+
+
+def test_needs_sonnet_reasoning_stable_wr_not_qb():
+    """Stable veteran WR still goes to Haiku — QB check doesn't broaden."""
+    player = {
+        "name": "Stefon Diggs",
+        "position": "WR",
+        "is_rookie": False,
+        "contract_year": False,
+        "dependency_flags": [],
+        "injury_profile": {"overall_risk_level": "low", "pattern_flags": []},
+        "beat_signals": [],
+        "_team_system": {"compound_risk_flag": False},
+    }
+    assert needs_sonnet_reasoning(player) is False
+
+
 # ---------------------------------------------------------------------------
 # AI projection override tests
 # ---------------------------------------------------------------------------

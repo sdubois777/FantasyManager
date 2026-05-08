@@ -54,7 +54,13 @@ def needs_sonnet_reasoning(player: dict) -> bool:
     Returns True for players whose projection depends on reasoning through
     multiple interacting signals (dependency flags, injury risk, etc.).
     Stable veterans with clean histories get cheaper Haiku batch processing.
+
+    QBs always get Sonnet — they anchor entire offenses (10-15% of budget),
+    and rushing volume sustainability, age curves, and O-line changes require
+    deeper reasoning than Haiku provides.
     """
+    if player.get("position") == "QB":
+        return True
     if player.get("is_rookie"):
         return True
     if player.get("dependency_flags"):
