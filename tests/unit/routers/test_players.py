@@ -24,6 +24,8 @@ def _make_player(**overrides):
     p.ceiling_value = overrides.get("ceiling_value", 80.0)
     p.floor_value = overrides.get("floor_value", 55.0)
     p.market_value = overrides.get("market_value", 70.0)
+    p.market_value_fantasypros = overrides.get("market_value_fantasypros", None)
+    p.market_value_league = overrides.get("market_value_league", None)
     p.value_gap = overrides.get("value_gap", 2.5)
     p.value_gap_signal = overrides.get("value_gap_signal", "market_undervalues")
     p.situation_score = overrides.get("situation_score", "A-")

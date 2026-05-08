@@ -30,6 +30,7 @@ from backend.agents.base_agent import BaseAgent, parse_json_output, HAIKU, SONNE
 from backend.database import AsyncSessionLocal
 from backend.models.player import Player, PlayerProfile, PlayerInjuryProfile, PlayerSchedule
 from backend.models.dependency import PlayerDependency
+from backend.engines.valuation import get_market_context
 
 logger = logging.getLogger(__name__)
 
@@ -56,12 +57,22 @@ For each player, output a JSON object with these fields:
   "nomination_target_flag": boolean — true if this player is overvalued and should be nominated early to drain opponent budgets
 }
 
+You may also receive league auction history context:
+- market_value_league: what the user's actual opponents paid for this player last year
+- market_value_fantasypros: FantasyPros consensus ADP
+- league_bias_signal: "league_overpays" / "league_underpays" / "league_aligned" / null
+When league history is available, weight it MORE heavily than FantasyPros — it reflects
+what this specific league actually pays. A league that pays $4 for QBs when FP says $28
+means you can get QBs cheap. Exploit league biases in your recommendations.
+
 Rules:
 - ai_bid_ceiling should usually be within 15-20% of the math ceiling, but you CAN deviate more with reasoning
 - confidence_floor must be < ai_bid_ceiling, confidence_ceiling must be > ai_bid_ceiling
 - pay_up_flag = true means: "If someone else bids near your ceiling, keep going — this player is special"
 - nomination_target_flag = true means: "Nominate this player early — opponents will overpay, draining their budget"
 - auction_note should reference the player's specific situation, not generic advice
+- When league_bias_signal = "league_underpays", mention the discount opportunity in auction_note
+- When league_bias_signal = "league_overpays", consider nomination_target_flag = true
 - Value assessment considers: projection confidence, injury risk, schedule, dependency flags, positional scarcity
 - Max realistic bids: RB=$80, WR=$70, QB=$50, TE=$45. Never exceed these.
 
@@ -195,6 +206,17 @@ class ValuationAgent(BaseAgent):
         ctx["value_gap_signal"] = p.value_gap_signal
         ctx["ceiling_value"] = float(p.ceiling_value) if p.ceiling_value else None
         ctx["floor_value"] = float(p.floor_value) if p.floor_value else None
+
+        # League auction context (what opponents actually paid last year)
+        mctx = get_market_context(p)
+        if mctx["market_value_league"] is not None:
+            ctx["market_value_league"] = float(mctx["market_value_league"])
+        if mctx["market_value_fantasypros"] is not None:
+            ctx["market_value_fantasypros"] = float(mctx["market_value_fantasypros"])
+        if mctx["league_bias"] is not None:
+            ctx["league_bias"] = float(mctx["league_bias"])
+        if mctx["league_bias_signal"] is not None:
+            ctx["league_bias_signal"] = mctx["league_bias_signal"]
 
         # Profile data
         if p.profile:

@@ -6,8 +6,9 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from typing import Optional
 
-from fastapi import APIRouter, BackgroundTasks, HTTPException
+from fastapi import APIRouter, BackgroundTasks, HTTPException, Query
 from pydantic import BaseModel
 
 logger = logging.getLogger(__name__)
@@ -213,4 +214,63 @@ async def sync_league_settings():
         status="complete",
         message=f"League settings synced — {result['league_name']} ({result['scoring_format']}, {result['team_count']} teams)",
         details=result,
+    )
+
+
+@router.post("/import-league-auction", response_model=PipelineResponse)
+async def import_league_auction(
+    csv_path: str = Query(..., description="Path to CSV file from Yahoo Draft Recap"),
+    year: int = Query(..., description="Season year the auction took place"),
+):
+    """
+    Import league auction history from a CSV file (Yahoo Draft Recap copy-paste).
+    After import, refreshes market_value_league on matched players.
+    """
+    from pathlib import Path
+
+    from backend.database import AsyncSessionLocal
+    from backend.engines.league_auction import import_league_auction_csv, refresh_market_value_league
+
+    path = Path(csv_path)
+    if not path.exists():
+        raise HTTPException(status_code=400, detail=f"CSV file not found: {csv_path}")
+
+    async with AsyncSessionLocal() as session:
+        result = await import_league_auction_csv(session, csv_path, year)
+        refresh = await refresh_market_value_league(session, year)
+
+    return PipelineResponse(
+        status="complete",
+        message=(
+            f"League auction import: {result['matched']} matched, "
+            f"{result['unmatched']} unmatched. "
+            f"Refreshed market_value_league for {refresh['updated']} players."
+        ),
+        details={**result, "refresh": refresh},
+    )
+
+
+@router.post("/sync-league-auction-yahoo", response_model=PipelineResponse)
+async def sync_league_auction_yahoo(
+    year: int = Query(..., description="Season year to sync"),
+):
+    """
+    Pull auction draft results from Yahoo API and import into league_auction_history.
+    Requires active league + YAHOO_LEAGUE_ID (August+).
+    """
+    from backend.database import AsyncSessionLocal
+    from backend.engines.league_auction import sync_league_auction_from_yahoo, refresh_market_value_league
+
+    async with AsyncSessionLocal() as session:
+        result = await sync_league_auction_from_yahoo(session, year)
+        refresh = await refresh_market_value_league(session, year)
+
+    return PipelineResponse(
+        status="complete",
+        message=(
+            f"Yahoo auction sync: {result['matched']} matched, "
+            f"{result['unmatched']} unmatched. "
+            f"Refreshed market_value_league for {refresh['updated']} players."
+        ),
+        details={**result, "refresh": refresh},
     )

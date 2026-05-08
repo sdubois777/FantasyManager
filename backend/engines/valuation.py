@@ -246,6 +246,38 @@ def compute_bid_ceiling(
     return _to_dec(max(Decimal("1.00"), ceiling))
 
 
+def get_market_context(player) -> dict:
+    """
+    Build market context combining league auction history and FP consensus.
+
+    Returns:
+        {market_value_league, market_value_fantasypros, league_bias,
+         league_bias_signal, effective_market_value}
+    """
+    league = player.market_value_league
+    fp = player.market_value_fantasypros or player.market_value
+    effective = league if (league is not None and league > 0) else fp
+
+    bias = None
+    bias_signal = None
+    if league is not None and fp is not None and fp > 0:
+        bias = _to_dec(league - fp)
+        if bias > Decimal("5"):
+            bias_signal = "league_overpays"
+        elif bias < Decimal("-5"):
+            bias_signal = "league_underpays"
+        else:
+            bias_signal = "league_aligned"
+
+    return {
+        "market_value_league": league,
+        "market_value_fantasypros": fp,
+        "league_bias": bias,
+        "league_bias_signal": bias_signal,
+        "effective_market_value": effective,
+    }
+
+
 def compute_value_gap(
     system_value: Decimal,
     market_value: Optional[Decimal],
@@ -552,7 +584,11 @@ async def run_valuation_pass(
 
                 rm = _get_risk_modifier(player.injury_profile)
 
-                ceiling  = compute_bid_ceiling(sv, player.market_value, tier, pos, risk_level)
+                # Use effective_market_value (league price if available, FP fallback)
+                mctx = get_market_context(player)
+                effective_mv = mctx["effective_market_value"]
+
+                ceiling  = compute_bid_ceiling(sv, effective_mv, tier, pos, risk_level)
 
                 # FIX 5: Hard cap enforcement — cap ceiling to MAX_REALISTIC_BID
                 max_bid = MAX_REALISTIC_BID.get(pos, 80)
@@ -567,7 +603,7 @@ async def run_valuation_pass(
                     ceiling = max_bid_dec
 
                 let_go   = compute_let_go_threshold(ceiling, risk_level)
-                gap, sig = compute_value_gap(sv, player.market_value)
+                gap, sig = compute_value_gap(sv, effective_mv)
                 # FIX 5: explicit signal when no market data
                 if sig is None and player.market_value is None:
                     sig = "no_market_data"

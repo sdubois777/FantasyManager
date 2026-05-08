@@ -32,6 +32,8 @@ def _make_player(**overrides):
         "recommended_bid_ceiling": Decimal("35.00"),
         "baseline_value": Decimal("32.00"),
         "market_value": Decimal("38.00"),
+        "market_value_fantasypros": None,
+        "market_value_league": None,
         "ceiling_value": Decimal("42.00"),
         "floor_value": Decimal("25.00"),
         "value_gap": Decimal("-6.00"),

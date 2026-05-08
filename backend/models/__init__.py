@@ -8,6 +8,7 @@ from backend.models.api_usage_log import ApiUsageLog
 from backend.models.league_settings import LeagueSettings
 from backend.models.user_preference import UserPreference
 from backend.models.market_value_metadata import MarketValueMetadata
+from backend.models.league_auction_history import LeagueAuctionHistory
 
 __all__ = [
     "Player",
@@ -25,4 +26,5 @@ __all__ = [
     "LeagueSettings",
     "UserPreference",
     "MarketValueMetadata",
+    "LeagueAuctionHistory",
 ]

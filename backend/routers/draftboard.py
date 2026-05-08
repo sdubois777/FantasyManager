@@ -41,6 +41,7 @@ class DraftBoardPlayer(BaseModel):
     recommended_bid_ceiling: Optional[float] = None
     baseline_value: Optional[float] = None
     market_value: Optional[float] = None
+    market_value_league: Optional[float] = None
     value_gap: Optional[float] = None
     value_gap_signal: Optional[str] = None
     breakout_flag: bool = False
@@ -153,6 +154,7 @@ async def get_draftboard(
             recommended_bid_ceiling=float(p.recommended_bid_ceiling) if p.recommended_bid_ceiling else None,
             baseline_value=float(p.baseline_value) if p.baseline_value else None,
             market_value=float(p.market_value) if p.market_value else None,
+            market_value_league=float(p.market_value_league) if p.market_value_league else None,
             value_gap=float(p.value_gap) if p.value_gap else None,
             value_gap_signal=p.value_gap_signal,
             ppr_points=(

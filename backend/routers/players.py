@@ -19,6 +19,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import selectinload
 
 from backend.database import AsyncSessionLocal
+from backend.engines.valuation import get_market_context
 from backend.models.player import Player, PlayerProfile, PlayerInjuryProfile, PlayerSchedule
 from backend.models.dependency import PlayerDependency, BeatReporterSignal
 from backend.models.team_system import TeamSystem
@@ -58,6 +59,7 @@ class PlayerSummary(BaseModel):
     ceiling_value: Optional[float] = None
     floor_value: Optional[float] = None
     market_value: Optional[float] = None
+    market_value_league: Optional[float] = None
     value_gap: Optional[float] = None
     value_gap_signal: Optional[str] = None
     situation_score: Optional[str] = None
@@ -175,6 +177,8 @@ class PlayerDetail(PlayerSummary):
     ai_confidence_ceiling: Optional[int] = None
     value_assessment: Optional[str] = None
     auction_note: Optional[str] = None
+    league_bias: Optional[float] = None
+    league_bias_signal: Optional[str] = None
 
 
 class PositionCounts(BaseModel):
@@ -220,6 +224,7 @@ def _player_to_summary(player: Player) -> PlayerSummary:
         ceiling_value=float(player.ceiling_value) if player.ceiling_value else None,
         floor_value=float(player.floor_value) if player.floor_value else None,
         market_value=float(player.market_value) if player.market_value else None,
+        market_value_league=float(player.market_value_league) if player.market_value_league else None,
         value_gap=float(player.value_gap) if player.value_gap else None,
         value_gap_signal=player.value_gap_signal,
         situation_score=player.situation_score,
@@ -417,6 +422,8 @@ async def get_player(player_id: uuid.UUID):
             flagged_at=sig.flagged_at.isoformat() if sig.flagged_at else None,
         ))
 
+    mctx = get_market_context(player)
+
     return PlayerDetail(
         **summary.model_dump(),
         profile=profile,
@@ -429,6 +436,8 @@ async def get_player(player_id: uuid.UUID):
         ai_confidence_ceiling=player.ai_confidence_ceiling,
         value_assessment=player.value_assessment,
         auction_note=player.auction_note,
+        league_bias=float(mctx["league_bias"]) if mctx["league_bias"] is not None else None,
+        league_bias_signal=mctx["league_bias_signal"],
     )
 
 

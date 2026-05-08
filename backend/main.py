@@ -4,7 +4,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from backend.config import settings
-from backend.routers import admin, assistant, auth, draft, draftboard, news, pipeline, players, preferences, teams
+from backend.routers import admin, assistant, auth, draft, draftboard, league, news, pipeline, players, preferences, teams
 
 logger = logging.getLogger(__name__)
 
@@ -28,6 +28,7 @@ app.include_router(assistant.router)
 app.include_router(auth.router)
 app.include_router(draft.router)
 app.include_router(draftboard.router)
+app.include_router(league.router)
 app.include_router(news.router)
 app.include_router(pipeline.router)
 app.include_router(players.router)

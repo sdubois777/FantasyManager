@@ -95,6 +95,24 @@ export default function PlayerDetailPanel({ playerId }) {
                 <StatBox label="Market (FP)" value={`$${player.market_value?.toFixed(0) || '--'}`} />
               </div>
 
+              {/* League price + bias */}
+              {player.market_value_league != null && (
+                <div className="flex items-center gap-2 mb-3">
+                  <StatBox label="League Price" value={`$${player.market_value_league.toFixed(0)}`} />
+                  {player.league_bias_signal && (
+                    <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-medium ${
+                      player.league_bias_signal === 'league_underpays' ? 'bg-emerald-500/15 text-emerald-400'
+                        : player.league_bias_signal === 'league_overpays' ? 'bg-red-500/15 text-red-400'
+                        : 'bg-slate-500/15 text-slate-400'
+                    }`}>
+                      {player.league_bias_signal === 'league_underpays' ? 'League Discount'
+                        : player.league_bias_signal === 'league_overpays' ? 'League Premium'
+                        : 'Aligned'}
+                    </span>
+                  )}
+                </div>
+              )}
+
               {/* AI confidence range */}
               {player.ai_confidence_floor != null && player.ai_confidence_ceiling != null && (
                 <div className="bg-[#1c1f2e] rounded p-2 mb-3 text-center">

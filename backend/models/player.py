@@ -39,6 +39,7 @@ class Player(Base):
     market_value_fantasypros: Mapped[Optional[Decimal]] = mapped_column(Numeric(5, 2))
     market_value_sleeper: Mapped[Optional[Decimal]] = mapped_column(Numeric(5, 2))
     market_value_underdog: Mapped[Optional[Decimal]] = mapped_column(Numeric(5, 2))
+    market_value_league: Mapped[Optional[Decimal]] = mapped_column(Numeric(5, 2))
     market_value_confidence: Mapped[Optional[str]] = mapped_column(String(20))
     market_value_updated_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
 
