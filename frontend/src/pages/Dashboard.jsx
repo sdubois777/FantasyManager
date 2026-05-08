@@ -110,7 +110,13 @@ export default function Dashboard() {
             <div className="text-sm text-slate-500 py-4">No value data yet.</div>
           ) : (
             <div className="space-y-1.5">
-              {(valueData?.players || []).slice(0, 8).map((p) => (
+              {(valueData?.players || [])
+                .filter((p) => p.ai_bid_ceiling != null && p.market_value != null)
+                .map((p) => ({ ...p, _aiGap: p.ai_bid_ceiling - p.market_value }))
+                .filter((p) => p._aiGap > 0)
+                .sort((a, b) => b._aiGap - a._aiGap)
+                .slice(0, 8)
+                .map((p) => (
                 <div
                   key={p.id}
                   onClick={() => openPlayerDetail(p.id)}
@@ -119,7 +125,7 @@ export default function Dashboard() {
                   <PositionBadge position={p.position} />
                   <span className="text-slate-300 truncate flex-1">{p.name}</span>
                   <span className="text-emerald-400 font-mono text-xs">
-                    +${p.value_gap?.toFixed(0)}
+                    +${p._aiGap.toFixed(0)}
                   </span>
                 </div>
               ))}
