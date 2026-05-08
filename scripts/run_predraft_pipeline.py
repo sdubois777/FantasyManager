@@ -89,6 +89,15 @@ AGENT_SPECS: dict[str, dict] = {
         "status": "built",
         "description": "Draft bible valuation pass (bid ceilings, tiers, value gap)",
     },
+    "valuation_agent": {
+        "model": "mixed",
+        "model_id": "claude-sonnet-4-6",
+        "max_tokens": 600,
+        "est_input_tokens": 800,
+        "api_calls": 60,
+        "status": "built",
+        "description": "AI ceiling calibration (confidence ranges, auction notes, flags)",
+    },
 }
 
 PIPELINE_ORDER = [
@@ -99,6 +108,7 @@ PIPELINE_ORDER = [
     "beat_reporter",
     "player_profiles",   # runs LAST — synthesizes all upstream agent outputs
     "valuation",
+    "valuation_agent",   # AI ceiling calibration — runs after math valuation
 ]
 
 # Cost per million tokens
@@ -264,6 +274,15 @@ async def run_agent(name: str, teams: list[str] | None) -> None:
             f"(analysis_year={result['analysis_year']})."
         )
 
+    elif name == "valuation_agent":
+        from backend.agents.valuation_agent import ValuationAgent
+        agent = ValuationAgent(dry_run=False)
+        result = await agent.run_all()
+        print(
+            f"[{name}] {result['processed']} player(s) processed, "
+            f"{result['skipped']} skipped."
+        )
+
     elapsed = time.monotonic() - t0
     print(f"[{name}] Done in {elapsed:.1f}s.\n")
 
@@ -278,7 +297,7 @@ async def main() -> None:
         "--agent",
         default="all",
         metavar="NAME",
-        help="Agent to run: all | team_systems | roster_changes | player_profiles | injury_risk | schedule | beat_reporter | valuation",
+        help="Agent to run: all | team_systems | roster_changes | player_profiles | injury_risk | schedule | beat_reporter | valuation | valuation_agent",
     )
     parser.add_argument(
         "--team",

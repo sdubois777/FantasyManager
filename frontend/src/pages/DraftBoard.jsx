@@ -175,6 +175,11 @@ export default function DraftBoard() {
                         <span className="text-sm text-blue-400 font-mono w-14 text-right">
                           ${p.recommended_bid_ceiling?.toFixed(0) || '--'}
                         </span>
+                        {p.ai_bid_ceiling != null && (
+                          <span className="text-sm text-purple-400 font-mono w-14 text-right">
+                            ${p.ai_bid_ceiling}
+                          </span>
+                        )}
                         <span className="text-xs text-slate-400 font-mono w-14 text-right">
                           ${p.baseline_value?.toFixed(0) || '--'}
                         </span>
@@ -202,6 +207,16 @@ export default function DraftBoard() {
 
                         {/* Flags */}
                         <div className="flex gap-1 ml-auto flex-wrap justify-end">
+                          {p.pay_up_flag && (
+                            <span className="text-[10px] text-emerald-400 bg-emerald-500/15 px-1.5 py-0.5 rounded-full font-medium">
+                              PAY UP
+                            </span>
+                          )}
+                          {p.nomination_target_flag && (
+                            <span className="text-[10px] text-purple-400 bg-purple-500/15 px-1.5 py-0.5 rounded-full font-medium">
+                              NOMINATE
+                            </span>
+                          )}
                           {(p.flags || []).slice(0, 2).map((f, i) => (
                             <FlagBadge key={i} flagType={f.flag_type} compact />
                           ))}

@@ -35,6 +35,13 @@ def _make_player(**overrides):
     p.profile = overrides.get("profile", None)
     p.schedule = overrides.get("schedule", None)
     p.beat_signals = overrides.get("beat_signals", [])
+    p.ai_bid_ceiling = overrides.get("ai_bid_ceiling", None)
+    p.ai_confidence_floor = overrides.get("ai_confidence_floor", None)
+    p.ai_confidence_ceiling = overrides.get("ai_confidence_ceiling", None)
+    p.value_assessment = overrides.get("value_assessment", None)
+    p.auction_note = overrides.get("auction_note", None)
+    p.pay_up_flag = overrides.get("pay_up_flag", False)
+    p.nomination_target_flag = overrides.get("nomination_target_flag", False)
     return p
 
 

@@ -86,15 +86,64 @@ export default function PlayerDetailPanel({ playerId }) {
 
             {/* Valuation */}
             <Section title="Valuation">
-              <div className="grid grid-cols-3 gap-3 mb-3">
+              <div className={`grid ${player.ai_bid_ceiling != null ? 'grid-cols-4' : 'grid-cols-3'} gap-3 mb-3`}>
                 <StatBox label="Bid Ceiling" value={`$${player.recommended_bid_ceiling?.toFixed(0) || '--'}`} accent />
+                {player.ai_bid_ceiling != null && (
+                  <StatBox label="AI Ceiling" value={`$${player.ai_bid_ceiling}`} accent />
+                )}
                 <StatBox label="System" value={`$${player.baseline_value?.toFixed(0) || '--'}`} />
                 <StatBox label="Market (FP)" value={`$${player.market_value?.toFixed(0) || '--'}`} />
               </div>
+
+              {/* AI confidence range */}
+              {player.ai_confidence_floor != null && player.ai_confidence_ceiling != null && (
+                <div className="bg-[#1c1f2e] rounded p-2 mb-3 text-center">
+                  <div className="text-[10px] text-slate-500 mb-1">Confidence Range</div>
+                  <div className="text-sm font-mono text-slate-300">
+                    ${player.ai_confidence_floor} &ndash; ${player.ai_confidence_ceiling}
+                  </div>
+                </div>
+              )}
+
               <div className="grid grid-cols-2 gap-3 mb-3">
                 <StatBox label="Ceiling" value={`$${player.ceiling_value?.toFixed(0) || '--'}`} />
                 <StatBox label="Floor" value={`$${player.floor_value?.toFixed(0) || '--'}`} />
               </div>
+
+              {/* Badges row */}
+              {(player.value_assessment || player.pay_up_flag || player.nomination_target_flag) && (
+                <div className="flex items-center gap-2 mb-3 flex-wrap">
+                  {player.value_assessment && (
+                    <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-medium ${
+                      player.value_assessment === 'elite_value' ? 'bg-emerald-500/15 text-emerald-400'
+                        : player.value_assessment === 'good_value' ? 'bg-blue-500/15 text-blue-400'
+                        : player.value_assessment === 'fair_value' ? 'bg-slate-500/15 text-slate-400'
+                        : player.value_assessment === 'slight_overpay' ? 'bg-amber-500/15 text-amber-400'
+                        : 'bg-red-500/15 text-red-400'
+                    }`}>
+                      {player.value_assessment.replace(/_/g, ' ')}
+                    </span>
+                  )}
+                  {player.pay_up_flag && (
+                    <span className="text-[10px] px-1.5 py-0.5 rounded-full font-medium bg-emerald-500/15 text-emerald-400">
+                      PAY UP
+                    </span>
+                  )}
+                  {player.nomination_target_flag && (
+                    <span className="text-[10px] px-1.5 py-0.5 rounded-full font-medium bg-purple-500/15 text-purple-400">
+                      NOMINATE
+                    </span>
+                  )}
+                </div>
+              )}
+
+              {/* Auction note */}
+              {player.auction_note && (
+                <p className="text-xs text-slate-400 leading-relaxed mb-3">
+                  {player.auction_note}
+                </p>
+              )}
+
               <ValueComparisonBar
                 systemValue={player.baseline_value}
                 marketValue={player.market_value}

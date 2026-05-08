@@ -51,6 +51,15 @@ class Player(Base):
     let_go_threshold: Mapped[Optional[Decimal]] = mapped_column(Numeric(5, 2))
     elite_anchor_weight: Mapped[Optional[Decimal]] = mapped_column(Numeric(3, 2))
 
+    # AI valuation agent output
+    ai_bid_ceiling: Mapped[Optional[int]] = mapped_column(Integer)
+    ai_confidence_floor: Mapped[Optional[int]] = mapped_column(Integer)
+    ai_confidence_ceiling: Mapped[Optional[int]] = mapped_column(Integer)
+    value_assessment: Mapped[Optional[str]] = mapped_column(String(20))  # elite_value/good_value/fair_value/slight_overpay/avoid
+    auction_note: Mapped[Optional[str]] = mapped_column(Text)
+    pay_up_flag: Mapped[bool] = mapped_column(Boolean, default=False)
+    nomination_target_flag: Mapped[bool] = mapped_column(Boolean, default=False)
+
     # Situation summary
     situation_score: Mapped[Optional[str]] = mapped_column(String(20))  # strong/moderate/weak/volatile
     positional_scarcity_modifier: Mapped[Optional[Decimal]] = mapped_column(Numeric(3, 2))

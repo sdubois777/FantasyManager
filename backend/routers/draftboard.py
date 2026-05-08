@@ -47,6 +47,9 @@ class DraftBoardPlayer(BaseModel):
     is_rookie: bool = False
     ppr_points: Optional[float] = None
     injury_risk_level: Optional[str] = None
+    ai_bid_ceiling: Optional[int] = None
+    pay_up_flag: bool = False
+    nomination_target_flag: bool = False
     flags: list[DraftBoardFlag] = []
     strategy_highlight: Optional[str] = None  # "primary" / "secondary" / "dimmed" / None
 
@@ -161,6 +164,9 @@ async def get_draftboard(
             breakout_flag=p.breakout_flag or False,
             is_rookie=p.is_rookie or False,
             injury_risk_level=p.injury_profile.overall_risk_level if p.injury_profile else None,
+            ai_bid_ceiling=p.ai_bid_ceiling,
+            pay_up_flag=p.pay_up_flag or False,
+            nomination_target_flag=p.nomination_target_flag or False,
             flags=flags,
             strategy_highlight=None,
         )

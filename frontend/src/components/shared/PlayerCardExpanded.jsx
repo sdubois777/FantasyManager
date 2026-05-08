@@ -27,6 +27,16 @@ export default function PlayerCardExpanded({ player, onClick }) {
           <div className="text-[10px] text-slate-500">ceiling</div>
         </div>
 
+        {/* AI ceiling */}
+        <div className="text-right w-16">
+          <div className="text-sm text-purple-400 font-mono">
+            {player.ai_bid_ceiling != null
+              ? `$${player.ai_bid_ceiling}`
+              : '--'}
+          </div>
+          <div className="text-[10px] text-slate-500">AI ceil</div>
+        </div>
+
         {/* System value */}
         <div className="text-right w-16">
           <div className="text-sm text-slate-300 font-mono">
@@ -47,9 +57,14 @@ export default function PlayerCardExpanded({ player, onClick }) {
           <div className="text-[10px] text-slate-500">market</div>
         </div>
 
-        {/* Value gap */}
+        {/* Value gap — AI ceiling vs market */}
         <div className="w-24">
-          {player.baseline_value != null && player.market_value != null ? (
+          {player.ai_bid_ceiling != null && player.market_value != null ? (
+            <ValueComparisonBar
+              systemValue={player.ai_bid_ceiling}
+              marketValue={player.market_value}
+            />
+          ) : player.baseline_value != null && player.market_value != null ? (
             <ValueComparisonBar
               systemValue={player.baseline_value}
               marketValue={player.market_value}
@@ -60,7 +75,17 @@ export default function PlayerCardExpanded({ player, onClick }) {
         </div>
 
         {/* Flags */}
-        <div className="flex gap-1 ml-auto flex-wrap justify-end max-w-[200px]">
+        <div className="flex gap-1 ml-auto flex-wrap justify-end max-w-[240px]">
+          {player.pay_up_flag && (
+            <span className="inline-flex items-center px-1.5 py-0.5 text-[10px] font-medium rounded-full bg-emerald-500/15 text-emerald-400">
+              PAY UP
+            </span>
+          )}
+          {player.nomination_target_flag && (
+            <span className="inline-flex items-center px-1.5 py-0.5 text-[10px] font-medium rounded-full bg-purple-500/15 text-purple-400">
+              NOMINATE
+            </span>
+          )}
           {(player.flags || []).slice(0, 3).map((f, i) => (
             <FlagBadge key={i} flagType={f.flag_type} compact />
           ))}

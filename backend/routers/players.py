@@ -67,6 +67,9 @@ class PlayerSummary(BaseModel):
     flags: list[FlagSummary] = []
     injury_risk_level: Optional[str] = None
     schedule_score: Optional[float] = None
+    ai_bid_ceiling: Optional[int] = None
+    pay_up_flag: bool = False
+    nomination_target_flag: bool = False
 
 
 class PlayerListResponse(BaseModel):
@@ -168,6 +171,10 @@ class PlayerDetail(PlayerSummary):
     dependencies: list[FlagSummary] = []
     beat_signals: list[SignalDetail] = []
     team_system: Optional[TeamSystemSummary] = None
+    ai_confidence_floor: Optional[int] = None
+    ai_confidence_ceiling: Optional[int] = None
+    value_assessment: Optional[str] = None
+    auction_note: Optional[str] = None
 
 
 class PositionCounts(BaseModel):
@@ -222,6 +229,9 @@ def _player_to_summary(player: Player) -> PlayerSummary:
         flags=flags,
         injury_risk_level=player.injury_profile.overall_risk_level if player.injury_profile else None,
         schedule_score=float(player.schedule.schedule_score) if player.schedule and player.schedule.schedule_score else None,
+        ai_bid_ceiling=player.ai_bid_ceiling,
+        pay_up_flag=player.pay_up_flag or False,
+        nomination_target_flag=player.nomination_target_flag or False,
     )
 
 
@@ -415,6 +425,10 @@ async def get_player(player_id: uuid.UUID):
         dependencies=summary.flags,
         beat_signals=beat_signals,
         team_system=team_system,
+        ai_confidence_floor=player.ai_confidence_floor,
+        ai_confidence_ceiling=player.ai_confidence_ceiling,
+        value_assessment=player.value_assessment,
+        auction_note=player.auction_note,
     )
 
 

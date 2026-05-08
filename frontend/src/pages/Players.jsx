@@ -148,6 +148,7 @@ export default function Players() {
           <span className="min-w-[160px]">Player</span>
           <span className="w-10">Tier</span>
           <span className="w-16 text-right">Ceiling</span>
+          <span className="w-16 text-right">AI Ceil</span>
           <span className="w-16 text-right">System</span>
           <span className="w-16 text-right">Market</span>
           <span className="w-24">Gap</span>
