@@ -26,6 +26,17 @@ SKILL_POSITIONS = {"QB", "RB", "WR", "TE"}
 # Name normalization utilities — shared by all agents
 # ---------------------------------------------------------------------------
 
+# Nickname → canonical name mapping for players known by alternate names.
+# Keys and values should be lowercase.
+_NICKNAME_ALIASES: dict[str, str] = {
+    "hollywood brown": "marquise brown",
+    "scotty miller": "scott miller",
+    "mitch trubisky": "mitchell trubisky",
+    "robby anderson": "chosen anderson",
+    "willie snead": "willie snead iv",
+}
+
+
 def normalize_player_name(name: str) -> str:
     """
     Normalize player names for matching across data sources.
@@ -34,10 +45,14 @@ def normalize_player_name(name: str) -> str:
       - Double initials: D.K. → dk, A.J. → aj, J.K. → jk
       - Apostrophes: Ja'Marr → jamarr
       - Trailing/extra periods
+      - Nickname aliases (Hollywood Brown → Marquise Brown)
     """
     if not name:
         return ""
     normalized = name.lower().strip()
+    # Apply nickname aliases before further normalization
+    if normalized in _NICKNAME_ALIASES:
+        normalized = _NICKNAME_ALIASES[normalized]
     # Remove name suffixes at end of string
     normalized = re.sub(r"\s+(jr\.?|sr\.?|ii|iii|iv)$", "", normalized)
     # Normalize double-initial patterns: "d.k." → "dk", "a.j." → "aj"

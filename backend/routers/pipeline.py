@@ -250,27 +250,32 @@ async def import_league_auction(
     )
 
 
-@router.post("/sync-league-auction-yahoo", response_model=PipelineResponse)
-async def sync_league_auction_yahoo(
-    year: int = Query(..., description="Season year to sync"),
-):
+@router.post("/sync-league-history", response_model=PipelineResponse)
+async def sync_league_history():
     """
-    Pull auction draft results from Yahoo API and import into league_auction_history.
-    Requires active league + YAHOO_LEAGUE_ID (August+).
+    Auto-discover all historical auction leagues via Yahoo API and pull draft results.
+    Syncs all past seasons that haven't been synced yet.
+    Refreshes market_value_league from the latest year after sync.
     """
     from backend.database import AsyncSessionLocal
-    from backend.engines.league_auction import sync_league_auction_from_yahoo, refresh_market_value_league
+    from backend.engines.league_auction import sync_all_league_history
 
     async with AsyncSessionLocal() as session:
-        result = await sync_league_auction_from_yahoo(session, year)
-        refresh = await refresh_market_value_league(session, year)
+        result = await sync_all_league_history(session)
+
+    synced = result.get("synced_seasons", [])
+    skipped = result.get("skipped_seasons", [])
+    errors = result.get("errors", [])
+
+    if result.get("error"):
+        raise HTTPException(status_code=400, detail=result["error"])
 
     return PipelineResponse(
         status="complete",
         message=(
-            f"Yahoo auction sync: {result['matched']} matched, "
-            f"{result['unmatched']} unmatched. "
-            f"Refreshed market_value_league for {refresh['updated']} players."
+            f"League history sync: {len(synced)} seasons synced, "
+            f"{len(skipped)} skipped, {result.get('total_picks', 0)} total picks. "
+            f"{len(errors)} errors."
         ),
-        details={**result, "refresh": refresh},
+        details=result,
     )

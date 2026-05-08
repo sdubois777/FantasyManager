@@ -74,7 +74,7 @@ async def yahoo_callback(code: str):
     return {
         "status": "ok",
         "message": (
-            "OAuth complete. Copy YAHOO_REFRESH_TOKEN from server logs to .env, "
+            "OAuth complete. Copy YAHOO_REFRESH_TOKEN below to .env, "
             "then restart the app."
         ),
         "has_access_token": bool(access_token),

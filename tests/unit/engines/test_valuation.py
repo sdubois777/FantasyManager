@@ -86,25 +86,25 @@ def test_ppr_to_system_value_zero_total_par_returns_one_dollar():
 # ===========================================================================
 
 def test_tier1_bid_ceiling_uses_anchor_weight():
-    """Tier 1: blend = system × 0.20 + risk_adj_market × 0.80, then × scarcity."""
+    """Tier 1: blend = system × 0.15 + risk_adj_market × 0.85, then × scarcity."""
     sv = Decimal("40")
     mv = Decimal("50")
     # low risk = 0% discount → risk_adj_market = 50
-    # anchor = 0.80 → blend = 40×0.20 + 50×0.80 = 8 + 40 = 48
-    # scarcity for WR T1 = 1.20 → 48 × 1.20 = 57.60
+    # anchor = 0.85 → blend = 40×0.15 + 50×0.85 = 6 + 42.5 = 48.5
+    # scarcity for WR T1 = 1.20 → 48.5 × 1.20 = 58.20
     ceiling = compute_bid_ceiling(sv, mv, tier=1, position="WR", risk_level="low")
-    assert ceiling == Decimal("57.60")
+    assert ceiling == Decimal("58.20")
 
 
-def test_tier1_anchor_weight_is_0_80():
-    assert ANCHOR_WEIGHTS[1] == Decimal("0.80")
+def test_tier1_anchor_weight_is_0_85():
+    assert ANCHOR_WEIGHTS[1] == Decimal("0.85")
 
 
 def test_scarcity_modifier_applied_to_tier1_rb():
     """Tier 1 RB scarcity modifier = 1.35."""
     sv = Decimal("40")
     mv = Decimal("40")
-    # blend = 40×0.20 + 40×0.80 = 40, scarcity 1.35 → 40×1.35 = 54
+    # blend = 40×0.15 + 40×0.85 = 40, scarcity 1.35 → 40×1.35 = 54
     ceiling = compute_bid_ceiling(sv, mv, tier=1, position="RB")
     assert ceiling == Decimal("54.00")
 
@@ -121,47 +121,50 @@ def test_tier1_wr_scarcity_modifier_is_1_20():
 # compute_bid_ceiling — Tier 2/3
 # ===========================================================================
 
-def test_tier2_bid_ceiling_uses_85_15_blend():
-    """Tier 2: blend = system × 0.85 + risk_adj_market × 0.15."""
+def test_tier2_bid_ceiling_uses_anchor_weight():
+    """Tier 2: anchor=0.65 → blend = system × 0.35 + market × 0.65."""
     sv = Decimal("20")
     mv = Decimal("30")
     # low risk → risk_adj_market = 30
-    # blend = 20×0.85 + 30×0.15 = 17 + 4.5 = 21.5
+    # blend = 20×0.35 + 30×0.65 = 7 + 19.5 = 26.5
     ceiling = compute_bid_ceiling(sv, mv, tier=2, position="WR")
-    assert ceiling == Decimal("21.50")
+    assert ceiling == Decimal("26.50")
 
 
-def test_tier3_bid_ceiling_uses_85_15_blend():
+def test_tier3_bid_ceiling_uses_anchor_weight():
+    """Tier 3: anchor=0.40 → blend = system × 0.60 + market × 0.40."""
     sv = Decimal("10")
     mv = Decimal("15")
-    # blend = 10×0.85 + 15×0.15 = 8.5 + 2.25 = 10.75
+    # blend = 10×0.60 + 15×0.40 = 6 + 6 = 12
     ceiling = compute_bid_ceiling(sv, mv, tier=3, position="RB")
-    assert ceiling == Decimal("10.75")
+    assert ceiling == Decimal("12.00")
 
 
 # ===========================================================================
 # compute_bid_ceiling — Tier 4/5
 # ===========================================================================
 
-def test_tier4_bid_ceiling_ignores_market_value():
-    """Tier 4: ceiling = system_value, market ignored."""
+def test_tier4_bid_ceiling_uses_small_market_weight():
+    """Tier 4: anchor=0.15 → blend = system × 0.85 + market × 0.15."""
     sv = Decimal("5")
-    mv = Decimal("100")   # large market value — should not influence ceiling
+    mv = Decimal("100")
+    # blend = 5×0.85 + 100×0.15 = 4.25 + 15 = 19.25
     ceiling = compute_bid_ceiling(sv, mv, tier=4, position="RB")
-    assert ceiling == Decimal("5.00")
+    assert ceiling == Decimal("19.25")
 
 
 def test_tier5_bid_ceiling_ignores_market_value():
+    """Tier 5: anchor=0.00 → ceiling = system_value."""
     sv = Decimal("3")
     mv = Decimal("50")
     ceiling = compute_bid_ceiling(sv, mv, tier=5, position="WR")
     assert ceiling == Decimal("3.00")
 
 
-def test_tier4_bid_ceiling_uses_system_value_only():
-    """Confirm Tier 4-5 is exactly system_value (no market influence)."""
+def test_tier5_bid_ceiling_uses_system_value_only():
+    """Confirm Tier 5 is exactly system_value (no market influence)."""
     sv = Decimal("7")
-    ceiling = compute_bid_ceiling(sv, None, tier=4, position="QB")
+    ceiling = compute_bid_ceiling(sv, None, tier=5, position="QB")
     assert ceiling == sv
 
 
@@ -173,10 +176,10 @@ def test_risk_discount_reduces_market_before_blend():
     """High risk (15% discount) reduces market_value before blending."""
     sv = Decimal("30")
     mv = Decimal("40")
-    # Tier 2, high risk: risk_adjusted_market = 40 × (1 - 0.15) = 34
-    # blend = 30 × 0.85 + 34 × 0.15 = 25.5 + 5.1 = 30.6
+    # Tier 2 (anchor=0.65), high risk: risk_adjusted_market = 40 × (1 - 0.15) = 34
+    # blend = 30 × 0.35 + 34 × 0.65 = 10.5 + 22.1 = 32.6
     ceiling = compute_bid_ceiling(sv, mv, tier=2, position="WR", risk_level="high")
-    assert ceiling == Decimal("30.60")
+    assert ceiling == Decimal("32.60")
 
 
 def test_low_risk_no_market_discount():
@@ -197,7 +200,7 @@ def test_ceiling_minimum_is_one_dollar():
 def test_market_value_none_uses_system_value_for_blend():
     """When market_value is None, market treated as = system_value → neutral blend."""
     sv = Decimal("20")
-    # Tier 2, no market → blend = 20×0.85 + 20×0.15 = 20
+    # Tier 2, no market → blend = 20×0.35 + 20×0.65 = 20
     ceiling = compute_bid_ceiling(sv, None, tier=2, position="WR")
     assert ceiling == Decimal("20.00")
 
@@ -1102,8 +1105,9 @@ async def test_replacement_floor_not_applied_when_dynamic_higher():
     with patch("backend.engines.valuation.AsyncSessionLocal", return_value=session):
         result = await run_valuation_pass()
 
-    # Last WR = 320 - 4*10 = 280. Dynamic replacement = 280 > 119 floor
-    assert result["replacement_levels"]["WR"] == pytest.approx(280.0)
+    # Last WR = 320 - 4*10 = 280. Dynamic = 280, but max cap = 9.0 PPG × 17 = 153.
+    # Replacement is capped at 153.
+    assert result["replacement_levels"]["WR"] == pytest.approx(153.0)
 
 
 @pytest.mark.asyncio
@@ -1151,10 +1155,10 @@ def test_volatile_still_draftable():
     sv = Decimal("21")
     mv = Decimal("49")
     # volatile discount = 22%: risk_adj_market = 49 × 0.78 = 38.22
-    # T2 blend = 21 × 0.85 + 38.22 × 0.15 = 17.85 + 5.733 = 23.583
+    # T2 anchor=0.65: blend = 21 × 0.35 + 38.22 × 0.65 = 7.35 + 24.843 = 32.193
     ceiling = compute_bid_ceiling(sv, mv, tier=2, position="WR", risk_level="volatile")
     assert ceiling > Decimal("20.00")
-    assert ceiling < Decimal("30.00")
+    assert ceiling < Decimal("40.00")
 
 
 def test_risk_discount_constants_valid():
@@ -1183,10 +1187,10 @@ def test_healthy_tier1_near_market():
     sv = Decimal("55")
     mv = Decimal("60")
     # low risk → risk_adj_market = 60
-    # blend = 55 × 0.20 + 60 × 0.80 = 11 + 48 = 59
-    # scarcity RB = 1.35 → 59 × 1.35 = 79.65
+    # T1 anchor=0.85: blend = 55 × 0.15 + 60 × 0.85 = 8.25 + 51 = 59.25
+    # scarcity RB = 1.35 → 59.25 × 1.35 = 79.9875
     ceiling = compute_bid_ceiling(sv, mv, tier=1, position="RB", risk_level="low")
-    assert ceiling == Decimal("79.65")
+    assert ceiling == Decimal("79.99")
 
 
 def test_risk_level_not_risk_modifier_in_ceiling():
@@ -1203,10 +1207,10 @@ def test_amon_ra_ceiling_above_20():
     sv = Decimal("21")
     mv = Decimal("49")
     # high discount = 15%: risk_adj_market = 49 × 0.85 = 41.65
-    # blend = 21 × 0.85 + 41.65 × 0.15 = 17.85 + 6.2475 = 24.0975
+    # T2 anchor=0.65: blend = 21 × 0.35 + 41.65 × 0.65 = 7.35 + 27.0725 = 34.4225
     ceiling = compute_bid_ceiling(sv, mv, tier=2, position="WR", risk_level="high")
-    assert ceiling > Decimal("20.00")
-    assert ceiling == Decimal("24.10")
+    assert ceiling > Decimal("30.00")
+    assert ceiling == Decimal("34.42")
 
 
 def test_cmc_ceiling_above_45():
@@ -1214,11 +1218,11 @@ def test_cmc_ceiling_above_45():
     sv = Decimal("55")
     mv = Decimal("60")
     # moderate discount = 8%: risk_adj_market = 60 × 0.92 = 55.2
-    # blend = 55 × 0.20 + 55.2 × 0.80 = 11 + 44.16 = 55.16
-    # scarcity RB = 1.35 → 55.16 × 1.35 = 74.466
+    # T1 anchor=0.85: blend = 55 × 0.15 + 55.2 × 0.85 = 8.25 + 46.92 = 55.17
+    # scarcity RB = 1.35 → 55.17 × 1.35 = 74.4795
     ceiling = compute_bid_ceiling(sv, mv, tier=1, position="RB", risk_level="moderate")
     assert ceiling > Decimal("45.00")
-    assert ceiling == Decimal("74.47")
+    assert ceiling == Decimal("74.48")
 
 
 @pytest.mark.asyncio

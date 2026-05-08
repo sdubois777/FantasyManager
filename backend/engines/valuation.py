@@ -19,20 +19,14 @@ Formulas from docs/ARCHITECTURE.md — Two-Value Auction System:
 
   risk_adjusted_market = market_value × (1 - RISK_MARKET_DISCOUNT[risk_level])
 
-  Tier 1:
+  All tiers:
     blend = system_value × (1 - anchor_weight) + risk_adjusted_market × anchor_weight
-    ceiling = blend × positional_scarcity_modifier
-
-  Tier 2-3:
-    blend = system_value × 0.85 + risk_adjusted_market × 0.15
-    ceiling = blend
-
-  Tier 4-5:
-    ceiling = system_value
+    ceiling = blend × positional_scarcity_modifier (T1 only)
 
   let_go_threshold = ceiling × LET_GO_MULTIPLIER[risk_level]
 
-Anchor weights: T1=0.80, T2=0.40, T3=0.15, T4-5=0.00
+Anchor weights (market weight per tier):
+  T1=0.85, T2=0.65, T3=0.40, T4=0.15, T5=0.00
 Scarcity:       T1 RB=1.35, T1 WR=1.20, T1 QB/TE=1.10
 Risk discounts:  low=0%, moderate=8%, high=15%, volatile=22%
 Let-go:          low=1.20×, moderate=1.15×, high=1.10×, volatile=1.05×
@@ -94,6 +88,15 @@ REPLACEMENT_LEVEL_PPR_PER_GAME: dict[str, float] = {
     "TE": 5.0,
 }
 
+# Maximum replacement-level PPR per game — prevents over-compression when
+# profile data inflates bench player projections above realistic levels.
+REPLACEMENT_LEVEL_MAX_PPR_PER_GAME: dict[str, float] = {
+    "QB": 22.0,   # ~374 season — streamable QB ceiling
+    "RB": 10.0,   # ~170 season — waiver wire RB2 ceiling
+    "WR": 9.0,    # ~153 season — waiver wire WR3 ceiling
+    "TE": 7.0,    # ~119 season — streamable TE ceiling
+}
+
 # Injury recovery discount applied to PPR baseline for players with major injuries
 POST_MAJOR_INJURY_DISCOUNT = 0.75  # 25% discount
 
@@ -131,10 +134,10 @@ def assign_tier(rank: int) -> int:
 # ---------------------------------------------------------------------------
 
 ANCHOR_WEIGHTS: dict[int, Decimal] = {
-    1: Decimal("0.80"),
-    2: Decimal("0.40"),
-    3: Decimal("0.15"),
-    4: Decimal("0.00"),
+    1: Decimal("0.85"),
+    2: Decimal("0.65"),
+    3: Decimal("0.40"),
+    4: Decimal("0.15"),
     5: Decimal("0.00"),
 }
 
@@ -230,18 +233,14 @@ def compute_bid_ceiling(
     discount = RISK_MARKET_DISCOUNT.get(risk_level, Decimal("0.00"))
     risk_adjusted_market = mv * (Decimal("1") - discount)
 
+    anchor = ANCHOR_WEIGHTS.get(tier, Decimal("0.00"))
+    blend = system_value * (Decimal("1") - anchor) + risk_adjusted_market * anchor
+
     if tier == 1:
-        anchor = ANCHOR_WEIGHTS[1]
-        blend = system_value * (Decimal("1") - anchor) + risk_adjusted_market * anchor
         scarcity = SCARCITY_MODIFIERS.get(position, Decimal("1.00"))
         ceiling = blend * scarcity
-
-    elif tier in (2, 3):
-        blend = system_value * Decimal("0.85") + risk_adjusted_market * Decimal("0.15")
+    else:
         ceiling = blend
-
-    else:  # Tier 4-5
-        ceiling = system_value
 
     return _to_dec(max(Decimal("1.00"), ceiling))
 
@@ -527,10 +526,11 @@ async def run_valuation_pass(
             sorted_pprs = [adj_ppr for _, _, adj_ppr in group]
             dynamic_repl = calculate_replacement_level(sorted_pprs, pool_size)
 
-            # Enforce LEAGUE_RULES.md replacement floor (PPR/game × 17 games)
+            # Enforce replacement level bounds (PPR/game × 17 games)
             floor_ppr = REPLACEMENT_LEVEL_PPR_PER_GAME.get(pos, 0.0) * 17
-            repl_ppr = max(dynamic_repl, floor_ppr)
-            if repl_ppr > dynamic_repl:
+            max_ppr = REPLACEMENT_LEVEL_MAX_PPR_PER_GAME.get(pos, 15.0) * 17
+            repl_ppr = min(max(dynamic_repl, floor_ppr), max_ppr)
+            if repl_ppr > dynamic_repl and repl_ppr == floor_ppr:
                 repl_name = "?"
                 if len(sorted_pprs) >= pool_size:
                     # Find the replacement player's name for logging
@@ -540,6 +540,11 @@ async def run_valuation_pass(
                     "(#%d %s) < floor=%.1f (%.1f PPG × 17)",
                     pos, dynamic_repl, pool_size, repl_name,
                     floor_ppr, REPLACEMENT_LEVEL_PPR_PER_GAME[pos],
+                )
+            if dynamic_repl > max_ppr:
+                logger.info(
+                    "%s replacement cap enforced: dynamic=%.1f > max=%.1f (%.1f PPG × 17)",
+                    pos, dynamic_repl, max_ppr, REPLACEMENT_LEVEL_MAX_PPR_PER_GAME[pos],
                 )
 
             total_par = sum(max(0.0, adj_ppr - repl_ppr) for _, _, adj_ppr in group)

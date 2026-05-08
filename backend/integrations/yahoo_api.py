@@ -322,6 +322,245 @@ async def get_rosters() -> dict[str, list[dict[str, Any]]]:
 
 
 # ---------------------------------------------------------------------------
+# Historical league discovery + draft data (available year-round)
+# ---------------------------------------------------------------------------
+
+async def get_all_user_leagues() -> list[dict[str, Any]]:
+    """
+    Discover all seasons of a league by following Yahoo's renew/renewed chain.
+
+    Yahoo assigns a different league_id each season but links them via
+    ``renew`` (previous season) and ``renewed`` (next season) fields.
+    We start from a known league key and walk both directions.
+
+    Requires YAHOO_LEAGUE_ID to be set. Tries recent game keys (2020-2026)
+    to find the starting league, then follows the chain in both directions.
+
+    Returns list of dicts sorted by season ascending:
+        {league_key, league_id, name, season, num_teams, draft_type, is_auction}
+    """
+    league_id = settings.yahoo_league_id
+    if not league_id:
+        return []
+
+    # Recent NFL game keys (season -> game_key) — used to find our starting point
+    # We try each until we find one that works with our league_id
+    # Verified from Yahoo API: game_key 423=2023, 449=2024, 461=2025, 470=2026
+    _GAME_KEYS = {
+        2026: "470", 2025: "461", 2024: "449", 2023: "423",
+        2022: "414", 2021: "406", 2020: "399", 2019: "390",
+        2018: "380", 2017: "371", 2016: "359",
+    }
+
+    # Step 1: Find a valid starting league key
+    start_key: str | None = None
+    for year in sorted(_GAME_KEYS.keys(), reverse=True):
+        gk = _GAME_KEYS[year]
+        candidate = f"{gk}.l.{league_id}"
+        try:
+            data = await _api_get(f"league/{candidate}")
+            league_info = data.get("fantasy_content", {}).get("league", [{}])[0]
+            if league_info.get("league_key"):
+                start_key = candidate
+                logger.info("Found starting league: %s (season %s)", candidate, league_info.get("season"))
+                break
+        except Exception:
+            continue  # 403/404 — this game_key doesn't have our league
+
+    if not start_key:
+        logger.warning("Could not find league_id=%s in any recent season", league_id)
+        return []
+
+    # Step 2: Walk the chain in both directions
+    leagues: list[dict[str, Any]] = []
+    visited: set[str] = set()
+
+    async def _fetch_league(key: str) -> dict[str, Any] | None:
+        if key in visited:
+            return None
+        visited.add(key)
+        try:
+            data = await _api_get(f"league/{key}")
+            info = data.get("fantasy_content", {}).get("league", [{}])[0]
+            if not info.get("league_key"):
+                return None
+            return info
+        except Exception as e:
+            logger.debug("Could not fetch league %s: %s", key, e)
+            return None
+
+    def _parse_link(link: str) -> str | None:
+        """Parse 'game_key_league_id' format like '414_74752' → '414.l.74752'."""
+        if not link:
+            return None
+        parts = link.split("_")
+        if len(parts) == 2:
+            return f"{parts[0]}.l.{parts[1]}"
+        return None
+
+    def _to_league_dict(info: dict) -> dict[str, Any]:
+        return {
+            "league_key": info.get("league_key"),
+            "league_id": info.get("league_id"),
+            "name": info.get("name"),
+            "season": info.get("season"),
+            "num_teams": info.get("num_teams"),
+            "draft_type": info.get("draft_type"),
+            "is_auction": str(info.get("draft_type", "")).lower() == "auction",
+        }
+
+    # Walk backwards via "renew"
+    current = start_key
+    while current:
+        info = await _fetch_league(current)
+        if not info:
+            break
+        leagues.append(_to_league_dict(info))
+        current = _parse_link(info.get("renew", ""))
+
+    # Walk forwards via "renewed" (starting from start_key's renewed)
+    info = await _fetch_league(start_key)  # already visited, returns None
+    # Re-fetch to get renewed link (we already have it in leagues)
+    start_info = leagues[0] if leagues else None
+    # Get renewed from the original start_key fetch
+    try:
+        data = await _api_get(f"league/{start_key}")
+        first_info = data.get("fantasy_content", {}).get("league", [{}])[0]
+        current = _parse_link(first_info.get("renewed", ""))
+    except Exception:
+        current = None
+
+    while current:
+        info = await _fetch_league(current)
+        if not info:
+            break
+        leagues.append(_to_league_dict(info))
+        current = _parse_link(info.get("renewed", ""))
+
+    logger.info("Discovered %d seasons via league chain", len(leagues))
+    return sorted(leagues, key=lambda x: int(x.get("season") or 0))
+
+
+async def get_draft_results_for_league(league_key: str) -> list[dict[str, Any]]:
+    """
+    Pull complete draft results for a specific league (any season).
+
+    Historical draft data is available year-round — no active league required.
+    Returns list of: {pick, round, team_key, player_key, cost}
+    """
+    data = await _api_get(f"league/{league_key}/draftresults")
+    content = data.get("fantasy_content", {}).get("league", [{}, {}])
+    results_raw = content[1].get("draft_results", {}) if len(content) > 1 else {}
+
+    picks: list[dict[str, Any]] = []
+    for key, val in results_raw.items():
+        if key == "count":
+            continue
+        pick = val.get("draft_result", {})
+        picks.append({
+            "pick": pick.get("pick"),
+            "round": pick.get("round"),
+            "team_key": pick.get("team_key"),
+            "player_key": pick.get("player_key"),
+            "cost": pick.get("cost"),
+        })
+    return picks
+
+
+async def get_player_details_batch(player_keys: list[str]) -> list[dict[str, Any]]:
+    """
+    Resolve player keys to names, positions, and NFL teams.
+
+    Yahoo allows up to 25 players per request.
+    Returns list of: {player_key, name, position, nfl_team}
+    """
+    if not player_keys:
+        return []
+
+    keys_str = ",".join(player_keys[:25])
+    data = await _api_get(f"players;player_keys={keys_str}")
+    content = data.get("fantasy_content", {}).get("players", {})
+
+    players: list[dict[str, Any]] = []
+    for key, val in content.items():
+        if key == "count":
+            continue
+        player_list = val.get("player", [{}])
+        first = player_list[0] if player_list else {}
+        # Yahoo nests player fields as a list of single-key dicts — flatten
+        if isinstance(first, list):
+            info: dict[str, Any] = {}
+            for item in first:
+                if isinstance(item, dict):
+                    info.update(item)
+        else:
+            info = first
+
+        name_data = info.get("name", {})
+        full_name = name_data.get("full", "") if isinstance(name_data, dict) else ""
+        position = ""
+        display_position = info.get("display_position", "")
+        if display_position:
+            position = display_position.split(",")[0]  # Take primary position
+
+        players.append({
+            "player_key": info.get("player_key"),
+            "name": full_name,
+            "position": position,
+            "nfl_team": info.get("editorial_team_abbr", ""),
+        })
+
+    return players
+
+
+async def get_teams_in_league(league_key: str) -> list[dict[str, Any]]:
+    """
+    Get all teams with manager names for a specific league (any season).
+
+    Returns list of: {team_key, team_name, manager_name}
+    """
+    data = await _api_get(f"league/{league_key}/teams")
+    content = data.get("fantasy_content", {}).get("league", [{}, {}])
+    teams_raw = content[1].get("teams", {}) if len(content) > 1 else {}
+
+    teams: list[dict[str, Any]] = []
+    for key, val in teams_raw.items():
+        if key == "count":
+            continue
+        team_data = val.get("team", [{}])
+        team_entry = team_data[0] if team_data else {}
+        # Yahoo sometimes returns nested lists of field dicts — flatten
+        if isinstance(team_entry, list):
+            merged: dict[str, Any] = {}
+            for item in team_entry:
+                if isinstance(item, dict):
+                    merged.update(item)
+            team_entry = merged
+
+        # Manager info can be nested in a managers dict
+        manager_name = ""
+        managers = team_entry.get("managers", {})
+        if isinstance(managers, dict):
+            for mkey, mval in managers.items():
+                if mkey == "count":
+                    continue
+                mgr = mval.get("manager", {}) if isinstance(mval, dict) else {}
+                manager_name = mgr.get("nickname", mgr.get("guid", ""))
+                break  # Take first manager
+        elif isinstance(managers, list) and managers:
+            mgr = managers[0].get("manager", {}) if isinstance(managers[0], dict) else {}
+            manager_name = mgr.get("nickname", mgr.get("guid", ""))
+
+        teams.append({
+            "team_key": team_entry.get("team_key"),
+            "team_name": team_entry.get("name", ""),
+            "manager_name": manager_name,
+        })
+
+    return teams
+
+
+# ---------------------------------------------------------------------------
 # DB sync functions
 # ---------------------------------------------------------------------------
 
