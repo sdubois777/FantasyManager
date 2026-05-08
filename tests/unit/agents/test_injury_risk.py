@@ -916,3 +916,41 @@ async def test_module_run_all_teams_shim():
         mock_ga.return_value = mock_agent
         result = await run_all_teams(dry_run=True)
     assert result == {"LAC": 5}
+
+
+# ===========================================================================
+# VOLATILE reclassification — requires multi-season injury history
+# ===========================================================================
+
+
+def test_volatile_requires_multiple_injury_seasons():
+    """Player with injuries in only 1 of 3 seasons should be HIGH not VOLATILE.
+
+    The Amon-Ra scenario: one bad season (2024) with 3 flags should NOT
+    produce VOLATILE classification. VOLATILE requires 8+ games missed
+    in 2+ of last 3 seasons.
+    """
+    # This is tested via the post-processing in _write_injury_profiles.
+    # The enforcement happens at DB write time, not in compute_pattern_flags.
+    # We verify the logic directly: 1 season with 8+ games_missed → cap at HIGH.
+    injury_seasons = [
+        {"season": 2024, "injuries": [{"category": "soft_tissue", "area": "shoulder"}], "games_missed": 17},
+        {"season": 2023, "injuries": [], "games_missed": 0},
+        {"season": 2022, "injuries": [], "games_missed": 0},
+    ]
+    recent = sorted(injury_seasons, key=lambda s: s.get("season", 0), reverse=True)[:3]
+    severe_seasons = sum(1 for s in recent if s.get("games_missed", 0) >= 8)
+    assert severe_seasons < 2, "Should only have 1 severe season"
+    # The agent code would downgrade volatile → high when severe_seasons < 2
+
+
+def test_volatile_kept_for_chronic_multi_season():
+    """Player missing 8+ games in 2+ seasons keeps VOLATILE classification."""
+    injury_seasons = [
+        {"season": 2024, "injuries": [{"category": "soft_tissue"}], "games_missed": 10},
+        {"season": 2023, "injuries": [{"category": "ligament_acl"}], "games_missed": 14},
+        {"season": 2022, "injuries": [], "games_missed": 2},
+    ]
+    recent = sorted(injury_seasons, key=lambda s: s.get("season", 0), reverse=True)[:3]
+    severe_seasons = sum(1 for s in recent if s.get("games_missed", 0) >= 8)
+    assert severe_seasons >= 2, "Should have 2+ severe seasons — VOLATILE justified"

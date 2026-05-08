@@ -853,6 +853,124 @@ def test_dependency_adjustment_contingent_skipped():
     assert result == 300.0  # no change
 
 
+# ===========================================================================
+# Tier from raw PPR, risk modifier cap, phantom flag validation
+# ===========================================================================
+
+from backend.engines.valuation import _get_risk_modifier, MAX_RISK_MODIFIER
+
+
+@pytest.mark.asyncio
+async def test_tier_from_raw_ppr_not_adjusted():
+    """Player with dependency adjustment still gets tier from raw PPR rank.
+
+    Amon-Ra scenario: 262 raw PPR → rank 8 among WRs → Tier 2,
+    even though adjusted_ppr is ~196 after displaced flag.
+    """
+    # Create 10 WRs: #8 has a -25% displaced flag
+    mock_players = []
+    for i in range(10):
+        ppr = 300 - i * 5  # 300, 295, 290, ... 255
+        p = _make_player("WR", ppr_points=ppr)
+        p.name = f"WR_{i+1}"
+        if i == 7:  # rank 8 — like Amon-Ra
+            p.name = "Amon-Ra"
+            dep = _make_dep("displaced", "active_and_healthy", -0.25)
+            p.dependencies = [dep]
+        mock_players.append(p)
+
+    session = AsyncMock()
+    session.__aenter__ = AsyncMock(return_value=session)
+    session.__aexit__ = AsyncMock(return_value=False)
+    session.execute = AsyncMock(
+        return_value=MagicMock(scalars=MagicMock(
+            return_value=MagicMock(all=MagicMock(return_value=mock_players))))
+    )
+    session.add = MagicMock()
+    session.commit = AsyncMock()
+
+    with patch("backend.engines.valuation.AsyncSessionLocal", return_value=session):
+        await run_valuation_pass()
+
+    amon_ra = [p for p in mock_players if p.name == "Amon-Ra"][0]
+    # Rank 8 by raw PPR → Tier 2 (cutoff ≤ 9)
+    assert amon_ra.tier == 2, f"Amon-Ra tier should be 2, got {amon_ra.tier}"
+    # Dollar value should still be reduced (adjusted PPR used for PAR)
+    assert amon_ra.baseline_value is not None
+
+
+def test_risk_modifier_capped_at_40pct():
+    """Risk modifier worse than -0.40 is capped to -0.40."""
+    inj = MagicMock()
+    inj.risk_adjusted_value_modifier = Decimal("-0.48")
+    result = _get_risk_modifier(inj)
+    assert result == MAX_RISK_MODIFIER  # -0.40
+
+
+def test_risk_modifier_within_range_unchanged():
+    """Risk modifier within range passes through unchanged."""
+    inj = MagicMock()
+    inj.risk_adjusted_value_modifier = Decimal("-0.25")
+    result = _get_risk_modifier(inj)
+    assert result == Decimal("-0.25")
+
+
+def test_risk_modifier_none_when_no_profile():
+    """No injury profile returns None."""
+    assert _get_risk_modifier(None) is None
+
+
+def test_risk_modifier_not_applied_twice():
+    """Risk modifier affects bid ceiling and risk_adjusted_value but not sv.
+
+    sv (baseline_value) comes from adjusted_ppr via PAR.
+    risk_modifier is applied separately in compute_bid_ceiling and risk_adj.
+    The risk modifier must NOT be embedded in ppr_to_system_value.
+    """
+    # ppr_to_system_value has no risk_modifier parameter
+    import inspect
+    sig = inspect.signature(ppr_to_system_value)
+    param_names = list(sig.parameters.keys())
+    assert "risk_modifier" not in param_names
+    assert "risk" not in " ".join(param_names).lower()
+
+
+@pytest.mark.asyncio
+async def test_no_high_market_player_in_tier4():
+    """No player with market_value > $35 should end up in Tier 4 or worse.
+
+    This catches the Amon-Ra bug where dependency adjustments
+    pushed a top player into low tiers.
+    """
+    mock_players = []
+    # 40 WRs: top 10 have market_value $40+
+    for i in range(40):
+        ppr = 340 - i * 5
+        mv = max(1, 60 - i * 2)
+        p = _make_player("WR", ppr_points=ppr, market_value=float(mv))
+        p.name = f"WR_{i+1}"
+        mock_players.append(p)
+
+    session = AsyncMock()
+    session.__aenter__ = AsyncMock(return_value=session)
+    session.__aexit__ = AsyncMock(return_value=False)
+    session.execute = AsyncMock(
+        return_value=MagicMock(scalars=MagicMock(
+            return_value=MagicMock(all=MagicMock(return_value=mock_players))))
+    )
+    session.add = MagicMock()
+    session.commit = AsyncMock()
+
+    with patch("backend.engines.valuation.AsyncSessionLocal", return_value=session):
+        await run_valuation_pass()
+
+    for p in mock_players:
+        if p.market_value and p.market_value > Decimal("35"):
+            assert p.tier is not None and p.tier <= 3, (
+                f"{p.name} has market_value=${p.market_value} but tier={p.tier}"
+            )
+
+
 def test_dependency_adjustment_scheme_fit_half_weight():
     """SCHEME_FIT applied at half weight pre-draft."""
     dep = _make_dep("scheme_fit", "active_and_healthy", 0.20)

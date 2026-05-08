@@ -412,7 +412,10 @@ async def run_valuation_pass(
         players: list[Player] = (await session.execute(stmt)).scalars().all()
 
         # --------------- Group by position, extract ppr_points ---------------
-        pos_groups: dict[str, list[tuple[Player, float]]] = {
+        # Store (player, raw_ppr, adjusted_ppr) tuples.
+        # raw_ppr: used for tier ranking (talent/role, never affected by risk)
+        # adjusted_ppr: used for dollar value conversion (reflects risk and dependencies)
+        pos_groups: dict[str, list[tuple[Player, float, float]]] = {
             p: [] for p in DRAFTABLE_POSITIONS
         }
         valued_player_ids: set = set()
@@ -425,17 +428,19 @@ async def run_valuation_pass(
             # They'll be cleared by the stale-value sweep below.
             if not player.team_abbr or player.team_abbr == "FA":
                 continue
-            ppr = _extract_ppr(player.profile)
-            # FIX 4: Apply injury discount to PPR baseline for players with
-            # post-ACL or major injury recovery flags
-            if ppr > 0:
-                ppr = _apply_injury_discount(ppr, player.injury_profile, player.profile)
-            if ppr > 0:
-                ppr = _apply_dependency_adjustment(ppr, player.dependencies)
-            if ppr > 0:
-                pos_groups[pos].append((player, ppr))
+            raw_ppr = _extract_ppr(player.profile)
+            if raw_ppr <= 0:
+                continue
+            # Adjusted PPR: apply injury discount and dependency adjustments
+            # for dollar value conversion only — never affects tier ranking
+            adjusted_ppr = raw_ppr
+            adjusted_ppr = _apply_injury_discount(adjusted_ppr, player.injury_profile, player.profile)
+            if adjusted_ppr > 0:
+                adjusted_ppr = _apply_dependency_adjustment(adjusted_ppr, player.dependencies)
+            adjusted_ppr = max(0.0, adjusted_ppr)
+            pos_groups[pos].append((player, raw_ppr, adjusted_ppr))
 
-        # Sort each group descending by PPR
+        # Sort each group descending by RAW PPR — tier is about talent, not risk
         for pos in pos_groups:
             pos_groups[pos].sort(key=lambda x: x[1], reverse=True)
 
@@ -445,7 +450,8 @@ async def run_valuation_pass(
         par_context: dict[str, dict] = {}
         for pos, group in pos_groups.items():
             pool_size = pool_sizes.get(pos, len(group))
-            sorted_pprs = [ppr for _, ppr in group]
+            # Use adjusted_ppr (x[2]) for PAR calculations — dollar values reflect risk
+            sorted_pprs = [adj_ppr for _, _, adj_ppr in group]
             dynamic_repl = calculate_replacement_level(sorted_pprs, pool_size)
 
             # Enforce LEAGUE_RULES.md replacement floor (PPR/game × 17 games)
@@ -463,7 +469,7 @@ async def run_valuation_pass(
                     floor_ppr, REPLACEMENT_LEVEL_PPR_PER_GAME[pos],
                 )
 
-            total_par = sum(max(0.0, ppr - repl_ppr) for _, ppr in group)
+            total_par = sum(max(0.0, adj_ppr - repl_ppr) for _, _, adj_ppr in group)
             pos_budget = total_budget * POSITION_BUDGET_SHARE[pos]
 
             par_context[pos] = {
@@ -488,12 +494,12 @@ async def run_valuation_pass(
 
         for pos, group in pos_groups.items():
             ctx = par_context[pos]
-            for rank_0, (player, ppr) in enumerate(group):
+            for rank_0, (player, raw_ppr, adjusted_ppr) in enumerate(group):
                 rank = rank_0 + 1
-                tier = assign_tier(rank)
+                tier = assign_tier(rank)  # from RAW PPR rank — talent, not risk
 
                 sv = ppr_to_system_value(
-                    ppr_points        = ppr,
+                    ppr_points        = adjusted_ppr,  # dollar value from risk-adjusted PPR
                     replacement_ppr   = ctx["replacement_ppr"],
                     total_par         = ctx["total_par"],
                     position_budget   = ctx["position_budget"],
@@ -562,7 +568,7 @@ async def run_valuation_pass(
                 skipped += 1
 
         # --------------- Sanity check before commit ----------------------------
-        valued_list = [p for p, _ in
+        valued_list = [p for p, *_ in
                        (item for group in pos_groups.values() for item in group)
                        if p.id in valued_player_ids]
         warnings = sanity_check_valuations(valued_list, float(total_budget))
@@ -605,11 +611,26 @@ def _extract_ppr(profile: Optional[PlayerProfile]) -> float:
         return 0.0
 
 
+# Per LEAGUE_RULES.md: volatile = -35% or worse. Cap at -40% absolute maximum.
+MAX_RISK_MODIFIER = Decimal("-0.40")
+
+
 def _get_risk_modifier(injury_profile: Optional[PlayerInjuryProfile]) -> Optional[Decimal]:
-    """Return risk_adjusted_value_modifier from injury profile, or None."""
+    """Return risk_adjusted_value_modifier from injury profile, or None.
+
+    Capped at MAX_RISK_MODIFIER (-0.40) per LEAGUE_RULES.md — no player
+    should lose more than 40% of value regardless of injury flag stacking.
+    """
     if not injury_profile or injury_profile.risk_adjusted_value_modifier is None:
         return None
-    return Decimal(str(injury_profile.risk_adjusted_value_modifier))
+    modifier = Decimal(str(injury_profile.risk_adjusted_value_modifier))
+    if modifier < MAX_RISK_MODIFIER:
+        logger.info(
+            "Risk modifier capped: %s → %s",
+            modifier, MAX_RISK_MODIFIER,
+        )
+        modifier = MAX_RISK_MODIFIER
+    return modifier
 
 
 def _apply_injury_discount(
@@ -681,6 +702,9 @@ def _apply_dependency_adjustment(ppr: float, dependencies: list) -> float:
             total_adj += impact
         elif flag == "scheme_fit":
             total_adj += impact * 0.5
+        # committee → intentionally not processed here. Committee flags indicate
+        # a timeshare between equals and have no direct valuation adjustment;
+        # displaced (role lost to superior player) is the flag that carries impact.
         # contingent, injured/absent beneficiary → skip pre-draft
 
     if total_adj == 0.0:

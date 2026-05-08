@@ -89,6 +89,13 @@ Event: Keenan Allen signs with LAC
 - `scheme_fit`: Player profile mismatches new OC tendency
 - `college_trust`: QB/WR college connection on same NFL roster (positive, especially Year 1)
 
+**Flag selection rules — committee vs displaced (mutual exclusivity):**
+- `committee`: RB-only. Genuine timeshare between similar-tier backs where neither clearly dominates.
+- `displaced`: Any position. Role reduced by a superior incoming player.
+- **Never assign both** `committee` and `displaced` to the same player for the same trigger.
+- Non-RB positions (WR/TE/QB) never get `committee` — always use `displaced`.
+- Decision tree: if the incoming player is clearly superior → `displaced`. If true timeshare between equals → `committee` (RB only).
+
 **Always flag BOTH sides of a displacement:**
 Displaced player gets DISPLACED (negative) + CONTINGENT (positive if trigger absent).
 

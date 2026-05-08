@@ -75,6 +75,13 @@ CRITICAL RULE — always flag BOTH sides of a displacement:
 - The SAME player ALSO gets a "contingent" flag (positive, trigger_condition=injured)
 Never produce a displaced flag without its matching contingent flag.
 
+FLAG SELECTION RULES — committee vs displaced (mutual exclusivity):
+- COMMITTEE: RB-only. Genuine timeshare between similar-tier backs where neither clearly dominates.
+- DISPLACED: Any position. Role lost to incoming superior player.
+- NEVER assign both committee AND displaced to the same player for the same trigger.
+- Decision tree: incoming player clearly superior → DISPLACED. True timeshare between equals → COMMITTEE (RB only).
+- Non-RB positions (WR/TE/QB) NEVER get committee — always use displaced.
+
 Output ONLY a valid JSON array. No explanation, no preamble, no markdown fences.
 Your entire response must be parseable by json.loads().
 Each element must match this schema exactly:
@@ -92,6 +99,74 @@ Each element must match this schema exactly:
   "reasoning": string,
   "season_year": {analysis_year}
 }}"""
+
+
+# ---------------------------------------------------------------------------
+# Flag validation — reject garbage data before DB write
+# ---------------------------------------------------------------------------
+
+def validate_flag(flag: dict) -> bool:
+    """Reject flags missing required fields. A flag without a trigger is meaningless."""
+    if not (flag.get("trigger_player_name") or "").strip():
+        logger.warning(
+            "Rejected flag for %s: missing trigger_player_name. Flag type: %s",
+            flag.get("player_name"), flag.get("flag_type"),
+        )
+        return False
+    if not flag.get("flag_type"):
+        logger.warning("Rejected flag: missing flag_type")
+        return False
+    if flag.get("value_impact_pct") is None:
+        logger.warning(
+            "Rejected flag for %s: missing value_impact_pct",
+            flag.get("player_name"),
+        )
+        return False
+    return True
+
+
+# ---------------------------------------------------------------------------
+# Post-processing: enforce committee/displaced mutual exclusivity
+# ---------------------------------------------------------------------------
+
+def enforce_flag_mutual_exclusivity(flags: list[dict]) -> list[dict]:
+    """Remove committee flags that conflict with displaced flags for the same trigger.
+
+    Rules:
+    1. Non-RB positions never get committee — convert to displaced.
+    2. If both committee and displaced exist for the same player+trigger,
+       keep displaced and drop committee.
+    """
+    # Step 1: Convert non-RB committee to displaced
+    for f in flags:
+        if (
+            f.get("flag_type") == "committee"
+            and f.get("player_position", "").upper() not in ("RB",)
+        ):
+            f["flag_type"] = "displaced"
+            if f.get("effect_on_value") == "neutral":
+                f["effect_on_value"] = "negative"
+
+    # Step 2: Remove committee where displaced exists for same player+trigger
+    # Build a set of (player_name, trigger_player_name) that have displaced flags
+    displaced_pairs = {
+        (f["player_name"], f.get("trigger_player_name", ""))
+        for f in flags
+        if f.get("flag_type") == "displaced"
+    }
+
+    result = [
+        f for f in flags
+        if not (
+            f.get("flag_type") == "committee"
+            and (f["player_name"], f.get("trigger_player_name", "")) in displaced_pairs
+        )
+    ]
+
+    removed = len(flags) - len(result)
+    if removed:
+        logger.info("Removed %d duplicate committee flags (displaced exists for same trigger)", removed)
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -857,6 +932,9 @@ class RosterChangesAgent(BaseAgent):
                         pick.get("player_name"), exc,
                     )
 
+            # Enforce committee/displaced mutual exclusivity before DB write
+            flags = enforce_flag_mutual_exclusivity(flags)
+
             written = await _write_flags(flags)
 
             # Departure-based BENEFICIARY flags — Python-generated
@@ -1022,6 +1100,15 @@ async def _write_flags(flags: list[dict]) -> int:
     All flags in one batch belong to the same team, so we delete by resolved
     player IDs + season_year before inserting the fresh set.
     """
+    if not flags:
+        return 0
+
+    # Reject flags missing required fields before DB write
+    valid_flags = [f for f in flags if validate_flag(f)]
+    invalid_count = len(flags) - len(valid_flags)
+    if invalid_count > 0:
+        logger.warning("Rejected %d invalid flags before DB write", invalid_count)
+    flags = valid_flags
     if not flags:
         return 0
 

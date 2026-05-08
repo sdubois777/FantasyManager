@@ -14,7 +14,11 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from backend.agents.roster_changes import RosterChangesAgent
+from backend.agents.roster_changes import (
+    RosterChangesAgent,
+    enforce_flag_mutual_exclusivity,
+    validate_flag,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -1107,3 +1111,151 @@ async def test_handle_departures_impact_by_position():
 
     assert wr_flags[0]["value_impact_pct"] == 0.35
     assert rb_flags[0]["value_impact_pct"] == 0.25
+
+
+# ---------------------------------------------------------------------------
+# Committee / Displaced mutual exclusivity
+# ---------------------------------------------------------------------------
+
+def test_non_rb_never_gets_committee_flag():
+    """WR/TE/QB committee flags are converted to displaced by enforce function."""
+    flags = [
+        _make_flag("WR Star", "LAC", "WR", "committee", "Other WR", "LAC",
+                   "active_and_healthy", "neutral", -15),
+        _make_flag("TE Guy", "LAC", "TE", "committee", "New TE", "LAC",
+                   "active_and_healthy", "neutral", -10),
+    ]
+    result = enforce_flag_mutual_exclusivity(flags)
+    for f in result:
+        assert f["flag_type"] == "displaced", (
+            f"Non-RB {f['player_position']} should have committee converted to displaced"
+        )
+        assert f["effect_on_value"] == "negative"
+
+
+def test_rbs_get_committee_not_displaced_for_timeshare():
+    """Same-tier RBs in a timeshare keep their committee flags."""
+    flags = [
+        _make_flag("RB One", "MIA", "RB", "committee", "RB Two", "MIA",
+                   "active_and_healthy", "neutral", -10),
+        _make_flag("RB Two", "MIA", "RB", "committee", "RB One", "MIA",
+                   "active_and_healthy", "neutral", -10),
+    ]
+    result = enforce_flag_mutual_exclusivity(flags)
+    assert len(result) == 2
+    assert all(f["flag_type"] == "committee" for f in result)
+
+
+def test_superior_rb_arrival_generates_displaced():
+    """When displaced exists, committee for same trigger is removed — displaced wins."""
+    flags = [
+        _make_flag("Old RB", "NYG", "RB", "displaced", "Star RB", "NYG",
+                   "active_and_healthy", "negative", -25),
+        _make_flag("Old RB", "NYG", "RB", "committee", "Star RB", "NYG",
+                   "active_and_healthy", "neutral", -10),
+        _make_flag("Old RB", "NYG", "RB", "contingent", "Star RB", "NYG",
+                   "injured", "positive", 20),
+    ]
+    result = enforce_flag_mutual_exclusivity(flags)
+    flag_types = [f["flag_type"] for f in result]
+    assert "displaced" in flag_types
+    assert "contingent" in flag_types
+    assert "committee" not in flag_types
+
+
+def test_no_duplicate_committee_and_displaced():
+    """Both committee and displaced for same player+trigger → committee removed."""
+    flags = [
+        _make_flag("RB X", "CHI", "RB", "displaced", "RB Y", "CHI",
+                   "active_and_healthy", "negative", -20),
+        _make_flag("RB X", "CHI", "RB", "committee", "RB Y", "CHI",
+                   "active_and_healthy", "neutral", -10),
+    ]
+    result = enforce_flag_mutual_exclusivity(flags)
+    assert len(result) == 1
+    assert result[0]["flag_type"] == "displaced"
+
+
+def test_committee_converted_to_displaced_for_wr():
+    """WR committee flag becomes displaced after enforcement."""
+    flags = [
+        _make_flag("Slot WR", "BUF", "WR", "committee", "New WR", "BUF",
+                   "active_and_healthy", "neutral", -12),
+    ]
+    result = enforce_flag_mutual_exclusivity(flags)
+    assert len(result) == 1
+    assert result[0]["flag_type"] == "displaced"
+    assert result[0]["effect_on_value"] == "negative"
+
+
+@pytest.mark.asyncio
+async def test_enforce_called_before_write_in_run_for_team():
+    """enforce_flag_mutual_exclusivity is called before _write_flags in run_for_team."""
+    agent = RosterChangesAgent()
+
+    # Model returns both committee and displaced for same RB+trigger
+    model_output = json.dumps([
+        _make_flag("RB X", "DEN", "RB", "displaced", "RB Y", "DEN",
+                   "active_and_healthy", "negative", -20),
+        _make_flag("RB X", "DEN", "RB", "committee", "RB Y", "DEN",
+                   "active_and_healthy", "neutral", -10),
+        _make_flag("RB X", "DEN", "RB", "contingent", "RB Y", "DEN",
+                   "injured", "positive", 15),
+    ])
+
+    written_flags = []
+
+    async def capture_write(flags):
+        written_flags.extend(flags)
+        return len(flags)
+
+    with patch.object(agent, "_build_team_context", new=AsyncMock(return_value={"team": "DEN"})):
+        with patch.object(agent, "call_once", new=AsyncMock(return_value=model_output)):
+            with patch("backend.agents.roster_changes._write_flags", new=AsyncMock(side_effect=capture_write)):
+                flags = await agent.run_for_team("DEN")
+
+    # Committee should have been removed before write
+    flag_types = [f["flag_type"] for f in flags]
+    assert "committee" not in flag_types
+    assert "displaced" in flag_types
+
+
+# ---------------------------------------------------------------------------
+# validate_flag — reject phantom/incomplete flags
+# ---------------------------------------------------------------------------
+
+def test_phantom_flags_rejected_empty_trigger():
+    """Flag with empty trigger_player_name is rejected by validate_flag()."""
+    flag = _make_flag("RB X", "DEN", "RB", "displaced", "", "DEN",
+                      "active_and_healthy", "negative", -25)
+    assert validate_flag(flag) is False
+
+
+def test_phantom_flags_rejected_none_trigger():
+    """Flag with None trigger_player_name is rejected."""
+    flag = _make_flag("WR Y", "NYG", "WR", "displaced", "Trigger", "NYG",
+                      "active_and_healthy", "negative", -20)
+    flag["trigger_player_name"] = None
+    assert validate_flag(flag) is False
+
+
+def test_phantom_flags_rejected_missing_flag_type():
+    """Flag with missing flag_type is rejected."""
+    flag = _make_flag("WR Z", "NYG", "WR", "", "Trigger", "NYG",
+                      "active_and_healthy", "negative", -20)
+    assert validate_flag(flag) is False
+
+
+def test_phantom_flags_rejected_missing_impact():
+    """Flag with None value_impact_pct is rejected."""
+    flag = _make_flag("RB A", "DEN", "RB", "displaced", "RB B", "DEN",
+                      "active_and_healthy", "negative", -25)
+    flag["value_impact_pct"] = None
+    assert validate_flag(flag) is False
+
+
+def test_valid_flag_passes_validation():
+    """Complete flag passes validation."""
+    flag = _make_flag("RB A", "DEN", "RB", "displaced", "RB B", "DEN",
+                      "active_and_healthy", "negative", -25)
+    assert validate_flag(flag) is True

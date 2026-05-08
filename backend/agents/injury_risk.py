@@ -62,7 +62,11 @@ Risk level and modifier guidelines (apply age_risk_mult as a boost):
   low:      0.0 to -0.05  — clean history, no pattern flags
   moderate: -0.10 to -0.20 — 1 non-severe flag or mild age concern
   high:     -0.20 to -0.35 — multiple flags or severe injury type
-  volatile: -0.35 or worse — combination of severe flags + advanced age
+  volatile: -0.35 to -0.40 max — ONLY when BOTH conditions are true:
+    a) Multiple severe flags (would be HIGH on flags alone), AND
+    b) Player missed 8+ games in 2 or more of the last 3 seasons (chronic availability problem)
+    If a player had injuries concentrated in a single season only → cap at HIGH, not VOLATILE.
+    One bad season does not make a player volatile — volatile means chronic unavailability.
 
 Age risk multiplier is pre-computed (age_risk_mult field):
   Use it as a multiplier on the base modifier.
@@ -692,8 +696,27 @@ async def _write_injury_profiles(
                 record = PlayerInjuryProfile(player_id=player_id)
                 session.add(record)
 
-            record.overall_risk_level          = prof.get("overall_risk_level")
-            record.risk_adjusted_value_modifier = _to_decimal(prof.get("risk_adjusted_value_modifier"))
+            # Enforce VOLATILE requires multi-season injury history:
+            # Must have missed 8+ games in 2+ of last 3 seasons.
+            # Single bad season caps at HIGH.
+            risk_level = prof.get("overall_risk_level", "low")
+            risk_mod = prof.get("risk_adjusted_value_modifier", 0)
+            if risk_level == "volatile":
+                recent = sorted(inj_seasons, key=lambda s: s.get("season", 0), reverse=True)[:3]
+                severe_seasons = sum(1 for s in recent if s.get("games_missed", 0) >= 8)
+                if severe_seasons < 2:
+                    logger.info(
+                        "Downgrading %s from volatile to high: "
+                        "only %d of last 3 seasons with 8+ games missed",
+                        pname, severe_seasons,
+                    )
+                    risk_level = "high"
+                    # Cap modifier at high range max
+                    if risk_mod is not None and risk_mod < -0.35:
+                        risk_mod = -0.35
+
+            record.overall_risk_level          = risk_level
+            record.risk_adjusted_value_modifier = _to_decimal(risk_mod)
             record.injury_log                  = injury_log
             record.pattern_flags               = pat_flags
             record.chronic_conditions          = chronic_list
