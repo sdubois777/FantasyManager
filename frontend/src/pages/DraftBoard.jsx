@@ -130,6 +130,23 @@ export default function DraftBoard() {
                   <span className="text-xs text-slate-500">{players.length} players</span>
                 </div>
 
+                {/* Column headers */}
+                <div className="flex items-center gap-3 px-4 py-1.5 border-b border-[#2d3148] text-[10px] uppercase tracking-wider text-slate-500">
+                  <span className="w-[14px] shrink-0" />
+                  <div className="flex items-center gap-3 flex-1 min-w-0">
+                    <span className="w-6" />
+                    <span className="min-w-[140px]">Player</span>
+                    <span className="w-10">Team</span>
+                    <span className="w-14 text-right">Ceiling</span>
+                    <span className="w-14 text-right">AI Ceil</span>
+                    <span className="w-14 text-right">System</span>
+                    <span className="w-14 text-right">Market</span>
+                    <span className="w-14 text-right">PPR</span>
+                    <span className="w-12 text-right">Gap</span>
+                    <span className="ml-auto">Flags</span>
+                  </div>
+                </div>
+
                 {players.map((p) => {
                   const highlight = p.strategy_highlight
                   const watched = isWatchlisted(p.id)
@@ -190,20 +207,27 @@ export default function DraftBoard() {
                           {p.ppr_points ? `${p.ppr_points.toFixed(0)} PPR` : ''}
                         </span>
 
-                        {/* Value gap indicator */}
-                        <span
-                          className={`text-xs font-mono w-12 text-right ${
-                            p.value_gap > 3
-                              ? 'text-emerald-400'
-                              : p.value_gap < -3
-                              ? 'text-red-400'
-                              : 'text-slate-500'
-                          }`}
-                        >
-                          {p.value_gap != null
-                            ? `${p.value_gap > 0 ? '+' : ''}${p.value_gap.toFixed(0)}`
-                            : '--'}
-                        </span>
+                        {/* Value gap indicator — AI ceiling vs market */}
+                        {(() => {
+                          const aiGap = p.ai_bid_ceiling != null && p.market_value != null
+                            ? p.ai_bid_ceiling - p.market_value
+                            : null
+                          return (
+                            <span
+                              className={`text-xs font-mono w-12 text-right ${
+                                aiGap != null && aiGap > 3
+                                  ? 'text-emerald-400'
+                                  : aiGap != null && aiGap < -3
+                                  ? 'text-red-400'
+                                  : 'text-slate-500'
+                              }`}
+                            >
+                              {aiGap != null
+                                ? `${aiGap > 0 ? '+' : ''}${aiGap.toFixed(0)}`
+                                : '--'}
+                            </span>
+                          )
+                        })()}
 
                         {/* Flags */}
                         <div className="flex gap-1 ml-auto flex-wrap justify-end">
