@@ -31,7 +31,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.agents.base_agent import BaseAgent, parse_json_output, SONNET
 from backend.database import AsyncSessionLocal
-from backend.integrations import cfb_data, nfl_data, overthecap
+from backend.integrations import cfb_data, nfl_comp_builder, nfl_data, overthecap
 from backend.models.dependency import PlayerDependency
 from backend.models.player import Player
 from backend.utils.seasons import get_analysis_seasons, get_analysis_year, get_current_season
@@ -562,20 +562,28 @@ class RosterChangesAgent(BaseAgent):
             return
 
         async with AsyncSessionLocal() as session:
-            last = player_name.split()[-1].lower()
-            from sqlalchemy import or_
+            # Try exact name match first (most reliable)
             result = await session.execute(
-                select(Player).where(Player.name.ilike(f"%{last}%"))
+                select(Player).where(Player.name == player_name)
             )
-            candidates = result.scalars().all()
-            if not candidates:
-                logger.debug("Could not find player for rookie eval: %s", player_name)
-                return
+            player = result.scalar_one_or_none()
 
-            # Match by name similarity
-            player = next(
-                (p for p in candidates if last in p.name.lower()), candidates[0]
-            )
+            if not player:
+                # Fallback: last-name search with first-name disambiguation
+                last = player_name.split()[-1].lower()
+                first = player_name.split()[0].lower() if player_name else ""
+                result = await session.execute(
+                    select(Player).where(Player.name.ilike(f"%{last}%"))
+                )
+                candidates = result.scalars().all()
+                if not candidates:
+                    logger.debug("Could not find player for rookie eval: %s", player_name)
+                    return
+                # Prefer first+last name match to avoid cross-player confusion
+                player = next(
+                    (p for p in candidates if first and p.name.split()[0].lower() == first),
+                    candidates[0],
+                )
 
             from decimal import Decimal
             player.is_rookie             = True
@@ -672,41 +680,57 @@ class RosterChangesAgent(BaseAgent):
         Full prospect evaluation for one NFL draft pick.
         Writes rookie evaluation fields to the player record.
         Returns displacement flags for incumbents.
+
+        Uses nfl_comp_builder for draft-capital-based profile grading and
+        historical comp matching. Falls back to cfb_data for college stats
+        if available, but draft position is the primary signal.
         """
         player_name = pick.get("player_name", "")
         position    = pick.get("position", "")
+        pick_num    = pick.get("pick_number", 200)
+        draft_round = pick.get("round", 7)
 
-        college_profile = self._get_college_profile(player_name, position)
-        capital_value   = nfl_data.get_draft_capital_value(
-            pick.get("round", 7), pick.get("pick_number", 200)
+        capital_value  = nfl_data.get_draft_capital_value(draft_round, pick_num)
+        capital_signal = nfl_data.get_capital_signal(capital_value)
+
+        # Profile grade from draft position (NFL already evaluated the talent)
+        profile_grade = nfl_comp_builder.grade_college_profile_by_pick(pick_num)
+
+        # Historical comps from nfl_comp_builder (nfl_data_py only — no R needed)
+        nfl_comp_table = _get_cached_data("nfl_comp_table")
+        comps = nfl_comp_builder.find_comps(
+            nfl_comp_table, position, pick_num, n=5,
+        ) if nfl_comp_table is not None else []
+
+        # Tier-based average PPG (reliable aggregate even when individual comps are sparse)
+        tier_avgs = _get_cached_data("nfl_comp_tier_averages") or {}
+        tier_key = (position, profile_grade)
+        tier_avg = tier_avgs.get(tier_key, {})
+
+        # Use comp-level averages if available, fall back to tier averages
+        yr1_ppg: float | None = None
+        yr2_ppg: float | None = None
+        if comps:
+            yr1_vals = [c["yr1_ppg"] for c in comps if c.get("yr1_ppg") is not None]
+            yr2_vals = [c["yr2_ppg"] for c in comps if c.get("yr2_ppg") is not None]
+            yr1_ppg = sum(yr1_vals) / len(yr1_vals) if yr1_vals else None
+            yr2_ppg = sum(yr2_vals) / len(yr2_vals) if yr2_vals else None
+
+        # Fill gaps with tier averages
+        if yr1_ppg is None:
+            yr1_ppg = tier_avg.get("yr1_avg_ppg")
+        if yr2_ppg is None:
+            yr2_ppg = tier_avg.get("yr2_avg_ppg")
+
+        landing_mod = self._get_landing_spot_modifier(
+            team_context.get("system_grade", {})
         )
-        capital_signal  = nfl_data.get_capital_signal(capital_value)
 
+        # Try to get college stats from cfb_data if available
+        college_profile = self._get_college_profile(player_name, position)
         raw_dom = college_profile.get("dominator_rating", 0.0)
         conf    = college_profile.get("conference", "Unknown")
         adj_dom = cfb_data.get_adjusted_dominator(raw_dom, conf)
-
-        comps        = self._find_historical_comps(
-            comp_table, position, adj_dom, capital_value,
-            age_at_draft=pick.get("age_at_draft", 22),
-        )
-        landing_mod  = self._get_landing_spot_modifier(
-            team_context.get("system_grade", {})
-        )
-        profile_grade = self._grade_college_profile(
-            adj_dom,
-            college_profile.get("yards_per_route_run", 0.0),
-            position,
-        )
-
-        yr1_ppg = (
-            sum(c["yr1_ppg"] for c in comps if c.get("yr1_ppg") is not None)
-            / max(1, sum(1 for c in comps if c.get("yr1_ppg") is not None))
-        ) if comps else None
-        yr2_ppg = (
-            sum(c["yr2_ppg"] for c in comps if c.get("yr2_ppg") is not None)
-            / max(1, sum(1 for c in comps if c.get("yr2_ppg") is not None))
-        ) if comps else None
 
         await self._write_rookie_evaluation({
             "player_name":            player_name,
@@ -720,7 +744,7 @@ class RosterChangesAgent(BaseAgent):
             "comp_yr1_avg_ppg":       round(yr1_ppg, 2) if yr1_ppg else None,
             "comp_yr2_avg_ppg":       round(yr2_ppg, 2) if yr2_ppg else None,
             "landing_spot_modifier":  round(landing_mod, 3),
-            "projection_confidence":  "low",
+            "projection_confidence":  "low" if profile_grade in ("weak",) else "medium",
             "variance_flag":          True,
         })
 
@@ -1238,23 +1262,33 @@ class RosterChangesAgent(BaseAgent):
             except Exception as exc:
                 logger.warning("Could not pre-load season %d: %s", season, exc)
 
-        # Pre-load college data for draft pick evaluation
+        # Pre-load college data for draft pick evaluation (optional — may fail without R)
         try:
             college_seasons = list(range(current_season - 6, current_season))
             logger.info("Pre-loading college target share for seasons %s...", college_seasons)
             college_df = cfb_data.get_college_target_share(college_seasons)
             _set_cached_data("college_target_share", college_df)
         except Exception as exc:
-            logger.warning("Could not pre-load college data: %s", exc)
+            logger.warning("Could not pre-load college data (R not installed — using draft capital only): %s", exc)
 
-        # Pre-load historical comp table (expensive — cached aggressively)
+        # Pre-load NFL comp table (nfl_data_py only — no R/cfbfastR needed)
         try:
-            logger.info("Pre-loading historical comp table...")
+            logger.info("Building NFL comp table from historical draft data...")
+            nfl_comp_table = nfl_comp_builder.build_comp_table()
+            _set_cached_data("nfl_comp_table", nfl_comp_table)
+            tier_avgs = nfl_comp_builder.get_tier_averages(nfl_comp_table)
+            _set_cached_data("nfl_comp_tier_averages", tier_avgs)
+            logger.info("NFL comp table: %d records, %d tier averages", len(nfl_comp_table), len(tier_avgs))
+        except Exception as exc:
+            logger.warning("Could not build NFL comp table: %s", exc)
+
+        # Legacy cfb_data comp table (kept for backwards compat if R is installed)
+        try:
             comp_table = cfb_data.build_historical_comp_table()
             _set_cached_data("historical_comp_table", comp_table)
-            logger.info("Historical comp table: %d records", len(comp_table))
+            logger.info("Historical comp table (cfb): %d records", len(comp_table))
         except Exception as exc:
-            logger.warning("Could not build historical comp table: %s", exc)
+            logger.debug("cfb comp table not available (expected without R): %s", exc)
 
         # Also cache current season for backfield (may overlap with analysis_seasons)
         if f"target_share_{current_season}" not in _DATA_CACHE:
