@@ -1778,6 +1778,139 @@ def test_needs_sonnet_reasoning_stable_wr_not_qb():
     assert needs_sonnet_reasoning(player) is False
 
 
+def test_needs_sonnet_reasoning_rb_age_28():
+    """29yo RB triggers Sonnet — RBs decline sharply after 28."""
+    player = {
+        "name": "Joe Mixon",
+        "position": "RB",
+        "age": 29,
+        "is_rookie": False,
+        "contract_year": False,
+        "dependency_flags": [],
+        "injury_profile": {"overall_risk_level": "moderate", "pattern_flags": []},
+        "beat_signals": [],
+        "_team_system": {"compound_risk_flag": False},
+    }
+    assert needs_sonnet_reasoning(player) is True
+
+
+def test_needs_sonnet_reasoning_rb_age_27_stays_haiku():
+    """27yo RB stays Haiku — below age threshold."""
+    player = {
+        "name": "Josh Jacobs",
+        "position": "RB",
+        "age": 27,
+        "is_rookie": False,
+        "contract_year": False,
+        "dependency_flags": [],
+        "injury_profile": {"overall_risk_level": "low", "pattern_flags": []},
+        "beat_signals": [],
+        "_team_system": {"compound_risk_flag": False},
+    }
+    assert needs_sonnet_reasoning(player) is False
+
+
+def test_needs_sonnet_reasoning_wr_age_31():
+    """31yo WR triggers Sonnet — WRs hold value longer but decline after 31."""
+    player = {
+        "name": "Davante Adams",
+        "position": "WR",
+        "age": 31,
+        "is_rookie": False,
+        "contract_year": False,
+        "dependency_flags": [],
+        "injury_profile": {"overall_risk_level": "low", "pattern_flags": []},
+        "beat_signals": [],
+        "_team_system": {"compound_risk_flag": False},
+    }
+    assert needs_sonnet_reasoning(player) is True
+
+
+def test_needs_sonnet_reasoning_wr_age_29_stays_haiku():
+    """29yo WR stays Haiku — below age threshold."""
+    player = {
+        "name": "Mike Evans",
+        "position": "WR",
+        "age": 29,
+        "is_rookie": False,
+        "contract_year": False,
+        "dependency_flags": [],
+        "injury_profile": {"overall_risk_level": "low", "pattern_flags": []},
+        "beat_signals": [],
+        "_team_system": {"compound_risk_flag": False},
+    }
+    assert needs_sonnet_reasoning(player) is False
+
+
+def test_needs_sonnet_reasoning_team_change():
+    """Player who changed teams → Sonnet (new system, new QB, new role)."""
+    player = {
+        "name": "Austin Ekeler",
+        "position": "RB",
+        "age": 27,
+        "team_changed_this_offseason": True,
+        "is_rookie": False,
+        "contract_year": False,
+        "dependency_flags": [],
+        "injury_profile": {"overall_risk_level": "low", "pattern_flags": []},
+        "beat_signals": [],
+        "_team_system": {"compound_risk_flag": False},
+    }
+    assert needs_sonnet_reasoning(player) is True
+
+
+def test_needs_sonnet_reasoning_league_price_under_5():
+    """League price <= $5 → Sonnet (league says declining, force reasoning)."""
+    player = {
+        "name": "Dalvin Cook",
+        "position": "RB",
+        "age": 27,
+        "market_value_league": 2,
+        "is_rookie": False,
+        "contract_year": False,
+        "dependency_flags": [],
+        "injury_profile": {"overall_risk_level": "low", "pattern_flags": []},
+        "beat_signals": [],
+        "_team_system": {"compound_risk_flag": False},
+    }
+    assert needs_sonnet_reasoning(player) is True
+
+
+def test_needs_sonnet_reasoning_declining_trajectory():
+    """Declining trajectory → Sonnet (history overstates future)."""
+    player = {
+        "name": "Derrick Henry",
+        "position": "RB",
+        "age": 27,
+        "career_trajectory": "declining",
+        "is_rookie": False,
+        "contract_year": False,
+        "dependency_flags": [],
+        "injury_profile": {"overall_risk_level": "low", "pattern_flags": []},
+        "beat_signals": [],
+        "_team_system": {"compound_risk_flag": False},
+    }
+    assert needs_sonnet_reasoning(player) is True
+
+
+def test_needs_sonnet_reasoning_mixon_full():
+    """Mixon: age=29 RB, team change, league $2 — multiple triggers all fire."""
+    player = {
+        "name": "Joe Mixon",
+        "position": "RB",
+        "age": 29,
+        "team_changed_this_offseason": True,
+        "market_value_league": 2,
+        "is_rookie": False,
+        "contract_year": False,
+        "dependency_flags": [],
+        "injury_profile": {"overall_risk_level": "moderate", "pattern_flags": []},
+        "beat_signals": [],
+        "_team_system": {"compound_risk_flag": False},
+    }
+    assert needs_sonnet_reasoning(player) is True
+
+
 # ---------------------------------------------------------------------------
 # AI projection override tests
 # ---------------------------------------------------------------------------

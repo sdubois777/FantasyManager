@@ -49,35 +49,82 @@ SKILL_POSITIONS = {"QB", "WR", "RB", "TE"}
 # ---------------------------------------------------------------------------
 
 def needs_sonnet_reasoning(player: dict) -> bool:
-    """Determine if a player needs Sonnet-level causal reasoning.
+    """Returns True if this player needs full Sonnet reasoning rather than
+    Haiku extraction.
 
-    Returns True for players whose projection depends on reasoning through
-    multiple interacting signals (dependency flags, injury risk, etc.).
-    Stable veterans with clean histories get cheaper Haiku batch processing.
+    Haiku is appropriate for: stable veterans in the same system with no
+    complexity signals.
 
-    QBs always get Sonnet — they anchor entire offenses (10-15% of budget),
-    and rushing volume sustainability, age curves, and O-line changes require
-    deeper reasoning than Haiku provides.
+    Sonnet is required for: anyone where history is an unreliable predictor
+    of future value.
     """
-    if player.get("position") == "QB":
+    position = player.get("position", "")
+    age = player.get("age") or 25
+
+    # --- Explicit position rules ---
+
+    # QBs always get Sonnet — they anchor entire offenses
+    if position == "QB":
         return True
+
+    # Rookies always get Sonnet (no NFL history)
     if player.get("is_rookie"):
         return True
+
+    # --- Age-based decline thresholds ---
+    # These positions age out fast — history overstates value for older players
+    AGE_THRESHOLDS = {"RB": 28, "WR": 31, "TE": 31}
+    age_threshold = AGE_THRESHOLDS.get(position, 32)
+    if age >= age_threshold:
+        return True
+
+    # --- Situation changes ---
+
+    # Dependency flags = role uncertainty
     if player.get("dependency_flags"):
         return True
+
+    # Team change = new system, new QB, new role
+    if player.get("team_changed_this_offseason"):
+        return True
+
+    # Contract year = motivation factor
     if player.get("contract_year"):
         return True
+
+    # --- Risk signals ---
+
     injury = player.get("injury_profile", {})
     if injury.get("overall_risk_level") in ("high", "volatile"):
         return True
     if injury.get("pattern_flags"):
         return True
+
+    # --- Career trajectory ---
+
+    trajectory = player.get("career_trajectory", "")
+    if trajectory in ("ascending", "declining", "breakout", "volatile"):
+        return True
+
+    # --- Market signals ---
+    # League thinks this player is worth almost nothing — don't trust
+    # historical average, force Sonnet to reason about the discrepancy
+    league_price = player.get("market_value_league")
+    if league_price is not None and league_price <= 5:
+        return True
+
+    # --- Beat reporter signals ---
+
     signals = player.get("beat_signals", [])
     if any(s.get("confidence") == "high" for s in signals):
         return True
+
+    # Team compound risk
     team_sys = player.get("_team_system", {})
     if team_sys.get("compound_risk_flag"):
         return True
+
+    # Default: Haiku is sufficient — stable, same team, not aging out
     return False
 
 
@@ -720,6 +767,20 @@ class PlayerProfilesAgent(BaseAgent):
             })
         return signals
 
+    async def _get_team_market_values(self, team: str) -> dict[str, float]:
+        """Return {player_name: market_value_league} for players on team."""
+        try:
+            async with AsyncSessionLocal() as session:
+                result = await session.execute(
+                    select(Player.name, Player.market_value_league)
+                    .where(Player.team_abbr == team)
+                    .where(Player.market_value_league.isnot(None))
+                )
+                return {name: float(mv) for name, mv in result.all()}
+        except Exception as exc:
+            logger.debug("Could not load market values for %s: %s", team, exc)
+            return {}
+
     # ------------------------------------------------------------------
     # NGS cache aggregation — weekly NGS → season-level per player
     # ------------------------------------------------------------------
@@ -815,6 +876,7 @@ class PlayerProfilesAgent(BaseAgent):
         injury_profiles  = await self._get_team_injury_profiles(team)
         schedules        = await self._get_team_schedules(team)
         beat_signals     = await self._get_team_beat_signals(team)
+        market_values    = await self._get_team_market_values(team)
 
         backup_qb_flags = {
             s: self._is_backup_qb_season(team, s) for s in analysis_seasons
@@ -882,6 +944,14 @@ class PlayerProfilesAgent(BaseAgent):
             if not has_any_data and not has_flags:
                 continue
 
+            # Detect team change: compare most recent season's team to current
+            team_changed = False
+            for s in sorted(seasons_data, key=lambda x: x.get("year", 0), reverse=True):
+                prev_team = s.get("recent_team", "")
+                if s.get("games", 0) > 0 and prev_team:
+                    team_changed = prev_team.upper() != team.upper()
+                    break
+
             player_entry: dict = {
                 "name":             pname,
                 "position":         info["position"],
@@ -896,6 +966,9 @@ class PlayerProfilesAgent(BaseAgent):
                 "schedule":         schedules.get(pname, {}),
                 "beat_signals":     beat_signals.get(pname, []),
                 "_team_system":     team_system,
+                # Sonnet routing signals
+                "team_changed_this_offseason": team_changed,
+                "market_value_league": market_values.get(pname),
             }
             # Merge rookie evaluation fields from Agent 2 (if applicable)
             if pname in rookie_fields:
