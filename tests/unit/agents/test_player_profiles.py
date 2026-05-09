@@ -1783,8 +1783,8 @@ def test_needs_sonnet_reasoning_stable_wr_not_qb():
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
-async def test_sonnet_projection_overrides_baseline():
-    """When profile has projected_ppr_points, it overrides Python ppr_points."""
+async def test_sonnet_projection_stored_as_projected_ppr_season():
+    """When profile has projected_ppr_points, it's stored as projected_ppr_season (not overwriting ppr_points)."""
     from backend.agents.player_profiles import _write_profiles
     from backend.utils.seasons import get_analysis_year
 
@@ -1851,7 +1851,11 @@ async def test_sonnet_projection_overrides_baseline():
     assert written == 1
     record = records_written[0]
     baseline = record.clean_season_baseline
-    assert baseline["ppr_points"] == 310.5
+    # Historical ppr_points preserved from Python baseline (receptions*1 + yards*0.1 + tds*6)
+    # 90*1 + 1200*0.1 + 6*6 = 90 + 120 + 36 = 246.0
+    assert baseline["ppr_points"] == 246.0
+    # Sonnet projection stored separately
+    assert baseline["projected_ppr_season"] == 310.5
     assert baseline["upside_ppr"] == 360.0
     assert baseline["downside_ppr"] == 250.0
 

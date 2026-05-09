@@ -972,11 +972,18 @@ class PlayerProfilesAgent(BaseAgent):
                     entity_id=f"{team}_haiku",
                 )
                 if raw:
-                    profiles = parse_json_output(raw)
-                    if isinstance(profiles, dict):
-                        profiles = [profiles]
-                    if isinstance(profiles, list):
-                        all_profiles.extend(profiles)
+                    try:
+                        profiles = parse_json_output(raw)
+                        if isinstance(profiles, dict):
+                            profiles = [profiles]
+                        if isinstance(profiles, list):
+                            all_profiles.extend(profiles)
+                    except (json.JSONDecodeError, ValueError) as exc:
+                        logger.warning(
+                            "%s: Haiku batch JSON parse failed (%s), "
+                            "continuing with Sonnet-only profiles",
+                            team, exc,
+                        )
 
             # Pass 2: Sonnet per-player (complex players)
             for player in sonnet_players:
@@ -1260,7 +1267,9 @@ async def _write_profiles(
                     )
 
                 clean_baseline = python_baseline if python_baseline else {}
-                clean_baseline["ppr_points"] = round(ai_ppr, 1)
+                # Keep historical ppr_points from Python baseline unchanged;
+                # store Sonnet's forward projection as projected_ppr_season
+                clean_baseline["projected_ppr_season"] = round(ai_ppr, 1)
                 if prof.get("upside_ppr"):
                     clean_baseline["upside_ppr"] = round(float(prof["upside_ppr"]), 1)
                 if prof.get("downside_ppr"):

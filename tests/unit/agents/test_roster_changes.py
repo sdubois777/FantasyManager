@@ -1333,3 +1333,32 @@ def test_extract_upside_downside_empty_baseline():
     profile = MagicMock()
     profile.clean_season_baseline = {}
     assert _extract_upside_downside(profile) == (0.0, 0.0)
+
+
+# ---------------------------------------------------------------------------
+# _extract_ppr — prefers projected_ppr_season over ppr_points
+# ---------------------------------------------------------------------------
+
+def test_extract_ppr_prefers_projected():
+    """When projected_ppr_season exists, use it over ppr_points."""
+    from backend.engines.valuation import _extract_ppr
+    profile = MagicMock()
+    profile.clean_season_baseline = {
+        "ppr_points": 228.0,
+        "projected_ppr_season": 195.0,
+    }
+    assert _extract_ppr(profile) == 195.0
+
+
+def test_extract_ppr_falls_back_to_ppr_points():
+    """When no projected_ppr_season, fall back to ppr_points."""
+    from backend.engines.valuation import _extract_ppr
+    profile = MagicMock()
+    profile.clean_season_baseline = {"ppr_points": 228.0}
+    assert _extract_ppr(profile) == 228.0
+
+
+def test_extract_ppr_none_profile():
+    """None profile returns 0."""
+    from backend.engines.valuation import _extract_ppr
+    assert _extract_ppr(None) == 0.0

@@ -704,10 +704,16 @@ async def run_valuation_pass(
 
 
 def _extract_ppr(profile: Optional[PlayerProfile]) -> float:
-    """Extract ppr_points from clean_season_baseline JSONB, or 0."""
+    """Extract PPR from clean_season_baseline JSONB, or 0.
+
+    Prefers projected_ppr_season (forward-looking Sonnet projection) over
+    ppr_points (historical baseline).  Falls back to ppr_points when no
+    projection exists (Haiku/Python-only profiles).
+    """
     if not profile or not profile.clean_season_baseline:
         return 0.0
-    val = profile.clean_season_baseline.get("ppr_points", 0)
+    baseline = profile.clean_season_baseline
+    val = baseline.get("projected_ppr_season") or baseline.get("ppr_points", 0)
     try:
         return max(0.0, float(val or 0))
     except (TypeError, ValueError):
