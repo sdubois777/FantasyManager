@@ -205,7 +205,7 @@ def run_seed() -> None:
 # Agent dispatch
 # ---------------------------------------------------------------------------
 
-async def run_agent(name: str, teams: list[str] | None) -> None:
+async def run_agent(name: str, teams: list[str] | None, force: bool = False) -> None:
     spec = AGENT_SPECS[name]
     if spec["status"] == "not_built":
         print(f"[{name}] SKIPPED — not built yet.")
@@ -239,9 +239,9 @@ async def run_agent(name: str, teams: list[str] | None) -> None:
         agent = PlayerProfilesAgent(dry_run=False)
         if teams:
             for team in teams:
-                await agent.run_for_team(team)
+                await agent.run_for_team(team, force=force)
         else:
-            await agent.run_all_teams()
+            await agent.run_all_teams(force=force)
 
     elif name == "injury_risk":
         from backend.agents.injury_risk import InjuryRiskAgent
@@ -318,6 +318,11 @@ async def main() -> None:
         action="store_true",
         help="Skip re-seeding the players table (assume it is already populated)",
     )
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Force regeneration of all profiles, bypassing cache invalidation",
+    )
     args = parser.parse_args()
 
     agents = PIPELINE_ORDER if args.agent == "all" else [args.agent]
@@ -342,7 +347,7 @@ async def main() -> None:
 
     teams = [team_filter] if team_filter else None
     for name in agents:
-        await run_agent(name, teams)
+        await run_agent(name, teams, force=args.force)
 
     print("=== Pipeline complete ===\n")
 

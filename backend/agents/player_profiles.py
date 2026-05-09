@@ -23,6 +23,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from typing import ClassVar
 
@@ -42,6 +43,52 @@ from backend.utils.seasons import get_current_season, get_analysis_seasons, get_
 logger = logging.getLogger(__name__)
 
 SKILL_POSITIONS = {"QB", "WR", "RB", "TE"}
+
+PROFILE_STALENESS_DAYS = 30
+
+
+# ---------------------------------------------------------------------------
+# Profile cache invalidation
+# ---------------------------------------------------------------------------
+
+def profile_needs_refresh(
+    profile_updated_at: datetime | None,
+    dep_updated_at: datetime | None = None,
+    injury_updated_at: datetime | None = None,
+    beat_signal_timestamps: list[datetime] | None = None,
+    team_updated_at: datetime | None = None,
+) -> bool:
+    """Check if a player's profile needs regeneration.
+
+    Returns True when:
+      - No profile exists
+      - Profile is older than PROFILE_STALENESS_DAYS
+      - Dependency flags updated since last profile
+      - Injury profile updated since last profile
+      - Team changed since last profile (team_updated_at > profile.updated_at)
+      - New high-confidence beat signals since last profile
+    """
+    if profile_updated_at is None:
+        return True
+
+    now = datetime.now(timezone.utc)
+    if (now - profile_updated_at).days >= PROFILE_STALENESS_DAYS:
+        return True
+
+    if dep_updated_at and dep_updated_at > profile_updated_at:
+        return True
+
+    if injury_updated_at and injury_updated_at > profile_updated_at:
+        return True
+
+    if team_updated_at and team_updated_at > profile_updated_at:
+        return True
+
+    for ts in (beat_signal_timestamps or []):
+        if ts > profile_updated_at:
+            return True
+
+    return False
 
 
 # ---------------------------------------------------------------------------
@@ -1008,25 +1055,127 @@ class PlayerProfilesAgent(BaseAgent):
         }
 
     # ------------------------------------------------------------------
+    # Cache invalidation — skip players whose profiles are current
+    # ------------------------------------------------------------------
+
+    async def _get_stale_players(self, team: str, force: bool = False) -> set[str] | None:
+        """Return names of players whose profiles need regeneration.
+
+        Returns None when force=True (meaning regenerate everyone).
+        """
+        if force:
+            return None
+
+        async with AsyncSessionLocal() as session:
+            players = (
+                await session.execute(select(Player).where(Player.team_abbr == team))
+            ).scalars().all()
+
+            if not players:
+                return set()
+
+            player_ids = [p.id for p in players]
+
+            # Existing profiles keyed by player_id
+            profiles: dict = {}
+            result = (
+                await session.execute(
+                    select(PlayerProfile).where(PlayerProfile.player_id.in_(player_ids))
+                )
+            ).scalars().all()
+            for pr in result:
+                profiles[pr.player_id] = pr
+
+            # Latest dependency updated_at per player
+            dep_latest: dict = {}
+            deps = (
+                await session.execute(
+                    select(PlayerDependency).where(PlayerDependency.player_id.in_(player_ids))
+                )
+            ).scalars().all()
+            for d in deps:
+                existing = dep_latest.get(d.player_id)
+                if existing is None or d.updated_at > existing:
+                    dep_latest[d.player_id] = d.updated_at
+
+            # Injury profiles
+            injuries: dict = {}
+            inj_result = (
+                await session.execute(
+                    select(PlayerInjuryProfile).where(
+                        PlayerInjuryProfile.player_id.in_(player_ids)
+                    )
+                )
+            ).scalars().all()
+            for i in inj_result:
+                injuries[i.player_id] = i
+
+            # High-confidence beat signals
+            beat_times: dict[object, list[datetime]] = {}
+            bs_result = (
+                await session.execute(
+                    select(BeatReporterSignal).where(
+                        BeatReporterSignal.player_id.in_(player_ids),
+                        BeatReporterSignal.confidence == "high",
+                    )
+                )
+            ).scalars().all()
+            for s in bs_result:
+                beat_times.setdefault(s.player_id, []).append(s.flagged_at)
+
+            stale: set[str] = set()
+            for p in players:
+                prof = profiles.get(p.id)
+                if profile_needs_refresh(
+                    profile_updated_at=prof.updated_at if prof else None,
+                    dep_updated_at=dep_latest.get(p.id),
+                    injury_updated_at=injuries[p.id].updated_at if p.id in injuries else None,
+                    beat_signal_timestamps=beat_times.get(p.id, []),
+                    team_updated_at=getattr(p, "team_updated_at", None),
+                ):
+                    stale.add(p.name)
+
+            return stale
+
+    # ------------------------------------------------------------------
     # Per-team runner — two-pass: Haiku batch + Sonnet per-player
     # ------------------------------------------------------------------
 
-    async def run_for_team(self, team_abbr: str) -> int:
+    async def run_for_team(self, team_abbr: str, force: bool = False) -> int:
         """Run for one team. Returns number of profile records written.
 
         Two-pass architecture:
           1. Haiku batch — stable veterans with no complex signals
           2. Sonnet per-player — rookies, flagged, contract year, high injury, etc.
+
+        When force=False, only regenerates profiles where upstream data has changed.
         """
         team = team_abbr.upper()
         logger.info("Building player profiles context for %s", team)
 
         try:
+            stale_names = await self._get_stale_players(team, force)
+
             context = await self._build_team_context(team)
 
             if not context["players"]:
                 logger.info("%s: no skill-position players with data, skipping", team)
                 return 0
+
+            # Filter to only stale players (unless force mode)
+            if stale_names is not None:
+                original_count = len(context["players"])
+                context["players"] = [
+                    p for p in context["players"] if p["name"] in stale_names
+                ]
+                skipped = original_count - len(context["players"])
+                if skipped > 0:
+                    logger.info(
+                        "%s: %d cached, %d need refresh", team, skipped, len(context["players"])
+                    )
+                if not context["players"]:
+                    logger.info("%s: all profiles current, skipping API calls", team)
+                    return 0
 
             # Split players: Haiku batch vs Sonnet individual
             haiku_players = []
@@ -1097,7 +1246,7 @@ class PlayerProfilesAgent(BaseAgent):
                     if isinstance(prof, dict):
                         all_profiles.append(prof)
 
-            written = await _write_profiles(all_profiles, context, team)
+            written = await _write_profiles(all_profiles, context, team, stale_names=stale_names)
             logger.info("%s: %d profiles written", team, written)
             return written
 
@@ -1109,7 +1258,7 @@ class PlayerProfilesAgent(BaseAgent):
     # Full pipeline — pre-warm caches once, then run all 32 teams
     # ------------------------------------------------------------------
 
-    async def run_all_teams(self, concurrency: int = 4) -> dict[str, int]:
+    async def run_all_teams(self, concurrency: int = 4, force: bool = False) -> dict[str, int]:
         """
         Pre-loads all shared data caches ONCE before running teams concurrently.
         Returns {team_abbr: profiles_written}.
@@ -1175,7 +1324,7 @@ class PlayerProfilesAgent(BaseAgent):
 
         async def _run_one(team: str) -> None:
             async with semaphore:
-                results[team] = await self.run_for_team(team)
+                results[team] = await self.run_for_team(team, force=force)
 
         await asyncio.gather(*[_run_one(t) for t in NFL_TEAMS])
 
@@ -1242,9 +1391,14 @@ async def _bulk_resolve_player_ids(
 
 
 async def _write_profiles(
-    profiles: list[dict], context: dict, team: str
+    profiles: list[dict], context: dict, team: str,
+    stale_names: set[str] | None = None,
 ) -> int:
-    """Write player_profiles for one team — deletes stale records then inserts fresh ones."""
+    """Write player_profiles for one team.
+
+    When stale_names is provided, only deletes profiles for those players (selective refresh).
+    When stale_names is None, deletes all team profiles before re-inserting (force/first run).
+    """
     if not profiles:
         return 0
 
@@ -1277,20 +1431,35 @@ async def _write_profiles(
             [{"name": p.name, "id": str(p.id)} for p in team_players]
         )
 
-        # Delete all existing profiles for this team before re-inserting.
-        team_player_ids = [p.id for p in team_players]
-        if team_player_ids:
-            existing = (
-                await session.execute(
-                    select(PlayerProfile).where(
-                        PlayerProfile.player_id.in_(team_player_ids)
+        # Delete profiles — selective (cache-aware) or full team wipe (force/first run)
+        if stale_names is not None:
+            stale_ids = [p.id for p in team_players if p.name in stale_names]
+            if stale_ids:
+                existing = (
+                    await session.execute(
+                        select(PlayerProfile).where(
+                            PlayerProfile.player_id.in_(stale_ids)
+                        )
                     )
-                )
-            ).scalars().all()
-            for ep in existing:
-                await session.delete(ep)
-            if existing:
-                logger.debug("%s: deleted %d stale profile(s) before rewrite", team, len(existing))
+                ).scalars().all()
+                for ep in existing:
+                    await session.delete(ep)
+                if existing:
+                    logger.debug("%s: deleted %d stale profile(s) for refresh", team, len(existing))
+        else:
+            team_player_ids = [p.id for p in team_players]
+            if team_player_ids:
+                existing = (
+                    await session.execute(
+                        select(PlayerProfile).where(
+                            PlayerProfile.player_id.in_(team_player_ids)
+                        )
+                    )
+                ).scalars().all()
+                for ep in existing:
+                    await session.delete(ep)
+                if existing:
+                    logger.debug("%s: deleted %d stale profile(s) before rewrite", team, len(existing))
 
         written = 0
         written_ids: set = set()  # deduplicate: only first profile per player_id
@@ -1809,9 +1978,9 @@ def _get_agent(dry_run: bool = False) -> PlayerProfilesAgent:
     return _agent_instance
 
 
-async def run_for_team(team_abbr: str, dry_run: bool = False) -> int:
-    return await _get_agent(dry_run).run_for_team(team_abbr)
+async def run_for_team(team_abbr: str, dry_run: bool = False, force: bool = False) -> int:
+    return await _get_agent(dry_run).run_for_team(team_abbr, force=force)
 
 
-async def run_all_teams(concurrency: int = 4, dry_run: bool = False) -> dict[str, int]:
-    return await _get_agent(dry_run).run_all_teams(concurrency)
+async def run_all_teams(concurrency: int = 4, dry_run: bool = False, force: bool = False) -> dict[str, int]:
+    return await _get_agent(dry_run).run_all_teams(concurrency, force=force)

@@ -17,6 +17,7 @@ import pytest
 import uuid
 
 from backend.agents.player_profiles import (
+    PROFILE_STALENESS_DAYS,
     PlayerProfilesAgent,
     _bulk_resolve_player_ids,
     _build_rookie_profile,
@@ -26,6 +27,7 @@ from backend.agents.player_profiles import (
     _to_decimal,
     _write_profiles,
     needs_sonnet_reasoning,
+    profile_needs_refresh,
     _ROOKIE_CONFIDENCE_DISCOUNT,
     _ROOKIE_DEFAULT_PPG,
     _DEVELOPMENT_TIMELINE,
@@ -217,7 +219,8 @@ async def test_breakout_flag_year2_wr():
         }],
     )
 
-    with patch.object(agent, "call_once", new_callable=AsyncMock, return_value=model_output), \
+    with patch.object(agent, "_get_stale_players", new_callable=AsyncMock, return_value=None), \
+         patch.object(agent, "call_once", new_callable=AsyncMock, return_value=model_output), \
          patch.object(agent, "_build_team_context", new_callable=AsyncMock, return_value=context), \
          patch("backend.agents.player_profiles._write_profiles", new_callable=AsyncMock, return_value=1):
         result = await agent.run_for_team("MIN")
@@ -281,7 +284,8 @@ async def test_breakout_flag_depth_chart_departure():
         }],
     )
 
-    with patch.object(agent, "call_once", new_callable=AsyncMock, return_value=model_output), \
+    with patch.object(agent, "_get_stale_players", new_callable=AsyncMock, return_value=None), \
+         patch.object(agent, "call_once", new_callable=AsyncMock, return_value=model_output), \
          patch.object(agent, "_build_team_context", new_callable=AsyncMock, return_value=context), \
          patch("backend.agents.player_profiles._write_profiles", new_callable=AsyncMock, return_value=1):
         result = await agent.run_for_team("NYG")
@@ -324,7 +328,8 @@ async def test_role_classification_wr1_alpha():
         }],
     )
 
-    with patch.object(agent, "call_once", new_callable=AsyncMock, return_value=model_output), \
+    with patch.object(agent, "_get_stale_players", new_callable=AsyncMock, return_value=None), \
+         patch.object(agent, "call_once", new_callable=AsyncMock, return_value=model_output), \
          patch.object(agent, "_build_team_context", new_callable=AsyncMock, return_value=context), \
          patch("backend.agents.player_profiles._write_profiles", new_callable=AsyncMock, return_value=1):
         result = await agent.run_for_team("CIN")
@@ -366,7 +371,8 @@ async def test_role_classification_committee_back():
         }],
     )
 
-    with patch.object(agent, "call_once", new_callable=AsyncMock, return_value=model_output), \
+    with patch.object(agent, "_get_stale_players", new_callable=AsyncMock, return_value=None), \
+         patch.object(agent, "call_once", new_callable=AsyncMock, return_value=model_output), \
          patch.object(agent, "_build_team_context", new_callable=AsyncMock, return_value=context), \
          patch("backend.agents.player_profiles._write_profiles", new_callable=AsyncMock, return_value=1):
         result = await agent.run_for_team("MIN")
@@ -399,7 +405,8 @@ async def test_system_grade_inherited_from_team_systems():
         "red_zone_philosophy": "wr1",
     }
 
-    with patch.object(agent, "call_once", side_effect=_capture_call), \
+    with patch.object(agent, "_get_stale_players", new_callable=AsyncMock, return_value=None), \
+         patch.object(agent, "call_once", side_effect=_capture_call), \
          patch.object(agent, "_build_team_context", new_callable=AsyncMock,
                       return_value=_mock_context("MIA", team_system=context_system,
                                                   players=[{
@@ -466,7 +473,8 @@ async def test_dependency_flags_attached_to_profile():
         ],
     }
 
-    with patch.object(agent, "call_once", side_effect=_capture_call), \
+    with patch.object(agent, "_get_stale_players", new_callable=AsyncMock, return_value=None), \
+         patch.object(agent, "call_once", side_effect=_capture_call), \
          patch.object(agent, "_build_team_context", new_callable=AsyncMock,
                       return_value=_mock_context("LAC", players=[lac_player])), \
          patch("backend.agents.player_profiles._write_profiles", new_callable=AsyncMock, return_value=1):
@@ -536,7 +544,8 @@ async def test_single_api_call_per_team():
         }],
     )
 
-    with patch.object(agent, "call_once", side_effect=_mock_call), \
+    with patch.object(agent, "_get_stale_players", new_callable=AsyncMock, return_value=None), \
+         patch.object(agent, "call_once", side_effect=_mock_call), \
          patch.object(agent, "_build_team_context", new_callable=AsyncMock, return_value=context), \
          patch("backend.agents.player_profiles._write_profiles", new_callable=AsyncMock, return_value=1):
         await agent.run_for_team("DAL")
@@ -1065,7 +1074,8 @@ async def test_run_for_team_empty_players_returns_zero():
         "team": "LAC", "analysis_year": 2026,
         "team_system": {}, "players": [],
     }
-    with patch.object(agent, "_build_team_context",
+    with patch.object(agent, "_get_stale_players", new_callable=AsyncMock, return_value=None), \
+         patch.object(agent, "_build_team_context",
                       new_callable=AsyncMock, return_value=empty_context):
         result = await agent.run_for_team("LAC")
     assert result == 0
@@ -1074,8 +1084,7 @@ async def test_run_for_team_empty_players_returns_zero():
 @pytest.mark.asyncio
 async def test_run_for_team_exception_returns_zero():
     agent = PlayerProfilesAgent()
-    with patch.object(agent, "_build_team_context",
-                      new_callable=AsyncMock, side_effect=RuntimeError("boom")):
+    with patch.object(agent, "_get_stale_players", new_callable=AsyncMock, side_effect=RuntimeError("boom")):
         result = await agent.run_for_team("LAC")
     assert result == 0
 
@@ -1090,7 +1099,7 @@ async def test_run_all_teams_runs_all_32_teams():
     agent = PlayerProfilesAgent()
     call_log: list[str] = []
 
-    async def _mock_run(team: str) -> int:
+    async def _mock_run(team: str, force: bool = False) -> int:
         call_log.append(team)
         return 5
 
@@ -2241,3 +2250,86 @@ async def test_build_team_context_injects_rookies_not_in_roster():
     cam = next(p for p in ctx["players"] if p["name"] == "Cam Ward")
     assert cam["is_rookie"] is True
     assert cam["position"] == "QB"
+
+
+# ---------------------------------------------------------------------------
+# Profile cache invalidation — profile_needs_refresh()
+# ---------------------------------------------------------------------------
+
+from datetime import datetime, timedelta, timezone
+
+
+def _now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def test_profile_needs_refresh_no_profile():
+    """No existing profile → needs refresh."""
+    assert profile_needs_refresh(profile_updated_at=None) is True
+
+
+def test_profile_needs_refresh_stale_30_days():
+    """Profile older than PROFILE_STALENESS_DAYS → needs refresh."""
+    old = _now() - timedelta(days=PROFILE_STALENESS_DAYS + 1)
+    assert profile_needs_refresh(profile_updated_at=old) is True
+
+    # Just under threshold → still current
+    recent = _now() - timedelta(days=PROFILE_STALENESS_DAYS - 1)
+    assert profile_needs_refresh(profile_updated_at=recent) is False
+
+
+def test_profile_needs_refresh_dep_updated():
+    """Dependency flags updated after profile → needs refresh."""
+    profile_time = _now() - timedelta(hours=12)
+    dep_time = _now() - timedelta(hours=6)  # updated AFTER profile
+    assert profile_needs_refresh(
+        profile_updated_at=profile_time,
+        dep_updated_at=dep_time,
+    ) is True
+
+
+def test_profile_needs_refresh_injury_updated():
+    """Injury profile updated after profile → needs refresh."""
+    profile_time = _now() - timedelta(hours=12)
+    injury_time = _now() - timedelta(hours=6)
+    assert profile_needs_refresh(
+        profile_updated_at=profile_time,
+        injury_updated_at=injury_time,
+    ) is True
+
+
+def test_profile_needs_refresh_team_change():
+    """team_updated_at after profile → needs refresh (player traded)."""
+    profile_time = _now() - timedelta(days=5)
+    team_change = _now() - timedelta(days=2)
+    assert profile_needs_refresh(
+        profile_updated_at=profile_time,
+        team_updated_at=team_change,
+    ) is True
+
+
+def test_profile_needs_refresh_beat_signal():
+    """New high-confidence beat signal after profile → needs refresh."""
+    profile_time = _now() - timedelta(hours=24)
+    signal_time = _now() - timedelta(hours=6)
+    assert profile_needs_refresh(
+        profile_updated_at=profile_time,
+        beat_signal_timestamps=[signal_time],
+    ) is True
+
+
+def test_profile_needs_refresh_current():
+    """Profile is current with no upstream changes → no refresh needed."""
+    profile_time = _now() - timedelta(days=5)  # recent enough
+    # All upstream data is OLDER than the profile
+    old_dep = _now() - timedelta(days=10)
+    old_injury = _now() - timedelta(days=10)
+    old_signal = _now() - timedelta(days=10)
+    old_team = _now() - timedelta(days=10)
+    assert profile_needs_refresh(
+        profile_updated_at=profile_time,
+        dep_updated_at=old_dep,
+        injury_updated_at=old_injury,
+        beat_signal_timestamps=[old_signal],
+        team_updated_at=old_team,
+    ) is False

@@ -13,6 +13,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
 # Ensure project root is on path when run directly
@@ -77,6 +78,7 @@ async def sync_rosters(dry_run: bool = False) -> int:
                     print(f"  [DRY-RUN] {player.name}: {old_team} ->{new_team}")
                 else:
                     player.team_abbr = new_team
+                    player.team_updated_at = datetime.now(timezone.utc)
                     print(f"  Updated: {player.name}: {old_team} ->{new_team}")
                 updated += 1
 

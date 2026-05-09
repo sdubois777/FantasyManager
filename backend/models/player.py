@@ -89,6 +89,9 @@ class Player(Base):
     # Human-readable summary (2-3 sentences, shown during live draft)
     notes: Mapped[Optional[str]] = mapped_column(Text)
 
+    # Team change tracking (for profile cache invalidation)
+    team_updated_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+
     # Pipeline metadata
     last_pipeline_run: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
     data_confidence: Mapped[Optional[str]] = mapped_column(String(20))  # high/medium/low
