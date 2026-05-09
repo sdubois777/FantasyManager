@@ -103,27 +103,64 @@ async def seed_draft_picks(draft_year: int | None = None):
                 ],
             )
 
-        # Update existing players with draft info + rookie flag
+        # Update existing players with draft info + rookie flag.
+        #
+        # NOTE: A player can appear in draft picks data but have
+        # nfl_seasons_played > 0 if they were drafted in a prior year
+        # and spent year 1 on IR (e.g. JJ McCarthy 2024).
+        # These players are NOT rookies in their second year.
+        # They should use the full_season_absence path in profiling,
+        # not the rookie comp path.
+        # is_rookie=True only for players with 0 NFL seasons who have
+        # NEVER been on an NFL roster.
+        updated = 0
+        skipped_existing = 0
         for r in update_records:
-            await session.execute(
-                Player.__table__.update()
-                .where(Player.yahoo_player_id == r["yahoo_player_id"])
-                .values(
-                    is_rookie=True,
-                    draft_round=r["draft_round"],
-                    draft_pick=r["draft_pick"],
-                    draft_year=r["draft_year"],
-                    nfl_seasons_played=0,
-                    draft_capital_signal=r["draft_capital_signal"],
-                    team_abbr=r["team_abbr"],
+            # Check if player already has NFL history
+            existing = (
+                await session.execute(
+                    select(Player).where(
+                        Player.yahoo_player_id == r["yahoo_player_id"]
+                    )
                 )
-            )
+            ).scalar_one_or_none()
+
+            if existing and existing.nfl_seasons_played and existing.nfl_seasons_played > 0:
+                # Has real NFL history — update draft info only, don't
+                # overwrite is_rookie or nfl_seasons_played
+                await session.execute(
+                    Player.__table__.update()
+                    .where(Player.yahoo_player_id == r["yahoo_player_id"])
+                    .values(
+                        draft_round=r["draft_round"],
+                        draft_pick=r["draft_pick"],
+                        draft_year=r["draft_year"],
+                        draft_capital_signal=r["draft_capital_signal"],
+                    )
+                )
+                skipped_existing += 1
+            else:
+                await session.execute(
+                    Player.__table__.update()
+                    .where(Player.yahoo_player_id == r["yahoo_player_id"])
+                    .values(
+                        is_rookie=True,
+                        draft_round=r["draft_round"],
+                        draft_pick=r["draft_pick"],
+                        draft_year=r["draft_year"],
+                        nfl_seasons_played=0,
+                        draft_capital_signal=r["draft_capital_signal"],
+                        team_abbr=r["team_abbr"],
+                    )
+                )
+                updated += 1
 
         await session.commit()
 
     print(f"  Inserted : {len(new_records)}")
-    print(f"  Updated  : {len(update_records)}")
-    print(f"  Skipped  : {skipped}")
+    print(f"  Updated  : {updated}")
+    print(f"  Kept (NFL history) : {skipped_existing}")
+    print(f"  Skipped (no data)  : {skipped}")
 
 
 async def verify():

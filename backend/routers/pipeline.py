@@ -250,6 +250,34 @@ async def import_league_auction(
     )
 
 
+@router.post("/rematch-auction-history", response_model=PipelineResponse)
+async def rematch_auction_history():
+    """
+    Re-match league_auction_history rows with player_id=NULL to existing players.
+    Useful after adding new players (e.g. rookies) to the database.
+    Automatically refreshes market_value_league after re-matching.
+    """
+    from backend.database import AsyncSessionLocal
+    from backend.engines.league_auction import (
+        rematch_unmatched_auction_history,
+        refresh_market_value_league,
+    )
+
+    async with AsyncSessionLocal() as session:
+        result = await rematch_unmatched_auction_history(session)
+        refresh = await refresh_market_value_league(session)
+
+    return PipelineResponse(
+        status="complete",
+        message=(
+            f"Re-matched {result['rematched']} auction history rows "
+            f"({result['still_unmatched']} still unmatched). "
+            f"Refreshed market_value_league for {refresh['updated']} players."
+        ),
+        details={**result, "refresh": refresh},
+    )
+
+
 @router.post("/sync-league-history", response_model=PipelineResponse)
 async def sync_league_history():
     """

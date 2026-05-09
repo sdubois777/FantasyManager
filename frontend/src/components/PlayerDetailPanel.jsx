@@ -184,6 +184,11 @@ export default function PlayerDetailPanel({ playerId }) {
                       : player.profile.profile_source === 'college_comps' ? 'Rookie Comps'
                       : 'Historical'}
                   </span>
+                  {player.ai_bid_ceiling != null && player.profile.profile_source === 'college_comps' && (
+                    <span className="text-[10px] px-1.5 py-0.5 rounded-full font-medium bg-purple-500/15 text-purple-400">
+                      AI Calibrated
+                    </span>
+                  )}
                   {player.profile.confidence && (
                     <span className="text-[10px] text-slate-500">
                       {player.profile.confidence} confidence
@@ -198,29 +203,32 @@ export default function PlayerDetailPanel({ playerId }) {
                     {player.profile.clean_season_baseline.ppr_points?.toFixed(1)}
                   </div>
                   {/* Upside/downside range bar */}
-                  {player.profile.clean_season_baseline.upside_ppr && (
-                    <div className="mt-2">
-                      <div className="flex justify-between text-[10px] text-slate-500 mb-1">
-                        <span>Floor: {player.profile.clean_season_baseline.downside_ppr?.toFixed(0)}</span>
-                        <span>Ceiling: {player.profile.clean_season_baseline.upside_ppr?.toFixed(0)}</span>
+                  {(() => {
+                    const ceiling = player.profile.clean_season_baseline.upside_ppr || player.profile.ceiling_value_ppr
+                    const floor = player.profile.clean_season_baseline.downside_ppr || player.profile.floor_value_ppr
+                    if (!ceiling) return null
+                    return (
+                      <div className="mt-2">
+                        <div className="flex justify-between text-[10px] text-slate-500 mb-1">
+                          <span>Floor: {floor?.toFixed(0)}</span>
+                          <span>Ceiling: {ceiling?.toFixed(0)}</span>
+                        </div>
+                        <div className="relative h-2 bg-[#161822] rounded-full overflow-hidden">
+                          <div className="absolute h-full bg-blue-500/20 rounded-full"
+                            style={{
+                              left: `${(floor / ceiling) * 100 * 0.9}%`,
+                              right: '0%'
+                            }}
+                          />
+                          <div className="absolute h-full w-1 bg-blue-400 rounded-full"
+                            style={{
+                              left: `${(player.profile.clean_season_baseline.ppr_points / ceiling) * 100 * 0.9}%`
+                            }}
+                          />
+                        </div>
                       </div>
-                      <div className="relative h-2 bg-[#161822] rounded-full overflow-hidden">
-                        {/* Full range bar (floor to ceiling) */}
-                        <div className="absolute h-full bg-blue-500/20 rounded-full"
-                          style={{
-                            left: `${(player.profile.clean_season_baseline.downside_ppr / player.profile.clean_season_baseline.upside_ppr) * 100 * 0.9}%`,
-                            right: '0%'
-                          }}
-                        />
-                        {/* Projection marker */}
-                        <div className="absolute h-full w-1 bg-blue-400 rounded-full"
-                          style={{
-                            left: `${(player.profile.clean_season_baseline.ppr_points / player.profile.clean_season_baseline.upside_ppr) * 100 * 0.9}%`
-                          }}
-                        />
-                      </div>
-                    </div>
-                  )}
+                    )
+                  })()}
                 </div>
 
                 {/* Reasoning */}

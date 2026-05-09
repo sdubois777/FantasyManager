@@ -672,6 +672,29 @@ class PlayerProfilesAgent(BaseAgent):
                 "red_zone_philosophy": ts.red_zone_philosophy,
             }
 
+    async def _get_db_team_players(self, team: str) -> list[dict]:
+        """
+        Get all skill-position players assigned to this team in the DB.
+        Used to supplement the nfl_data_py roster with offseason moves.
+        """
+        try:
+            async with AsyncSessionLocal() as session:
+                result = await session.execute(
+                    select(Player).where(
+                        Player.team_abbr == team,
+                        Player.position.in_(SKILL_POSITIONS),
+                    )
+                )
+                players = result.scalars().all()
+        except Exception as exc:
+            logger.debug("Could not fetch DB team players for %s: %s", team, exc)
+            return []
+
+        return [
+            {"name": p.name, "position": p.position, "age": p.age}
+            for p in players
+        ]
+
     async def _get_team_rookie_fields(self, team: str) -> dict[str, dict]:
         """
         Fetch rookie evaluation fields (written by Agent 2) for all rookies on this team.
@@ -816,15 +839,33 @@ class PlayerProfilesAgent(BaseAgent):
         return signals
 
     async def _get_team_market_values(self, team: str) -> dict[str, float]:
-        """Return {player_name: market_value_league} for players on team."""
+        """Return {player_name: best_market_value} for players on team.
+
+        Includes players with either league or FantasyPros market value,
+        so the skip-logic keeps all fantasy-relevant players.
+        """
         try:
             async with AsyncSessionLocal() as session:
+                from sqlalchemy import or_
+
                 result = await session.execute(
-                    select(Player.name, Player.market_value_league)
+                    select(
+                        Player.name,
+                        Player.market_value_league,
+                        Player.market_value_fantasypros,
+                    )
                     .where(Player.team_abbr == team)
-                    .where(Player.market_value_league.isnot(None))
+                    .where(
+                        or_(
+                            Player.market_value_league.isnot(None),
+                            Player.market_value_fantasypros.isnot(None),
+                        )
+                    )
                 )
-                return {name: float(mv) for name, mv in result.all()}
+                return {
+                    name: float(league or fp or 0)
+                    for name, league, fp in result.all()
+                }
         except Exception as exc:
             logger.debug("Could not load market values for %s: %s", team, exc)
             return {}
@@ -932,15 +973,15 @@ class PlayerProfilesAgent(BaseAgent):
 
         roster = self._get_team_roster(team, current_season)
 
-        # Inject rookies from DB that aren't in nfl_data_py rosters yet
-        # (drafted players won't appear in roster cache until next season)
+        # Inject DB players not in nfl_data_py rosters.
+        # This catches: rookies (not yet in roster data), offseason trades/signings
+        # (nfl_data_py reflects prior season teams, DB has current assignments),
+        # and players with zero prior-season data like redshirt rookies.
+        db_team_players = await self._get_db_team_players(team)
         roster_names = {r["name"] for r in roster}
-        for rname, rfields in rookie_fields.items():
-            if rname not in roster_names:
-                roster.append({
-                    "name": rname,
-                    "position": rfields.get("position", "WR"),
-                })
+        for dbp in db_team_players:
+            if dbp["name"] not in roster_names:
+                roster.append(dbp)
 
         seen:    set[str]   = set()
         players: list[dict] = []
@@ -997,11 +1038,15 @@ class PlayerProfilesAgent(BaseAgent):
                         })
 
             # Skip only players with zero history AND no dependency flags AND not a rookie
-            # (rookies get profiled from college data; pure depth with nothing to say are skipped)
-            has_any_data    = any(s.get("games", 0) > 0 for s in seasons_data)
-            has_flags       = bool(dep_flags.get(pname, []))
+            # AND no market value.  Rookies get profiled from college data; players with
+            # market value are clearly fantasy-relevant even without game history (e.g.
+            # redshirt rookies, players returning from injury).  Pure depth with nothing
+            # to say are skipped.
+            has_any_data     = any(s.get("games", 0) > 0 for s in seasons_data)
+            has_flags        = bool(dep_flags.get(pname, []))
             is_rookie_player = pname in rookie_fields
-            if not has_any_data and not has_flags and not is_rookie_player:
+            has_market_value = pname in market_values
+            if not has_any_data and not has_flags and not is_rookie_player and not has_market_value:
                 continue
 
             # Detect team change: compare most recent season's team to current

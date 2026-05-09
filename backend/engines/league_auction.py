@@ -377,6 +377,80 @@ async def _sync_season(
 
 
 # ---------------------------------------------------------------------------
+# Re-match unmatched auction history rows to players
+# ---------------------------------------------------------------------------
+
+async def rematch_unmatched_auction_history(
+    session: AsyncSession,
+) -> dict:
+    """
+    Re-match league_auction_history rows that have player_id=NULL.
+
+    Tries to match by:
+      1. yahoo_player_key → player.yahoo_player_id
+      2. Normalized player_name → player.name
+
+    Returns: {rematched: int, still_unmatched: int}
+    """
+    # Get all unmatched rows
+    result = await session.execute(
+        select(LeagueAuctionHistory)
+        .where(LeagueAuctionHistory.player_id.is_(None))
+    )
+    unmatched_rows = result.scalars().all()
+
+    if not unmatched_rows:
+        return {"rematched": 0, "still_unmatched": 0}
+
+    # Load all players for matching
+    result = await session.execute(select(Player))
+    all_players = result.scalars().all()
+
+    # Build lookup maps
+    yahoo_id_map: dict[str, Player] = {}
+    name_map: dict[str, Player] = {}
+    for p in all_players:
+        if p.yahoo_player_id:
+            yahoo_id_map[p.yahoo_player_id] = p
+        key = normalize_player_name(p.name)
+        if key:
+            name_map[key] = p
+
+    rematched = 0
+    for row in unmatched_rows:
+        matched_player = None
+
+        # Try yahoo_player_key → yahoo_player_id
+        if row.yahoo_player_key and row.yahoo_player_key in yahoo_id_map:
+            matched_player = yahoo_id_map[row.yahoo_player_key]
+        elif row.yahoo_player_key:
+            # Try with nfl_ prefix (DB stores "nfl_" + gsis_id)
+            alt_key = f"nfl_{row.yahoo_player_key}"
+            if alt_key in yahoo_id_map:
+                matched_player = yahoo_id_map[alt_key]
+
+        # Fallback: name matching
+        if not matched_player and row.player_name:
+            norm_name = normalize_player_name(row.player_name)
+            if norm_name in name_map:
+                matched_player = name_map[norm_name]
+
+        if matched_player:
+            row.player_id = matched_player.id
+            rematched += 1
+
+    if rematched:
+        await session.commit()
+
+    still_unmatched = len(unmatched_rows) - rematched
+    logger.info(
+        "Re-matched %d auction history rows (%d still unmatched)",
+        rematched, still_unmatched,
+    )
+    return {"rematched": rematched, "still_unmatched": still_unmatched}
+
+
+# ---------------------------------------------------------------------------
 # Refresh player.market_value_league from history
 # ---------------------------------------------------------------------------
 

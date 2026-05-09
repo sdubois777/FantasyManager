@@ -2229,8 +2229,12 @@ async def test_build_team_context_injects_rookies_not_in_roster():
         },
     }
 
+    # DB player injection returns the rookie (simulates DB having Cam Ward on TEN)
+    db_team_players = [{"name": "Cam Ward", "position": "QB", "age": 22}]
+
     with patch.object(agent, "_get_team_roster", return_value=veteran_roster), \
          patch.object(agent, "_get_team_rookie_fields", new_callable=AsyncMock, return_value=rookie_fields), \
+         patch.object(agent, "_get_db_team_players", new_callable=AsyncMock, return_value=db_team_players), \
          patch.object(agent, "_get_team_system", new_callable=AsyncMock, return_value={}), \
          patch.object(agent, "_get_team_dependency_flags", new_callable=AsyncMock, return_value={}), \
          patch.object(agent, "_get_team_injury_profiles", new_callable=AsyncMock, return_value={}), \
@@ -2333,3 +2337,89 @@ def test_profile_needs_refresh_current():
         beat_signal_timestamps=[old_signal],
         team_updated_at=old_team,
     ) is False
+
+
+# ---------------------------------------------------------------------------
+# IR-year-1 player handling (McCarthy scenario)
+# ---------------------------------------------------------------------------
+
+
+def test_ir_year1_player_not_marked_as_rookie():
+    """
+    Player drafted in year N, on IR all of year N,
+    in year N+1 should have:
+      is_rookie = False
+      nfl_seasons_played = 1
+    NOT is_rookie = True.
+
+    Verifies the needs_sonnet_reasoning function still routes
+    such a player through Sonnet (via QB rule or other triggers).
+    """
+    mccarthy_like = {
+        "name": "J.J. McCarthy",
+        "position": "QB",
+        "age": 23,
+        "is_rookie": False,  # NOT a rookie — was on NFL roster
+        "nfl_seasons_played": 1,
+        "seasons": [
+            {"year": 2023, "games": 0, "note": "no data"},
+            {"year": 2024, "games": 0, "note": "no data"},
+            {"year": 2025, "games": 0, "note": "no data"},
+        ],
+    }
+    # QB position → Sonnet regardless of rookie status
+    assert needs_sonnet_reasoning(mccarthy_like) is True
+    assert mccarthy_like["is_rookie"] is False
+    assert mccarthy_like["nfl_seasons_played"] == 1
+
+
+def test_ir_player_triggers_sonnet_via_qb_position():
+    """
+    full_season_absence QB → Sonnet routing regardless of is_rookie status.
+    QBs ALWAYS route to Sonnet (line 114 in needs_sonnet_reasoning).
+    """
+    ir_qb = {
+        "name": "Test QB",
+        "position": "QB",
+        "age": 24,
+        "is_rookie": False,
+    }
+    assert needs_sonnet_reasoning(ir_qb) is True
+
+
+@pytest.mark.asyncio
+async def test_market_value_prevents_skip_in_context():
+    """
+    Player with zero game data but has market_value should NOT be
+    skipped in _build_team_context — the has_market_value check
+    keeps fantasy-relevant players.
+    """
+    agent = PlayerProfilesAgent(dry_run=True)
+    agent._data_cache = {}
+
+    roster = [{"name": "Existing Vet", "position": "RB", "age": 28}]
+    db_players = [{"name": "IR Player", "position": "QB", "age": 23}]
+    # Player has market value but is NOT a rookie and has no dep flags
+    market_values = {"IR Player": 3.0}
+
+    with patch.object(agent, "_get_team_roster", return_value=roster), \
+         patch.object(agent, "_get_team_rookie_fields", new_callable=AsyncMock, return_value={}), \
+         patch.object(agent, "_get_db_team_players", new_callable=AsyncMock, return_value=db_players), \
+         patch.object(agent, "_get_team_system", new_callable=AsyncMock, return_value={}), \
+         patch.object(agent, "_get_team_dependency_flags", new_callable=AsyncMock, return_value={}), \
+         patch.object(agent, "_get_team_injury_profiles", new_callable=AsyncMock, return_value={}), \
+         patch.object(agent, "_get_team_schedules", new_callable=AsyncMock, return_value={}), \
+         patch.object(agent, "_get_team_beat_signals", new_callable=AsyncMock, return_value={}), \
+         patch.object(agent, "_get_team_market_values", new_callable=AsyncMock, return_value=market_values), \
+         patch.object(agent, "_ensure_cache_loaded"), \
+         patch.object(agent, "_is_backup_qb_season", return_value=False), \
+         patch.object(agent, "_get_player_season_stats", return_value=None), \
+         patch.object(agent, "_get_qb_season", return_value=None), \
+         patch.object(agent, "_get_snap_pct", return_value=None):
+
+        ctx = await agent._build_team_context("MIN")
+
+    player_names = [p["name"] for p in ctx["players"]]
+    assert "IR Player" in player_names, (
+        "Player with market_value should not be skipped even with zero game data"
+    )
