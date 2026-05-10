@@ -168,18 +168,40 @@ Update this section as stages complete.
 - [x] Stage 7: Schedule agent
 - [x] Stage 8: Beat Reporter agent
 - [x] Stage 9: Valuation pass
-- [~] Stage 10: Yahoo API integration — PARTIALLY COMPLETE
-  - OAuth flow implemented and routes registered (GET /auth/yahoo, GET /auth/yahoo/callback)
-  - get_players() uses game-level endpoint, available year-round
-  - League endpoints (get_league, get_teams, get_rosters, get_draft_results) implemented
-    but UNTESTABLE until league is active (~August). League ID not yet set.
-  - To complete: 1) add YAHOO_LEAGUE_ID to .env once league is created,
-    2) complete OAuth flow (GET /auth/yahoo → authorize → copy refresh token to .env),
-    3) run POST /pipeline/sync-yahoo-players and POST /pipeline/sync-league-settings
-- [ ] Stage 11: Playwright draft bridge
-- [ ] Stage 12: Live draft agent
-- [ ] Stage 13: Draft UI
+- [x] Stage 10: Yahoo API integration
+  - OAuth flow complete (GET /auth/yahoo, GET /auth/yahoo/callback)
+  - All API functions: get_players, get_league, get_teams, get_rosters, get_draft_results
+  - Multi-year league history: get_all_user_leagues, get_draft_results_for_league,
+    get_player_details_batch, get_teams_in_league
+  - League auction engine: CSV import, Yahoo sync, multi-year tendencies,
+    manager style classification, market_value_league refresh
+  - Pipeline endpoints: sync-yahoo-players, sync-league-settings,
+    sync-league-history, import-league-auction, refresh-market-values
+  - Yahoo credentials (YAHOO_CLIENT_ID, YAHOO_CLIENT_SECRET, YAHOO_LEAGUE_ID,
+    YAHOO_REFRESH_TOKEN) all set in .env
+- [x] Stage 11: Playwright draft bridge
+  - YahooPlaywrightBridge: WS interception + MutationObserver fallback + health check
+  - WebSocketManager singleton for React client push
+  - Draft router: WS /ws/draft, POST /draft/bid, /draft/nominate, /draft/pass
+  - Synthetic WS frame fixtures (replace with real frames ~August)
+  - 12 tests, 85%/90% coverage on bridge/manager
+- [ ] Stage 12: Live draft agent — NOT STARTED
+  - agent_loop.py (run_agent with tool-use) ready as infrastructure
+  - DraftState + OpponentProfile DB models exist
+  - Needs: DraftStateManager, DependencyResolver, OpponentThreatAnalyzer, LiveDraftEngine
+- [~] Stage 13a: Pre-draft UI — ~70%
+  - React + Vite + Tailwind + Zustand app built
+  - 7 pages: Dashboard, DraftBoard, Players, Teams, TeamDetail, News, PipelineAdmin
+  - 14+ shared components, 3 Zustand stores, 9 API client modules
+  - Backend endpoints: /players, /draftboard, /teams, /league/tendencies,
+    /league/history, /news/feed, /admin/pipeline-status
+- [ ] Stage 13b: Draft UI — NOT STARTED
+  - Needs: bid/nominate forms, clock countdown, recommendation cards,
+    opponent budget tracker, roster grid, MANUAL_ACTION_REQUIRED alert
 - [ ] Stage 14: Season roster store
-- [ ] Stage 15–21: In-season features
-- [ ] Stage 22: Pipeline admin UI
+- [ ] Stage 15–16: Roster monitor + opponent analyzer
+- [ ] Stage 17–19: Trade value + trade analyzer + trade proposals
+- [ ] Stage 20: Lineup optimizer
+- [ ] Stage 21: Waiver wire agent
+- [~] Stage 22: Pipeline admin UI — PARTIAL (PipelineAdmin.jsx + backend endpoints exist)
 - [ ] Stage 23: Deployment + testing

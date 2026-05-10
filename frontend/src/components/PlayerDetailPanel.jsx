@@ -201,7 +201,7 @@ export default function PlayerDetailPanel({ playerId, onPlayerSelect }) {
             </Section>
 
             {/* Projection */}
-            {player.profile?.clean_season_baseline?.ppr_points && (
+            {(player.profile?.clean_season_baseline?.projected_ppr_season || player.profile?.clean_season_baseline?.ppr_points) && (
               <Section title="Projection">
                 {/* Source badge */}
                 <div className="flex items-center gap-2 mb-3">
@@ -229,39 +229,51 @@ export default function PlayerDetailPanel({ playerId, onPlayerSelect }) {
                 </div>
 
                 {/* PPR total */}
-                <div className="bg-[#1c1f2e] rounded p-3 mb-3">
-                  <div className="text-[10px] text-slate-500 mb-1">Projected PPR (17 games)</div>
-                  <div className="text-xl font-mono font-semibold text-blue-400">
-                    {player.profile.clean_season_baseline.ppr_points?.toFixed(1)}
-                  </div>
-                  {/* Upside/downside range bar */}
-                  {(() => {
-                    const ceiling = player.profile.clean_season_baseline.upside_ppr || player.profile.ceiling_value_ppr
-                    const floor = player.profile.clean_season_baseline.downside_ppr || player.profile.floor_value_ppr
-                    if (!ceiling) return null
-                    return (
-                      <div className="mt-2">
-                        <div className="flex justify-between text-[10px] text-slate-500 mb-1">
-                          <span>Floor: {floor?.toFixed(0)}</span>
-                          <span>Ceiling: {ceiling?.toFixed(0)}</span>
-                        </div>
-                        <div className="relative h-2 bg-[#161822] rounded-full overflow-hidden">
-                          <div className="absolute h-full bg-blue-500/20 rounded-full"
-                            style={{
-                              left: `${(floor / ceiling) * 100 * 0.9}%`,
-                              right: '0%'
-                            }}
-                          />
-                          <div className="absolute h-full w-1 bg-blue-400 rounded-full"
-                            style={{
-                              left: `${(player.profile.clean_season_baseline.ppr_points / ceiling) * 100 * 0.9}%`
-                            }}
-                          />
-                        </div>
-                      </div>
+                {(() => {
+                  const baseline = player.profile.clean_season_baseline
+                  const projectedPPR = baseline.projected_ppr_season ?? baseline.ppr_points
+                  const projCeiling = player.profile.ceiling_value_ppr
+                    ?? baseline.upside_ppr
+                    ?? projectedPPR * 1.25
+                  const projFloor = player.profile.floor_value_ppr
+                    ?? baseline.downside_ppr
+                    ?? projectedPPR * 0.75
+                  const validatedProjection = Math.min(Math.max(projectedPPR, projFloor), projCeiling)
+                  if (validatedProjection !== projectedPPR) {
+                    console.warn(
+                      `${player.name}: projection ${projectedPPR} outside range [${projFloor}, ${projCeiling}]`
                     )
-                  })()}
-                </div>
+                  }
+                  return (
+                    <div className="bg-[#1c1f2e] rounded p-3 mb-3">
+                      <div className="text-[10px] text-slate-500 mb-1">Projected PPR (17 games)</div>
+                      <div className="text-xl font-mono font-semibold text-blue-400">
+                        {projectedPPR?.toFixed(1)}
+                      </div>
+                      {projCeiling > 0 && (
+                        <div className="mt-2">
+                          <div className="flex justify-between text-[10px] text-slate-500 mb-1">
+                            <span>Floor: {projFloor?.toFixed(0)}</span>
+                            <span>Ceiling: {projCeiling?.toFixed(0)}</span>
+                          </div>
+                          <div className="relative h-2 bg-[#161822] rounded-full overflow-hidden">
+                            <div className="absolute h-full bg-blue-500/20 rounded-full"
+                              style={{
+                                left: `${(projFloor / projCeiling) * 100 * 0.9}%`,
+                                right: '0%'
+                              }}
+                            />
+                            <div className="absolute h-full w-1 bg-blue-400 rounded-full"
+                              style={{
+                                left: `${(validatedProjection / projCeiling) * 100 * 0.9}%`
+                              }}
+                            />
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  )
+                })()}
 
                 {/* Reasoning */}
                 {player.profile.projection_reasoning && (
