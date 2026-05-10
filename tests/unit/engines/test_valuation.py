@@ -291,6 +291,7 @@ def _make_player(
     player = MagicMock(spec=["id", "name", "position", "team_abbr", "profile",
                               "injury_profile", "dependencies", "market_value",
                               "market_value_fantasypros", "market_value_league",
+                              "ai_bid_ceiling",
                               "tier", "baseline_value", "risk_adjusted_value",
                               "recommended_bid_ceiling", "let_go_threshold",
                               "elite_anchor_weight", "positional_scarcity_modifier",
@@ -300,8 +301,9 @@ def _make_player(
     player.position     = position
     player.team_abbr    = team_abbr
     player.market_value = Decimal(str(market_value)) if market_value is not None else None
-    player.market_value_fantasypros = None
+    player.market_value_fantasypros = Decimal(str(market_value)) if market_value is not None else None
     player.market_value_league = None
+    player.ai_bid_ceiling = None
 
     profile = MagicMock()
     profile.clean_season_baseline = {"ppr_points": ppr_points}

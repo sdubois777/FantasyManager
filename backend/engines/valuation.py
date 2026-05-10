@@ -302,6 +302,49 @@ def compute_value_gap(
     return gap, signal
 
 
+def compute_value_gap_from_player(player) -> tuple[Optional[Decimal], Optional[str]]:
+    """
+    Compute value_gap_signal using the best available system estimate.
+
+    Priority: ai_bid_ceiling > recommended_bid_ceiling > baseline_value.
+    ai_bid_ceiling is the authoritative calibrated estimate from the AI
+    valuation agent. baseline_value (PAR math) is floored at $1 for many
+    players, making it unreliable for gap detection.
+
+    Market source: market_value_league > market_value_fantasypros.
+    """
+    market = (
+        getattr(player, "market_value_league", None)
+        or getattr(player, "market_value_fantasypros", None)
+    )
+    if not market:
+        return None, "no_market_data"
+
+    market = _to_dec(market)
+
+    # Best available system estimate
+    system_estimate = None
+    for attr in ("ai_bid_ceiling", "recommended_bid_ceiling", "baseline_value"):
+        val = getattr(player, attr, None)
+        if val is not None and float(val) > 0:
+            system_estimate = _to_dec(val)
+            break
+
+    if system_estimate is None:
+        return None, "no_system_data"
+
+    gap = system_estimate - market
+
+    if gap < VALUE_GAP_OVERVALUE_THRESHOLD:
+        signal = "market_overvalues"
+    elif gap > VALUE_GAP_UNDERVALUE_THRESHOLD:
+        signal = "market_undervalues"
+    else:
+        signal = "aligned"
+
+    return gap, signal
+
+
 def compute_let_go_threshold(bid_ceiling: Decimal, risk_level: str = "low") -> Decimal:
     """Let-go threshold — risk-adjusted walk-away price above ceiling.
 
@@ -608,10 +651,6 @@ async def run_valuation_pass(
                     ceiling = max_bid_dec
 
                 let_go   = compute_let_go_threshold(ceiling, risk_level)
-                gap, sig = compute_value_gap(sv, effective_mv)
-                # FIX 5: explicit signal when no market data
-                if sig is None and player.market_value is None:
-                    sig = "no_market_data"
                 risk_adj = _to_dec(sv * (Decimal("1") + (rm or Decimal("0"))))
                 anchor   = ANCHOR_WEIGHTS.get(tier, Decimal("0.00"))
                 scarcity = SCARCITY_MODIFIERS.get(pos, Decimal("1.00")) if tier == 1 else Decimal("1.00")
@@ -631,7 +670,8 @@ async def run_valuation_pass(
                         ctx["total_par"], ctx["position_budget"],
                     )
 
-                # Update in-session player object
+                # Update in-session player object — set values BEFORE gap
+                # so compute_value_gap_from_player sees current ceiling
                 player.tier                       = tier
                 player.baseline_value             = sv
                 player.ceiling_value              = ceiling_val
@@ -641,6 +681,9 @@ async def run_valuation_pass(
                 player.let_go_threshold           = let_go
                 player.elite_anchor_weight        = anchor
                 player.positional_scarcity_modifier = scarcity
+
+                # Value gap: uses ai_bid_ceiling > rec_ceiling > baseline
+                gap, sig = compute_value_gap_from_player(player)
                 player.value_gap                  = gap
                 player.value_gap_signal           = sig
                 player.data_confidence            = _confidence(player)

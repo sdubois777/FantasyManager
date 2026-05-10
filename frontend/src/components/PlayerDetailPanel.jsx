@@ -1,5 +1,5 @@
 import { useQuery } from '@tanstack/react-query'
-import { X, Star, StarOff, MessageCircle } from 'lucide-react'
+import { X, Star, StarOff, MessageCircle, Info } from 'lucide-react'
 import { fetchPlayer } from '../api/players'
 import { useUIStore } from '../stores/ui'
 import { usePreferencesStore } from '../stores/preferences'
@@ -129,38 +129,69 @@ export default function PlayerDetailPanel({ playerId, onPlayerSelect }) {
                 <StatBox label="Floor" value={`$${player.floor_value?.toFixed(0) || '--'}`} />
               </div>
 
-              {/* Badges row */}
+              {/* AI Assessment + tactical badges */}
               {(player.value_assessment || player.pay_up_flag || player.nomination_target_flag) && (
-                <div className="flex items-center gap-2 mb-3 flex-wrap">
-                  {player.value_assessment && (
-                    <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-medium ${
-                      player.value_assessment === 'elite_value' ? 'bg-emerald-500/15 text-emerald-400'
-                        : player.value_assessment === 'good_value' ? 'bg-blue-500/15 text-blue-400'
-                        : player.value_assessment === 'fair_value' ? 'bg-slate-500/15 text-slate-400'
-                        : player.value_assessment === 'slight_overpay' ? 'bg-amber-500/15 text-amber-400'
-                        : 'bg-red-500/15 text-red-400'
-                    }`}>
-                      {player.value_assessment.replace(/_/g, ' ')}
-                    </span>
-                  )}
-                  {player.pay_up_flag && (
-                    <span className="text-[10px] px-1.5 py-0.5 rounded-full font-medium bg-emerald-500/15 text-emerald-400">
-                      PAY UP
-                    </span>
-                  )}
-                  {player.nomination_target_flag && (
-                    <span className="text-[10px] px-1.5 py-0.5 rounded-full font-medium bg-purple-500/15 text-purple-400">
-                      NOMINATE
-                    </span>
-                  )}
-                </div>
-              )}
+                <div className="mb-3">
+                  <div className="flex items-center gap-2 flex-wrap mb-2">
+                    {player.value_assessment && (
+                      <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-medium ${
+                        player.value_assessment === 'elite_value' ? 'bg-emerald-500/15 text-emerald-400'
+                          : player.value_assessment === 'good_value' ? 'bg-blue-500/15 text-blue-400'
+                          : player.value_assessment === 'fair_value' ? 'bg-slate-500/15 text-slate-400'
+                          : player.value_assessment === 'slight_overpay' ? 'bg-amber-500/15 text-amber-400'
+                          : 'bg-red-500/15 text-red-400'
+                      }`}>
+                        {player.value_assessment.replace(/_/g, ' ')}
+                      </span>
+                    )}
+                    {player.pay_up_flag && (
+                      <span className="text-[10px] px-1.5 py-0.5 rounded-full font-medium bg-emerald-500/15 text-emerald-400">
+                        PAY UP
+                      </span>
+                    )}
+                    {player.nomination_target_flag && (
+                      <span className="text-[10px] px-1.5 py-0.5 rounded-full font-medium bg-purple-500/15 text-purple-400">
+                        NOMINATE
+                      </span>
+                    )}
+                  </div>
 
-              {/* Auction note */}
-              {player.auction_note && (
-                <p className="text-xs text-slate-400 leading-relaxed mb-3">
-                  {player.auction_note}
-                </p>
+                  {/* Auction note */}
+                  {player.auction_note && (
+                    <p className="text-xs text-slate-400 leading-relaxed mb-2">
+                      {player.auction_note}
+                    </p>
+                  )}
+
+                  {/* Signal disagreement context */}
+                  {player.value_gap_signal && player.value_assessment && (() => {
+                    const sig = player.value_gap_signal
+                    const assess = player.value_assessment
+                    const agree = (
+                      (sig === 'market_undervalues' && ['elite_value', 'good_value'].includes(assess)) ||
+                      (sig === 'market_overvalues' && ['avoid', 'slight_overpay'].includes(assess)) ||
+                      (sig === 'aligned' && assess === 'fair_value') ||
+                      sig === 'no_market_data' || sig === 'no_system_data'
+                    )
+                    if (agree) return null
+                    const explanation = (
+                      sig === 'market_overvalues' && ['elite_value', 'good_value'].includes(assess)
+                        ? 'AI sees upside the historical average misses.'
+                        : sig === 'market_undervalues' && ['avoid', 'slight_overpay'].includes(assess)
+                          ? 'AI applying contextual discount to math value.'
+                          : null
+                    )
+                    return (
+                      <div className="flex items-start gap-1.5 mt-1">
+                        <Info size={13} className="text-slate-500 mt-0.5 shrink-0" />
+                        <span className="text-[11px] text-slate-500 leading-snug">
+                          Math signal ({sig.replace(/_/g, ' ')}) differs from AI — AI wins for bid decisions.
+                          {explanation && ` ${explanation}`}
+                        </span>
+                      </div>
+                    )
+                  })()}
+                </div>
               )}
 
               <ValueComparisonBar
