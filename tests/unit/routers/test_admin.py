@@ -21,7 +21,8 @@ async def test_get_pipeline_status():
     session = AsyncMock()
 
     # Each agent returns (last_run, count) — 6 agents total
-    last_run = datetime(2026, 5, 1, tzinfo=timezone.utc)
+    # Use a recent date so stale=False (within 7-day threshold)
+    last_run = datetime.now(timezone.utc)
     result_mock = MagicMock()
     result_mock.one.return_value = (last_run, 32)
 

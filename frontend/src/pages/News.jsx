@@ -1,9 +1,11 @@
-import { useState } from 'react'
-import { useQuery } from '@tanstack/react-query'
+import { useState, useEffect, useRef } from 'react'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { fetchNews } from '../api/news'
+import { useUIStore } from '../stores/ui'
 import FilterBar, { FilterSelect } from '../components/shared/FilterBar'
 import NewsFeedItem from '../components/shared/NewsFeedItem'
 import Pagination from '../components/shared/Pagination'
+import PlayerDetailPanel from '../components/PlayerDetailPanel'
 
 const SIGNAL_TYPE_OPTIONS = [
   { value: '', label: 'All Types' },
@@ -28,6 +30,41 @@ export default function News() {
   const [team, setTeam] = useState('')
   const [days, setDays] = useState('30')
   const [page, setPage] = useState(1)
+  const [wsConnected, setWsConnected] = useState(false)
+  const openPlayerDetail = useUIStore((s) => s.openPlayerDetail)
+  const selectedPlayerId = useUIStore((s) => s.selectedPlayerId)
+  const detailPanelOpen = useUIStore((s) => s.detailPanelOpen)
+  const queryClient = useQueryClient()
+  const wsRef = useRef(null)
+
+  // WebSocket for live news updates
+  useEffect(() => {
+    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
+    const ws = new WebSocket(`${protocol}//${window.location.host}/ws/news`)
+    wsRef.current = ws
+
+    ws.onopen = () => setWsConnected(true)
+    ws.onclose = () => setWsConnected(false)
+    ws.onmessage = (event) => {
+      try {
+        const signal = JSON.parse(event.data)
+        // Prepend new signal to cached query data
+        queryClient.setQueryData(
+          ['news', signalType, team, days, page],
+          (old) => {
+            if (!old) return old
+            return {
+              ...old,
+              signals: [signal, ...old.signals],
+              total: old.total + 1,
+            }
+          }
+        )
+      } catch { /* ignore parse errors */ }
+    }
+
+    return () => ws.close()
+  }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
   const { data, isLoading } = useQuery({
     queryKey: ['news', signalType, team, days, page],
@@ -49,7 +86,10 @@ export default function News() {
   return (
     <div className="max-w-4xl">
       <div className="flex items-center justify-between mb-4">
-        <h1 className="text-2xl font-semibold text-slate-100">News Feed</h1>
+        <div className="flex items-center gap-3">
+          <h1 className="text-2xl font-semibold text-slate-100">News Feed</h1>
+          <span className={`w-2 h-2 rounded-full ${wsConnected ? 'bg-emerald-400' : 'bg-slate-600'}`} title={wsConnected ? 'Live updates active' : 'Polling every 60s'} />
+        </div>
         <span className="text-sm text-slate-500">{total} signals</span>
       </div>
 
@@ -88,12 +128,16 @@ export default function News() {
           </div>
         ) : (
           signals.map((signal) => (
-            <NewsFeedItem key={signal.id} signal={signal} />
+            <NewsFeedItem key={signal.id} signal={signal} onPlayerClick={openPlayerDetail} />
           ))
         )}
       </div>
 
       <Pagination page={page} pages={pages} onPageChange={setPage} />
+
+      {detailPanelOpen && selectedPlayerId && (
+        <PlayerDetailPanel playerId={selectedPlayerId} />
+      )}
     </div>
   )
 }

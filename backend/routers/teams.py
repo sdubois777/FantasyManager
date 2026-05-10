@@ -75,6 +75,7 @@ class TeamDetail(BaseModel):
     qb_downfield_aggressiveness: Optional[str] = None
     rookie_qb_flag: bool = False
     compound_risk_flag: bool = False
+    qb_wr_trust_score: Optional[int] = None
 
     # O-line
     pass_protection_grade: Optional[str] = None
@@ -89,6 +90,35 @@ class TeamDetail(BaseModel):
 
     # Players
     players: list[TeamPlayerSummary] = []
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+def _calculate_qb_wr_trust_score(ts: TeamSystem) -> int:
+    """
+    Simple 0-100 trust score for QB→WR target volume.
+    Based on: QB tier, pass rate tendency, O-line grade.
+    """
+    base = 50
+    tier_map = {"elite": 25, "solid": 15, "average": 5, "below_average": -10, "poor": -20}
+    base += tier_map.get(ts.qb_tier or "", 0)
+
+    tendency = (ts.oc_run_pass_split_tendency or 0.5)
+    if tendency >= 0.55:
+        base += 15
+    elif tendency <= 0.45:
+        base -= 15
+
+    a_grades = {"A+", "A", "A-"}
+    d_grades = {"D+", "D", "D-", "F"}
+    if ts.pass_protection_grade in a_grades:
+        base += 10
+    elif ts.pass_protection_grade in d_grades:
+        base -= 10
+
+    return max(0, min(100, base))
 
 
 # ---------------------------------------------------------------------------
@@ -224,6 +254,7 @@ async def get_team(abbr: str):
         qb_downfield_aggressiveness=ts.qb_downfield_aggressiveness,
         rookie_qb_flag=ts.rookie_qb_flag or False,
         compound_risk_flag=ts.compound_risk_flag or False,
+        qb_wr_trust_score=_calculate_qb_wr_trust_score(ts),
         pass_protection_grade=ts.pass_protection_grade,
         run_blocking_grade=ts.run_blocking_grade,
         oc_name=ts.oc_name,

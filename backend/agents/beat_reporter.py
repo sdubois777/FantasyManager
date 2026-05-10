@@ -199,6 +199,25 @@ async def _write_signal(
         )
         session.add(rec)
         await session.commit()
+        await session.refresh(rec)
+
+        # Push to live news WebSocket subscribers
+        try:
+            from backend.websocket.manager import news_ws_manager
+            if news_ws_manager.connection_count > 0:
+                await news_ws_manager.broadcast({
+                    "id": str(rec.id),
+                    "signal_type": signal_type,
+                    "source": article.get("source", ""),
+                    "raw_text": article.get("title", ""),
+                    "confidence": signal.get("confidence"),
+                    "flagged_at": rec.flagged_at.isoformat() if rec.flagged_at else None,
+                    "player_id": str(player_id) if player_id else None,
+                    "player_name": signal.get("player_name"),
+                })
+        except Exception as exc:
+            logger.debug("News WS broadcast failed: %s", exc)
+
     return True
 
 

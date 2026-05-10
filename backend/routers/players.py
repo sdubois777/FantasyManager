@@ -37,6 +37,7 @@ class FlagSummary(BaseModel):
 
     id: str
     flag_type: str
+    trigger_player_id: Optional[str] = None
     trigger_player_name: Optional[str] = None
     trigger_condition: Optional[str] = None
     effect_on_value: Optional[str] = None
@@ -204,6 +205,7 @@ def _player_to_summary(player: Player) -> PlayerSummary:
         flags.append(FlagSummary(
             id=str(dep.id),
             flag_type=dep.flag_type,
+            trigger_player_id=str(dep.trigger_player_id) if dep.trigger_player_id else None,
             trigger_player_name=dep.trigger_player_name,
             trigger_condition=dep.trigger_condition,
             effect_on_value=dep.effect_on_value,

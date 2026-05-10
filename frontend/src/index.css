@@ -15,3 +15,8 @@ body {
 .animate-slide-in {
   animation: slide-in 0.2s ease-out;
 }
+
+@media print {
+  .no-print { display: none !important; }
+  .print-full-width { width: 100% !important; }
+}

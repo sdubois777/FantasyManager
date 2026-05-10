@@ -1,20 +1,49 @@
+import { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { useNavigate } from 'react-router-dom'
 import { fetchTeams } from '../api/teams'
 import SystemGradeBadge from '../components/shared/SystemGradeBadge'
 
+const NFL_DIVISIONS = {
+  'AFC East': ['BUF', 'MIA', 'NE', 'NYJ'],
+  'AFC North': ['BAL', 'CIN', 'CLE', 'PIT'],
+  'AFC South': ['HOU', 'IND', 'JAX', 'TEN'],
+  'AFC West': ['DEN', 'KC', 'LAC', 'LV'],
+  'NFC East': ['DAL', 'NYG', 'PHI', 'WAS'],
+  'NFC North': ['CHI', 'DET', 'GB', 'MIN'],
+  'NFC South': ['ATL', 'CAR', 'NO', 'TB'],
+  'NFC West': ['ARI', 'LAR', 'SEA', 'SF'],
+}
+
 export default function Teams() {
   const navigate = useNavigate()
+  const [division, setDivision] = useState('')
   const { data, isLoading } = useQuery({
     queryKey: ['teams'],
     queryFn: () => fetchTeams(),
   })
 
-  const teams = data?.teams || []
+  let teams = data?.teams || []
+  if (division) {
+    const divTeams = NFL_DIVISIONS[division] || []
+    teams = teams.filter((t) => divTeams.includes(t.team_abbr))
+  }
 
   return (
     <div className="max-w-5xl">
-      <h1 className="text-2xl font-semibold text-slate-100 mb-4">NFL Teams</h1>
+      <div className="flex items-center justify-between mb-4">
+        <h1 className="text-2xl font-semibold text-slate-100">NFL Teams</h1>
+        <select
+          value={division}
+          onChange={(e) => setDivision(e.target.value)}
+          className="bg-[#1c1f2e] text-sm text-slate-300 border border-[#2d3148] rounded px-3 py-1.5 focus:outline-none focus:border-blue-500/50"
+        >
+          <option value="">All Divisions</option>
+          {Object.keys(NFL_DIVISIONS).map((div) => (
+            <option key={div} value={div}>{div}</option>
+          ))}
+        </select>
+      </div>
 
       <div className="bg-[#161822] rounded-lg border border-[#2d3148] overflow-hidden">
         {/* Header */}

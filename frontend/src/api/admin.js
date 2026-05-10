@@ -17,6 +17,11 @@ export async function fetchCostReport(days = 30) {
   return data
 }
 
+export async function fetchDryRun(agentName) {
+  const { data } = await api.post('/admin/pipeline/dry-run', { agent_name: agentName })
+  return data
+}
+
 export async function fetchMarketValueStatus() {
   const { data } = await api.get('/pipeline/market-values/status')
   return data

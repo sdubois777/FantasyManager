@@ -65,6 +65,20 @@ class CostReportResponse(BaseModel):
     period_days: int = 30
 
 
+class DryRunAgentEstimate(BaseModel):
+    agent_name: str
+    estimated_entities: int = 0
+    estimated_haiku_calls: int = 0
+    estimated_sonnet_calls: int = 0
+    estimated_cost_usd: float = 0.0
+
+
+class DryRunResponse(BaseModel):
+    estimates: list[DryRunAgentEstimate]
+    total_estimated_cost_usd: float = 0.0
+    disclaimer: str = "Estimate only. Actual cost depends on cache hits."
+
+
 # ---------------------------------------------------------------------------
 # Endpoints
 # ---------------------------------------------------------------------------
@@ -158,6 +172,73 @@ async def trigger_pipeline_run(body: PipelineRunRequest):
         status="started",
         message=f"Pipeline run started for {body.agent_name}"
         + (f" (team: {body.team_abbr})" if body.team_abbr else " (all teams)"),
+    )
+
+
+@router.post("/pipeline/dry-run", response_model=DryRunResponse)
+async def pipeline_dry_run(body: PipelineRunRequest):
+    """Estimate cost of running specified agent(s) without actually running them."""
+    from backend.models.player import Player, PlayerProfile
+    from backend.models.team_system import TeamSystem
+
+    agent = body.agent_name
+    if agent not in KNOWN_AGENTS:
+        raise HTTPException(status_code=400, detail=f"Unknown agent: {agent}")
+
+    async with AsyncSessionLocal() as session:
+        estimates = []
+
+        if agent == "player_profiles":
+            # Count players that would need profiling (no cached profile or stale)
+            total_result = await session.execute(
+                select(func.count(Player.id))
+                .where(Player.position.in_(["QB", "RB", "WR", "TE"]))
+            )
+            total_players = total_result.scalar() or 0
+            cached_result = await session.execute(
+                select(func.count(AgentCache.id))
+                .where(AgentCache.agent_name == "player_profiles")
+            )
+            cached = cached_result.scalar() or 0
+            needs_refresh = max(0, total_players - cached)
+
+            sonnet_calls = int(needs_refresh * 0.40)
+            haiku_calls = int(needs_refresh * 0.60)
+            cost = sonnet_calls * 0.003 + haiku_calls * 0.0003
+
+            estimates.append(DryRunAgentEstimate(
+                agent_name="player_profiles",
+                estimated_entities=needs_refresh,
+                estimated_sonnet_calls=sonnet_calls,
+                estimated_haiku_calls=haiku_calls,
+                estimated_cost_usd=round(cost, 4),
+            ))
+        elif agent in ("team_systems", "roster_changes", "injury_risk", "schedule"):
+            team_count = 32
+            if body.team_abbr:
+                team_count = 1
+            is_sonnet = agent == "roster_changes"
+            calls = team_count
+            cost_per = 0.003 if is_sonnet else 0.0003
+            estimates.append(DryRunAgentEstimate(
+                agent_name=agent,
+                estimated_entities=team_count,
+                estimated_sonnet_calls=calls if is_sonnet else 0,
+                estimated_haiku_calls=0 if is_sonnet else calls,
+                estimated_cost_usd=round(calls * cost_per, 4),
+            ))
+        elif agent == "beat_reporter":
+            estimates.append(DryRunAgentEstimate(
+                agent_name="beat_reporter",
+                estimated_entities=1,
+                estimated_haiku_calls=1,
+                estimated_cost_usd=0.0003,
+            ))
+
+    total_cost = sum(e.estimated_cost_usd for e in estimates)
+    return DryRunResponse(
+        estimates=estimates,
+        total_estimated_cost_usd=round(total_cost, 4),
     )
 
 

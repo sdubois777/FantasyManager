@@ -30,7 +30,7 @@ class WebSocketManager:
         await websocket.accept()
         self.active_connections.append(websocket)
         logger.info(
-            "Draft client connected — total connections: %d",
+            "WS client connected — total connections: %d",
             len(self.active_connections),
         )
 
@@ -39,7 +39,7 @@ class WebSocketManager:
         if websocket in self.active_connections:
             self.active_connections.remove(websocket)
         logger.info(
-            "Draft client disconnected — total connections: %d",
+            "WS client disconnected — total connections: %d",
             len(self.active_connections),
         )
 
@@ -63,5 +63,6 @@ class WebSocketManager:
         return len(self.active_connections)
 
 
-# Module-level singleton — shared by the draft router and the Playwright bridge
-ws_manager = WebSocketManager()
+# Module-level singletons
+ws_manager = WebSocketManager()        # Draft events
+news_ws_manager = WebSocketManager()   # News/beat reporter signals

@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { Star, StarOff } from 'lucide-react'
+import { Star, StarOff, Download, Printer } from 'lucide-react'
 import { fetchDraftboard } from '../api/draftboard'
 import { fetchMarketValueStatus } from '../api/admin'
 import { usePreferencesStore } from '../stores/preferences'
@@ -64,11 +64,52 @@ export default function DraftBoard() {
     if (v) setGlobalStrategy(v).catch(() => {})
   }
 
+  const handleExportTxt = () => {
+    const lines = ['DRAFT CHEAT SHEET', `Strategy: ${strategy || 'None'}`, '']
+    for (const tierKey of tierKeys) {
+      const players = tiers[tierKey] || []
+      lines.push(`--- TIER ${tierKey} ---`)
+      for (const p of players) {
+        const ceiling = p.ai_bid_ceiling ?? p.recommended_bid_ceiling?.toFixed(0) ?? '--'
+        const market = p.market_value?.toFixed(0) ?? '--'
+        const gap = p.ai_bid_ceiling != null && p.market_value != null
+          ? (p.ai_bid_ceiling - p.market_value > 0 ? '+' : '') + (p.ai_bid_ceiling - p.market_value).toFixed(0)
+          : '--'
+        lines.push(`${p.position.padEnd(3)} ${p.name.padEnd(22)} ${p.team_abbr.padEnd(5)} Ceil:$${ceiling.toString().padStart(3)}  Mkt:$${market.toString().padStart(3)}  Gap:${gap}`)
+      }
+      lines.push('')
+    }
+    const blob = new Blob([lines.join('\n')], { type: 'text/plain' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = 'draft-cheat-sheet.txt'
+    a.click()
+    URL.revokeObjectURL(url)
+  }
+
+  const handlePrint = () => window.print()
+
   return (
     <div className="max-w-6xl">
       <div className="flex items-center justify-between mb-4">
-        <h1 className="text-2xl font-semibold text-slate-100">Draft Board</h1>
-        <span className="text-sm text-slate-500">{totalPlayers} players</span>
+        <h1 className="text-2xl font-semibold text-slate-100 print-full-width">Draft Board</h1>
+        <div className="flex items-center gap-3 no-print">
+          <span className="text-sm text-slate-500">{totalPlayers} players</span>
+          <button onClick={handleExportTxt} className="flex items-center gap-1 px-2.5 py-1.5 text-xs bg-[#1c1f2e] text-slate-300 border border-[#2d3148] rounded hover:bg-[#222539] transition-colors" title="Export TXT cheat sheet">
+            <Download size={13} /> Export
+          </button>
+          <button onClick={handlePrint} className="flex items-center gap-1 px-2.5 py-1.5 text-xs bg-[#1c1f2e] text-slate-300 border border-[#2d3148] rounded hover:bg-[#222539] transition-colors" title="Print draft board">
+            <Printer size={13} /> Print
+          </button>
+        </div>
+      </div>
+
+      {/* Budget bar */}
+      <div className="flex items-center gap-4 bg-[#161822] rounded-lg border border-[#2d3148] px-4 py-2.5 mb-3 text-sm no-print">
+        <span className="text-slate-200 font-medium">Budget: $200</span>
+        <span className="text-slate-400">Skill starters: <span className="text-blue-400 font-mono">$185</span></span>
+        <span className="text-slate-500 text-xs">(Bench + K + DEF: $15)</span>
       </div>
 
       {marketStatus?.year && (

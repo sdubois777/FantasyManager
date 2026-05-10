@@ -38,6 +38,18 @@ const FLAG_OPTIONS = [
   { value: 'clean', label: 'Clean' },
 ]
 
+const NFL_TEAMS = [
+  'ARI','ATL','BAL','BUF','CAR','CHI','CIN','CLE',
+  'DAL','DEN','DET','GB','HOU','IND','JAX','KC',
+  'LAC','LAR','LV','MIA','MIN','NE','NO','NYG',
+  'NYJ','PHI','PIT','SEA','SF','TB','TEN','WAS',
+]
+
+const TEAM_OPTIONS = [
+  { value: '', label: 'All Teams' },
+  ...NFL_TEAMS.map((t) => ({ value: t, label: t })),
+]
+
 const SORT_OPTIONS = [
   { value: 'bid_ceiling', label: 'Bid Ceiling' },
   { value: 'system_value', label: 'System Value' },
@@ -50,6 +62,7 @@ const SORT_OPTIONS = [
 export default function Players() {
   const [position, setPosition] = useState('')
   const [tier, setTier] = useState('')
+  const [team, setTeam] = useState('')
   const [valueGap, setValueGap] = useState('')
   const [flag, setFlag] = useState('')
   const [sort, setSort] = useState('bid_ceiling')
@@ -62,11 +75,12 @@ export default function Players() {
 
   // Main player list query
   const { data, isLoading } = useQuery({
-    queryKey: ['players', position, tier, valueGap, flag, sort, page],
+    queryKey: ['players', position, tier, team, valueGap, flag, sort, page],
     queryFn: () =>
       fetchPlayers({
         position: position || undefined,
         tier: tier || undefined,
+        team: team || undefined,
         value_gap_dir: valueGap || undefined,
         flag: flag || undefined,
         sort,
@@ -118,6 +132,12 @@ export default function Players() {
             value={tier}
             onChange={(v) => { setTier(v); setPage(1) }}
             options={TIER_OPTIONS}
+          />
+          <FilterSelect
+            label="Team"
+            value={team}
+            onChange={(v) => { setTeam(v); setPage(1) }}
+            options={TEAM_OPTIONS}
           />
           <FilterSelect
             label="Value"

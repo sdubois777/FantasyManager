@@ -2,7 +2,8 @@
 News router — beat reporter signals feed.
 
 Endpoints:
-  GET /news  — chronological feed with filters (team, player, type, days)
+  GET /news     — chronological feed with filters (team, player, type, days)
+  WS  /ws/news  — live push of new beat reporter signals (registered in main.py)
 """
 from __future__ import annotations
 

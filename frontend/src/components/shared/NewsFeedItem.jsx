@@ -32,7 +32,7 @@ const signalColors = {
   coaching_change: 'text-purple-400',
 }
 
-export default function NewsFeedItem({ signal }) {
+export default function NewsFeedItem({ signal, onPlayerClick }) {
   const [expanded, setExpanded] = useState(false)
   const Icon = signalIcons[signal.signal_type] || Activity
   const color = signalColors[signal.signal_type] || 'text-slate-400'
@@ -66,7 +66,19 @@ export default function NewsFeedItem({ signal }) {
           </div>
           <div className="text-sm text-slate-300 mt-0.5">
             {signal.player_name && (
-              <span className="font-medium">{signal.player_name}</span>
+              signal.player_id && onPlayerClick ? (
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation()
+                    onPlayerClick(signal.player_id)
+                  }}
+                  className="font-medium text-blue-400 hover:underline"
+                >
+                  {signal.player_name}
+                </button>
+              ) : (
+                <span className="font-medium">{signal.player_name}</span>
+              )
             )}
             {signal.player_team && (
               <span className="text-slate-500 ml-1">({signal.player_team})</span>

@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { Play, PlayCircle, RefreshCw, DollarSign, CheckCircle, AlertCircle, Clock } from 'lucide-react'
-import { fetchPipelineStatus, triggerPipelineRun, fetchCostReport } from '../api/admin'
+import { Play, PlayCircle, RefreshCw, DollarSign, CheckCircle, AlertCircle, Clock, FlaskConical } from 'lucide-react'
+import { fetchPipelineStatus, triggerPipelineRun, fetchCostReport, fetchDryRun } from '../api/admin'
 
 const AGENT_LABELS = {
   team_systems: 'Team Systems',
@@ -16,6 +16,7 @@ export default function PipelineAdmin() {
   const queryClient = useQueryClient()
   const [costDays, setCostDays] = useState(30)
   const [toast, setToast] = useState(null)
+  const [dryRunResult, setDryRunResult] = useState(null)
 
   const showToast = (message, type = 'success') => {
     setToast({ message, type })
@@ -42,6 +43,12 @@ export default function PipelineAdmin() {
     onError: (err) => {
       showToast(`Failed: ${err.message}`, 'error')
     },
+  })
+
+  const dryRunMutation = useMutation({
+    mutationFn: ({ agent }) => fetchDryRun(agent),
+    onSuccess: (data) => setDryRunResult(data),
+    onError: (err) => showToast(`Dry run failed: ${err.message}`, 'error'),
   })
 
   const runAllMutation = useMutation({
@@ -129,18 +136,52 @@ export default function PipelineAdmin() {
                   </span>
                 )}
               </span>
-              <button
-                onClick={() => runMutation.mutate({ agent: agent.agent_name })}
-                disabled={runMutation.isPending}
-                className="flex items-center gap-1 px-3 py-1 text-xs bg-blue-600/20 text-blue-400 rounded border border-blue-500/30 hover:bg-blue-600/30 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-              >
-                <Play size={12} />
-                Run
-              </button>
+              <div className="flex items-center gap-1.5">
+                <button
+                  onClick={() => dryRunMutation.mutate({ agent: agent.agent_name })}
+                  disabled={dryRunMutation.isPending}
+                  className="flex items-center gap-1 px-2 py-1 text-xs bg-amber-600/15 text-amber-400 rounded border border-amber-500/30 hover:bg-amber-600/25 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                  title="Estimate cost"
+                >
+                  <FlaskConical size={11} />
+                </button>
+                <button
+                  onClick={() => runMutation.mutate({ agent: agent.agent_name })}
+                  disabled={runMutation.isPending}
+                  className="flex items-center gap-1 px-3 py-1 text-xs bg-blue-600/20 text-blue-400 rounded border border-blue-500/30 hover:bg-blue-600/30 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                >
+                  <Play size={12} />
+                  Run
+                </button>
+              </div>
             </div>
           ))
         )}
       </div>
+
+      {/* Dry Run Result */}
+      {dryRunResult && (
+        <div className="bg-[#161822] rounded-lg border border-amber-500/30 p-4 mb-6">
+          <div className="flex items-center justify-between mb-3">
+            <div className="flex items-center gap-2">
+              <FlaskConical size={16} className="text-amber-400" />
+              <h3 className="text-sm font-medium text-amber-400">Cost Estimate</h3>
+            </div>
+            <button onClick={() => setDryRunResult(null)} className="text-xs text-slate-500 hover:text-slate-300">&times;</button>
+          </div>
+          {dryRunResult.estimates?.map((est) => (
+            <div key={est.agent_name} className="text-sm text-slate-300 mb-1">
+              <span className="font-medium">{AGENT_LABELS[est.agent_name] || est.agent_name}:</span>{' '}
+              ~{est.estimated_entities} entities, {est.estimated_haiku_calls} Haiku + {est.estimated_sonnet_calls} Sonnet calls
+              <span className="text-emerald-400 ml-2 font-mono">${est.estimated_cost_usd.toFixed(4)}</span>
+            </div>
+          ))}
+          <div className="text-sm font-medium text-emerald-400 mt-2 font-mono">
+            Total: ${dryRunResult.total_estimated_cost_usd?.toFixed(4)}
+          </div>
+          <div className="text-[10px] text-slate-500 mt-1">{dryRunResult.disclaimer}</div>
+        </div>
+      )}
 
       {/* Cost Report */}
       <div className="bg-[#161822] rounded-lg border border-[#2d3148] overflow-hidden">

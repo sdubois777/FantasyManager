@@ -9,8 +9,9 @@ import FlagBadge from './shared/FlagBadge'
 import SystemGradeBadge from './shared/SystemGradeBadge'
 import ValueComparisonBar from './shared/ValueComparisonBar'
 
-export default function PlayerDetailPanel({ playerId }) {
+export default function PlayerDetailPanel({ playerId, onPlayerSelect }) {
   const close = useUIStore((s) => s.closePlayerDetail)
+  const openPlayerDetail = onPlayerSelect || useUIStore((s) => s.openPlayerDetail)
   const isWatchlisted = usePreferencesStore((s) => s.watchlist.some((w) => w.player_id === playerId))
   const addToWatchlist = usePreferencesStore((s) => s.addToWatchlist)
   const removeFromWatchlist = usePreferencesStore((s) => s.removeFromWatchlist)
@@ -267,7 +268,20 @@ export default function PlayerDetailPanel({ playerId }) {
                       </div>
                       {dep.trigger_player_name && (
                         <div className="text-xs text-slate-400">
-                          Trigger: {dep.trigger_player_name}
+                          Trigger:{' '}
+                          {dep.trigger_player_id ? (
+                            <button
+                              onClick={(e) => {
+                                e.stopPropagation()
+                                openPlayerDetail(dep.trigger_player_id)
+                              }}
+                              className="text-blue-400 hover:underline"
+                            >
+                              {dep.trigger_player_name}
+                            </button>
+                          ) : (
+                            dep.trigger_player_name
+                          )}
                         </div>
                       )}
                       {dep.reasoning && (

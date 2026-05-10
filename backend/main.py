@@ -1,10 +1,11 @@
 import logging
 
-from fastapi import FastAPI
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 
 from backend.config import settings
 from backend.routers import admin, assistant, auth, draft, draftboard, league, news, pipeline, players, preferences, teams
+from backend.websocket.manager import news_ws_manager
 
 logger = logging.getLogger(__name__)
 
@@ -78,3 +79,14 @@ async def shutdown_checks():
 @app.get("/health")
 async def health():
     return {"status": "ok", "environment": settings.environment}
+
+
+@app.websocket("/ws/news")
+async def news_websocket(websocket: WebSocket):
+    """Live push of new beat reporter signals."""
+    await news_ws_manager.connect(websocket)
+    try:
+        while True:
+            await websocket.receive_text()
+    except WebSocketDisconnect:
+        news_ws_manager.disconnect(websocket)

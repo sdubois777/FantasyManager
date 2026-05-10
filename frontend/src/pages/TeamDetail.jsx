@@ -65,6 +65,30 @@ export default function TeamDetail() {
             <Stat label="Pressure Perf" value={team.qb_pressure_performance} />
             <Stat label="Downfield" value={team.qb_downfield_aggressiveness} />
           </div>
+          {team.qb_wr_trust_score != null && (
+            <div className="mt-3 pt-3 border-t border-[#2d3148]">
+              <div className="flex items-center justify-between">
+                <span className="text-[10px] text-slate-500">QB→WR Trust</span>
+                <span className={`text-sm font-mono font-medium ${
+                  team.qb_wr_trust_score >= 70 ? 'text-emerald-400'
+                    : team.qb_wr_trust_score >= 50 ? 'text-amber-400'
+                    : 'text-red-400'
+                }`}>
+                  {team.qb_wr_trust_score}/100
+                </span>
+              </div>
+              <div className="h-1.5 bg-[#1c1f2e] rounded-full overflow-hidden mt-1">
+                <div
+                  className={`h-full rounded-full ${
+                    team.qb_wr_trust_score >= 70 ? 'bg-emerald-500'
+                      : team.qb_wr_trust_score >= 50 ? 'bg-amber-500'
+                      : 'bg-red-500'
+                  }`}
+                  style={{ width: `${team.qb_wr_trust_score}%` }}
+                />
+              </div>
+            </div>
+          )}
           <div className="flex gap-2 mt-3">
             {team.rookie_qb_flag && <FlagBadge flagType="ROOKIE_QB" compact />}
             {team.compound_risk_flag && <FlagBadge flagType="COMPOUND_RISK" compact />}

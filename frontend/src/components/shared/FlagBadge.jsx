@@ -11,6 +11,14 @@ const flagStyles = {
   OL_UPGRADE: { bg: 'bg-teal-500/15', text: 'text-teal-400', label: 'OL Upgrade' },
   ROOKIE_COMPETITION: { bg: 'bg-cyan-500/15', text: 'text-cyan-400', label: 'Rookie Comp' },
   COMPOUND_RISK: { bg: 'bg-red-500/15', text: 'text-red-400', label: 'Compound Risk' },
+  BENEFICIARY: { bg: 'bg-emerald-500/15', text: 'text-emerald-400', label: 'Beneficiary' },
+  SCHEME_FIT: { bg: 'bg-teal-500/15', text: 'text-teal-400', label: 'Scheme Fit' },
+  COLLEGE_TRUST: { bg: 'bg-indigo-500/15', text: 'text-indigo-400', label: 'College Trust' },
+  WORKLOAD_CLIFF: { bg: 'bg-orange-500/15', text: 'text-orange-400', label: 'Workload Cliff' },
+  BREAKOUT: { bg: 'bg-yellow-500/15', text: 'text-yellow-400', label: 'Breakout' },
+  HIGH_MILEAGE: { bg: 'bg-amber-500/15', text: 'text-amber-400', label: 'High Mileage' },
+  POST_ACL: { bg: 'bg-red-500/15', text: 'text-red-400', label: 'Post ACL' },
+  ROOKIE_QB: { bg: 'bg-red-500/15', text: 'text-red-400', label: 'Rookie QB' },
 }
 
 export default function FlagBadge({ flagType, compact = false }) {
