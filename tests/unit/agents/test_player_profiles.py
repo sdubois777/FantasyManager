@@ -17,6 +17,7 @@ import pytest
 import uuid
 
 from backend.agents.player_profiles import (
+    PLAYER_PROFILES_PROMPT_VERSION,
     PROFILE_STALENESS_DAYS,
     PlayerProfilesAgent,
     _bulk_resolve_player_ids,
@@ -2274,56 +2275,66 @@ def test_profile_needs_refresh_no_profile():
 
 def test_profile_needs_refresh_stale_30_days():
     """Profile older than PROFILE_STALENESS_DAYS → needs refresh."""
+    ver = PLAYER_PROFILES_PROMPT_VERSION
     old = _now() - timedelta(days=PROFILE_STALENESS_DAYS + 1)
-    assert profile_needs_refresh(profile_updated_at=old) is True
+    assert profile_needs_refresh(profile_updated_at=old, stored_prompt_version=ver) is True
 
     # Just under threshold → still current
     recent = _now() - timedelta(days=PROFILE_STALENESS_DAYS - 1)
-    assert profile_needs_refresh(profile_updated_at=recent) is False
+    assert profile_needs_refresh(profile_updated_at=recent, stored_prompt_version=ver) is False
 
 
 def test_profile_needs_refresh_dep_updated():
     """Dependency flags updated after profile → needs refresh."""
+    ver = PLAYER_PROFILES_PROMPT_VERSION
     profile_time = _now() - timedelta(hours=12)
     dep_time = _now() - timedelta(hours=6)  # updated AFTER profile
     assert profile_needs_refresh(
         profile_updated_at=profile_time,
         dep_updated_at=dep_time,
+        stored_prompt_version=ver,
     ) is True
 
 
 def test_profile_needs_refresh_injury_updated():
     """Injury profile updated after profile → needs refresh."""
+    ver = PLAYER_PROFILES_PROMPT_VERSION
     profile_time = _now() - timedelta(hours=12)
     injury_time = _now() - timedelta(hours=6)
     assert profile_needs_refresh(
         profile_updated_at=profile_time,
         injury_updated_at=injury_time,
+        stored_prompt_version=ver,
     ) is True
 
 
 def test_profile_needs_refresh_team_change():
     """team_updated_at after profile → needs refresh (player traded)."""
+    ver = PLAYER_PROFILES_PROMPT_VERSION
     profile_time = _now() - timedelta(days=5)
     team_change = _now() - timedelta(days=2)
     assert profile_needs_refresh(
         profile_updated_at=profile_time,
         team_updated_at=team_change,
+        stored_prompt_version=ver,
     ) is True
 
 
 def test_profile_needs_refresh_beat_signal():
     """New high-confidence beat signal after profile → needs refresh."""
+    ver = PLAYER_PROFILES_PROMPT_VERSION
     profile_time = _now() - timedelta(hours=24)
     signal_time = _now() - timedelta(hours=6)
     assert profile_needs_refresh(
         profile_updated_at=profile_time,
         beat_signal_timestamps=[signal_time],
+        stored_prompt_version=ver,
     ) is True
 
 
 def test_profile_needs_refresh_current():
     """Profile is current with no upstream changes → no refresh needed."""
+    ver = PLAYER_PROFILES_PROMPT_VERSION
     profile_time = _now() - timedelta(days=5)  # recent enough
     # All upstream data is OLDER than the profile
     old_dep = _now() - timedelta(days=10)
@@ -2336,6 +2347,7 @@ def test_profile_needs_refresh_current():
         injury_updated_at=old_injury,
         beat_signal_timestamps=[old_signal],
         team_updated_at=old_team,
+        stored_prompt_version=ver,
     ) is False
 
 
@@ -2423,3 +2435,60 @@ async def test_market_value_prevents_skip_in_context():
     assert "IR Player" in player_names, (
         "Player with market_value should not be skipped even with zero game data"
     )
+
+
+# ---------------------------------------------------------------------------
+# Prompt version triggers regeneration
+# ---------------------------------------------------------------------------
+
+
+def test_prompt_version_triggers_regeneration():
+    """When PLAYER_PROFILES_PROMPT_VERSION changes, profile_needs_refresh returns True."""
+    from datetime import datetime, timezone
+
+    recent = datetime.now(timezone.utc)
+    # Same version → no refresh needed
+    assert not profile_needs_refresh(
+        profile_updated_at=recent,
+        stored_prompt_version=PLAYER_PROFILES_PROMPT_VERSION,
+    )
+    # Different version → refresh needed
+    assert profile_needs_refresh(
+        profile_updated_at=recent,
+        stored_prompt_version="v1",
+    )
+    # None version (old profile without version) → refresh needed
+    assert profile_needs_refresh(
+        profile_updated_at=recent,
+        stored_prompt_version=None,
+    )
+
+
+def test_prompt_version_constant_is_v2():
+    """Sanity: prompt version constant is v2 after this fix."""
+    assert PLAYER_PROFILES_PROMPT_VERSION == "v2"
+
+
+# ---------------------------------------------------------------------------
+# RB role classification definitions in prompt
+# ---------------------------------------------------------------------------
+
+
+def test_haiku_prompt_contains_rb_role_definitions():
+    """Haiku system prompt must define workhorse threshold (65%+ carries)."""
+    from backend.agents.player_profiles import HAIKU_SYSTEM_PROMPT
+
+    assert "65%+" in HAIKU_SYSTEM_PROMPT
+    assert "committee_back" in HAIKU_SYSTEM_PROMPT
+    assert "workhorse" in HAIKU_SYSTEM_PROMPT
+    assert "DO NOT use just because a backup exists" in HAIKU_SYSTEM_PROMPT
+
+
+def test_sonnet_prompt_contains_rb_role_definitions():
+    """Sonnet system prompt must define workhorse threshold (65%+ carries)."""
+    from backend.agents.player_profiles import SONNET_SYSTEM_PROMPT
+
+    assert "65%+" in SONNET_SYSTEM_PROMPT
+    assert "committee_back" in SONNET_SYSTEM_PROMPT
+    assert "workhorse" in SONNET_SYSTEM_PROMPT
+    assert "DO NOT use just because a backup exists" in SONNET_SYSTEM_PROMPT

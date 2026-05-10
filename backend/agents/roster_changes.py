@@ -76,10 +76,17 @@ CRITICAL RULE — always flag BOTH sides of a displacement:
 Never produce a displaced flag without its matching contingent flag.
 
 FLAG SELECTION RULES — committee vs displaced (mutual exclusivity):
-- COMMITTEE: RB-only. Genuine timeshare between similar-tier backs where neither clearly dominates.
-- DISPLACED: Any position. Role lost to incoming superior player.
+- COMMITTEE: RB-only. True timeshare where BOTH backs project 40-50% of carries and neither dominates.
+  Only use when incoming and incumbent have SIMILAR carry profiles (both workhorse-type or both committee-type).
+  DO NOT flag committee when a specialist back (pass-catching/change-of-pace) joins a workhorse.
+  A workhorse + receiving specialist pairing is complementary, NOT a committee.
+  Example of TRUE committee: Eagles Swift/Robinson split — neither back had 55%+ carries.
+  Example of NOT a committee: Derrick Henry + Justice Hill — Henry is a workhorse, Hill is a pass-catcher.
+- DISPLACED: Any position. Use when incoming back takes a portion of workload from incumbent, even if
+  the incumbent remains the lead back. For specialist pairings (workhorse + receiving back), use displaced
+  with MILD impact (-8% to -12%), not committee.
 - NEVER assign both committee AND displaced to the same player for the same trigger.
-- Decision tree: incoming player clearly superior → DISPLACED. True timeshare between equals → COMMITTEE (RB only).
+- Decision tree: incoming clearly superior → DISPLACED (high impact). Specialist pairing → DISPLACED (mild impact -8 to -12%). True 50/50 split → COMMITTEE.
 - Non-RB positions (WR/TE/QB) NEVER get committee — always use displaced.
 
 Output ONLY a valid JSON array. No explanation, no preamble, no markdown fences.
@@ -169,6 +176,60 @@ def deduplicate_flags(flags: list[dict]) -> list[dict]:
     if removed:
         logger.info("Deduplicated %d flags", removed)
     return result
+
+
+def downgrade_specialist_committee_flags(flags: list[dict], backfield_usage: dict | None = None) -> list[dict]:
+    """Convert committee flags to displaced when one back clearly dominates.
+
+    A workhorse + specialist pairing is NOT a committee. If the incumbent has
+    significantly more carries than the trigger player, convert committee to
+    displaced with mild impact (-10%).
+    """
+    if not backfield_usage:
+        return flags
+
+    rb_carries: dict[str, int] = {}
+    for rb in backfield_usage.get("rb_usage", []):
+        name = rb.get("player_name", "")
+        rb_carries[name] = int(rb.get("total_carries", 0))
+
+    converted = 0
+    for f in flags:
+        if f.get("flag_type") != "committee" or f.get("player_position", "").upper() != "RB":
+            continue
+
+        player_name = f.get("player_name", "")
+        trigger_name = f.get("trigger_player_name", "")
+
+        player_carries = rb_carries.get(player_name, 0)
+        trigger_carries = rb_carries.get(trigger_name, 0)
+
+        # If the incumbent has 2x+ more carries → not a true committee
+        if player_carries > 0 and trigger_carries > 0:
+            if player_carries >= trigger_carries * 2 or trigger_carries >= player_carries * 2:
+                f["flag_type"] = "displaced"
+                f["effect_on_value"] = "negative"
+                f["value_impact_pct"] = max(f.get("value_impact_pct", -10), -12)
+                f["reasoning"] = (
+                    f"{trigger_name} is a complementary/specialist back, not a true committee threat. "
+                    f"Carry split ({player_carries} vs {trigger_carries}) shows one back dominates. "
+                    f"Minor workload impact, not a timeshare."
+                )
+                converted += 1
+        elif player_carries > 150 and trigger_carries == 0:
+            # Incumbent is established workhorse, trigger is new arrival with no carry history
+            f["flag_type"] = "displaced"
+            f["effect_on_value"] = "negative"
+            f["value_impact_pct"] = max(f.get("value_impact_pct", -10), -10)
+            f["reasoning"] = (
+                f"{trigger_name} arrives as a specialist/backup behind established workhorse "
+                f"{player_name} ({player_carries} carries). Minor workload displacement, not a committee."
+            )
+            converted += 1
+
+    if converted:
+        logger.info("Converted %d committee flags to displaced (specialist pairing)", converted)
+    return flags
 
 
 def enforce_flag_mutual_exclusivity(flags: list[dict]) -> list[dict]:
@@ -1195,6 +1256,9 @@ class RosterChangesAgent(BaseAgent):
 
             # Dedup + enforce mutual exclusivity before DB write
             flags = deduplicate_flags(flags)
+            flags = downgrade_specialist_committee_flags(
+                flags, context.get("backfield_usage"),
+            )
             flags = enforce_flag_mutual_exclusivity(flags)
 
             written = await _write_flags(flags)

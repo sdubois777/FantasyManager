@@ -1362,3 +1362,89 @@ def test_extract_ppr_none_profile():
     """None profile returns 0."""
     from backend.engines.valuation import _extract_ppr
     assert _extract_ppr(None) == 0.0
+
+
+# ---------------------------------------------------------------------------
+# Specialist pairing → committee downgrade
+# ---------------------------------------------------------------------------
+
+
+def test_specialist_pairing_not_committee():
+    """Workhorse + pass-catching specialist pairing → committee becomes displaced."""
+    from backend.agents.roster_changes import downgrade_specialist_committee_flags
+
+    flags = [
+        _make_flag("Workhorse RB", "BAL", "RB", "committee", "Specialist RB", "BAL",
+                    "active_and_healthy", "negative", -15),
+    ]
+    backfield = {
+        "rb_usage": [
+            {"player_name": "Workhorse RB", "total_carries": 300},
+            {"player_name": "Specialist RB", "total_carries": 80},
+        ]
+    }
+    result = downgrade_specialist_committee_flags(flags, backfield)
+    assert result[0]["flag_type"] == "displaced", "Specialist pairing should be displaced, not committee"
+    assert result[0]["value_impact_pct"] >= -12, "Impact should be mild for specialist pairing"
+
+
+def test_true_committee_not_downgraded():
+    """True 50/50 split keeps committee flag."""
+    from backend.agents.roster_changes import downgrade_specialist_committee_flags
+
+    flags = [
+        _make_flag("RB A", "PHI", "RB", "committee", "RB B", "PHI",
+                    "active_and_healthy", "neutral", -10),
+    ]
+    backfield = {
+        "rb_usage": [
+            {"player_name": "RB A", "total_carries": 180},
+            {"player_name": "RB B", "total_carries": 160},
+        ]
+    }
+    result = downgrade_specialist_committee_flags(flags, backfield)
+    assert result[0]["flag_type"] == "committee", "True split should stay committee"
+
+
+def test_established_workhorse_vs_new_arrival():
+    """Established workhorse + new arrival with 0 carries → displaced not committee."""
+    from backend.agents.roster_changes import downgrade_specialist_committee_flags
+
+    flags = [
+        _make_flag("Henry", "BAL", "RB", "committee", "Hill", "BAL",
+                    "active_and_healthy", "negative", -15),
+    ]
+    backfield = {
+        "rb_usage": [
+            {"player_name": "Henry", "total_carries": 325},
+        ]
+    }
+    result = downgrade_specialist_committee_flags(flags, backfield)
+    assert result[0]["flag_type"] == "displaced"
+    assert result[0]["value_impact_pct"] >= -10
+
+
+def test_no_backfield_data_leaves_flags_unchanged():
+    """When no backfield usage data, committee flags pass through unchanged."""
+    from backend.agents.roster_changes import downgrade_specialist_committee_flags
+
+    flags = [
+        _make_flag("RB X", "DET", "RB", "committee", "RB Y", "DET",
+                    "active_and_healthy", "neutral", -10),
+    ]
+    result = downgrade_specialist_committee_flags(flags, None)
+    assert result[0]["flag_type"] == "committee"
+
+
+def test_non_rb_committee_not_affected_by_downgrade():
+    """downgrade_specialist_committee_flags only touches RB committee flags."""
+    from backend.agents.roster_changes import downgrade_specialist_committee_flags
+
+    flags = [
+        _make_flag("WR Star", "LAC", "WR", "committee", "Other WR", "LAC",
+                    "active_and_healthy", "neutral", -5),
+    ]
+    backfield = {"rb_usage": []}
+    result = downgrade_specialist_committee_flags(flags, backfield)
+    # WR committee should NOT be touched by this function (enforce_flag_mutual_exclusivity handles it)
+    assert result[0]["flag_type"] == "committee"

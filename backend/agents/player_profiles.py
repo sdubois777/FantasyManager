@@ -46,6 +46,9 @@ SKILL_POSITIONS = {"QB", "WR", "RB", "TE"}
 
 PROFILE_STALENESS_DAYS = 30
 
+# Increment whenever system prompts change to force regeneration of all profiles.
+PLAYER_PROFILES_PROMPT_VERSION = "v2"
+
 
 # ---------------------------------------------------------------------------
 # Profile cache invalidation
@@ -57,6 +60,7 @@ def profile_needs_refresh(
     injury_updated_at: datetime | None = None,
     beat_signal_timestamps: list[datetime] | None = None,
     team_updated_at: datetime | None = None,
+    stored_prompt_version: str | None = None,
 ) -> bool:
     """Check if a player's profile needs regeneration.
 
@@ -67,8 +71,12 @@ def profile_needs_refresh(
       - Injury profile updated since last profile
       - Team changed since last profile (team_updated_at > profile.updated_at)
       - New high-confidence beat signals since last profile
+      - Prompt version changed (system prompt was updated)
     """
     if profile_updated_at is None:
+        return True
+
+    if stored_prompt_version != PLAYER_PROFILES_PROMPT_VERSION:
         return True
 
     now = datetime.now(timezone.utc)
@@ -204,8 +212,21 @@ Each object must match this schema exactly:
 role_classification MUST match the player's actual position — never cross-assign roles:
   QB players → use only: qb_elite, qb_starter, qb_streamer, qb_backup
   WR players → use only: wr1_alpha, slot_specialist, deep_threat, possession_wr2, gadget
-  RB players → use only: workhorse, early_down_thumper, pass_catching_specialist, committee_back
   TE players → use only: te1_inline, te1_pass_catcher, te2_blocker, te2_flex
+
+  RB role_classification — use EXACTLY one. Apply the FIRST definition that fits:
+    "workhorse" — 65%+ of team rushing attempts, OR 20+ carries/game avg, OR clear lead back
+      with backup used only to spell. Most NFL teams have a lead back — this is the most common role.
+      Examples: Derrick Henry, Saquon Barkley, Jonathan Taylor, Bijan Robinson.
+    "early_down_thumper" — 50-65% of carries but leaves field on 3rd down. Heavy run-game role,
+      minimal receiving (target share under 10%).
+    "pass_catching_specialist" — High snap share but under 40% of carries. Primary role is
+      receiving out of backfield. Target share 12%+. Examples: Alvin Kamara, Austin Ekeler.
+    "committee_back" — ONLY when no single back has 50%+ of carries. True split: two backs
+      with 35-50% each, neither is clearly "the guy". Examples: true 50/50 timeshares.
+      DO NOT use just because a backup exists — every team has a backup.
+  CRITICAL: If uncertain between workhorse and committee_back, choose workhorse.
+  True committees are uncommon. Does one back get 55%+ of carries? Yes → workhorse or early_down_thumper.
 
 Rules:
 - anomalous_seasons_excluded: include year integers where data shows games < 10 OR backup_qb_season=true
@@ -274,8 +295,21 @@ Output ONLY a valid JSON object:
 role_classification MUST match the player's actual position — never cross-assign roles:
   QB players → use only: qb_elite, qb_starter, qb_streamer, qb_backup
   WR players → use only: wr1_alpha, slot_specialist, deep_threat, possession_wr2, gadget
-  RB players → use only: workhorse, early_down_thumper, pass_catching_specialist, committee_back
   TE players → use only: te1_inline, te1_pass_catcher, te2_blocker, te2_flex
+
+  RB role_classification — use EXACTLY one. Apply the FIRST definition that fits:
+    "workhorse" — 65%+ of team rushing attempts, OR 20+ carries/game avg, OR clear lead back
+      with backup used only to spell. Most NFL teams have a lead back — this is the most common role.
+      Examples: Derrick Henry, Saquon Barkley, Jonathan Taylor, Bijan Robinson.
+    "early_down_thumper" — 50-65% of carries but leaves field on 3rd down. Heavy run-game role,
+      minimal receiving (target share under 10%).
+    "pass_catching_specialist" — High snap share but under 40% of carries. Primary role is
+      receiving out of backfield. Target share 12%+. Examples: Alvin Kamara, Austin Ekeler.
+    "committee_back" — ONLY when no single back has 50%+ of carries. True split: two backs
+      with 35-50% each, neither is clearly "the guy". Examples: true 50/50 timeshares.
+      DO NOT use just because a backup exists — every team has a backup.
+  CRITICAL: If uncertain between workhorse and committee_back, choose workhorse.
+  True committees are uncommon. Does one back get 55%+ of carries? Yes → workhorse or early_down_thumper.
 
 Rules:
 - projected_ppr_points is a season TOTAL for 17 games.
@@ -1171,12 +1205,16 @@ class PlayerProfilesAgent(BaseAgent):
             stale: set[str] = set()
             for p in players:
                 prof = profiles.get(p.id)
+                stored_ver = None
+                if prof and prof.clean_season_baseline:
+                    stored_ver = prof.clean_season_baseline.get("prompt_version")
                 if profile_needs_refresh(
                     profile_updated_at=prof.updated_at if prof else None,
                     dep_updated_at=dep_latest.get(p.id),
                     injury_updated_at=injuries[p.id].updated_at if p.id in injuries else None,
                     beat_signal_timestamps=beat_times.get(p.id, []),
                     team_updated_at=getattr(p, "team_updated_at", None),
+                    stored_prompt_version=stored_ver,
                 ):
                     stale.add(p.name)
 
@@ -1596,7 +1634,10 @@ async def _write_profiles(
             record.efficiency_signal          = effective.get("efficiency_signal")
             record.age_curve_position         = effective.get("age_curve_position")
             record.career_trajectory          = effective.get("career_trajectory")
-            record.clean_season_baseline      = clean_baseline if clean_baseline else {}
+            if clean_baseline is None:
+                clean_baseline = {}
+            clean_baseline["prompt_version"] = PLAYER_PROFILES_PROMPT_VERSION
+            record.clean_season_baseline      = clean_baseline
             record.anomalous_seasons_excluded = effective.get("anomalous_seasons_excluded") or []
             record.breakout_flag              = bool(effective.get("breakout_flag", False))
             record.breakout_reasoning         = effective.get("breakout_reasoning")
@@ -1656,6 +1697,7 @@ async def _write_profiles(
             record = PlayerProfile(player_id=player_id, season_year=analysis_year)
             session.add(record)
             record.role_classification = _derive_qb_role(clean_baseline)
+            clean_baseline["prompt_version"] = PLAYER_PROFILES_PROMPT_VERSION
             record.clean_season_baseline = clean_baseline
             record.anomalous_seasons_excluded = []
             record.is_rookie = bool(ctx_player.get("is_rookie", False))
