@@ -1,6 +1,7 @@
 import PositionBadge from './PositionBadge'
 import FlagBadge from './FlagBadge'
 import ValueComparisonBar from './ValueComparisonBar'
+import { getDisplaySignal, getSignalBadgeStyle, getSignalLabel } from '../../lib/signals'
 
 export default function PlayerCardExpanded({ player, onClick }) {
   return (
@@ -76,17 +77,14 @@ export default function PlayerCardExpanded({ player, onClick }) {
 
         {/* Assessment + Flags */}
         <div className="flex gap-1 ml-auto flex-wrap justify-end max-w-[280px]">
-          {player.value_assessment && (
-            <span className={`inline-flex items-center px-1.5 py-0.5 text-[10px] font-medium rounded-full ${
-              player.value_assessment === 'elite_value' ? 'bg-emerald-500/15 text-emerald-400'
-                : player.value_assessment === 'good_value' ? 'bg-blue-500/15 text-blue-400'
-                : player.value_assessment === 'fair_value' ? 'bg-slate-500/15 text-slate-400'
-                : player.value_assessment === 'slight_overpay' ? 'bg-amber-500/15 text-amber-400'
-                : 'bg-red-500/15 text-red-400'
-            }`}>
-              {player.value_assessment.replace(/_/g, ' ')}
-            </span>
-          )}
+          {player.value_assessment && (() => {
+            const signal = getDisplaySignal(player)
+            return (
+              <span className={`inline-flex items-center px-1.5 py-0.5 text-[10px] font-medium rounded-full ${getSignalBadgeStyle(signal)}`}>
+                {getSignalLabel(signal)}
+              </span>
+            )
+          })()}
           {player.pay_up_flag && (
             <span className="inline-flex items-center px-1.5 py-0.5 text-[10px] font-medium rounded-full bg-emerald-500/15 text-emerald-400">
               PAY UP

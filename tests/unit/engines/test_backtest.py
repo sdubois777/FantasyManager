@@ -179,6 +179,7 @@ def test_pay_up_flag_overrides_negative_gap():
 
 def test_good_value_assessment_generates_buy():
     """good_value assessment → buy (or strong_buy with large gap)."""
+    # Small positive gap on non-cheap player → buy
     signal = derive_system_signal(
         value_assessment="good_value",
         pay_up_flag=False,
@@ -199,21 +200,23 @@ def test_good_value_assessment_generates_buy():
 
 
 def test_avoid_assessment_generates_avoid():
-    """avoid assessment → avoid/strong_avoid depending on gap."""
+    """avoid assessment → avoid/strong_avoid for meaningful gaps (< -8)."""
+    # Gap -10 with avoid assessment → avoid
     signal = derive_system_signal(
         value_assessment="avoid",
         pay_up_flag=False,
-        value_gap=-3.0,
-        ai_ceiling=17.0,
+        value_gap=-10.0,
+        ai_ceiling=10.0,
         league_price=20.0,
     )
     assert signal == "avoid"
 
+    # Gap -16 → strong_avoid
     signal_strong = derive_system_signal(
         value_assessment="avoid",
         pay_up_flag=False,
-        value_gap=-12.0,
-        ai_ceiling=8.0,
+        value_gap=-16.0,
+        ai_ceiling=4.0,
         league_price=20.0,
     )
     assert signal_strong == "strong_avoid"
@@ -221,7 +224,6 @@ def test_avoid_assessment_generates_avoid():
 
 def test_nacua_signal_is_buy_after_fix():
     """Nacua-like scenario: negative gap but good_value + pay_up_flag → strong_buy."""
-    # Nacua: ai_ceiling=45, league_price=50, gap=-5, but pay_up_flag=True
     signal = derive_system_signal(
         value_assessment="good_value",
         pay_up_flag=True,
@@ -236,11 +238,12 @@ def test_fair_value_no_flag_uses_gap():
     """fair_value with no pay_up_flag falls back to gap-based signal."""
     assert derive_system_signal("fair_value", False, 6.0, 26.0, 20.0) == "buy"
     assert derive_system_signal("fair_value", False, 0.0, 20.0, 20.0) == "neutral"
-    assert derive_system_signal("fair_value", False, -6.0, 14.0, 20.0) == "avoid"
+    # Gap -6 on non-cheap player → neutral (within -8 to 0 noise range)
+    assert derive_system_signal("fair_value", False, -6.0, 14.0, 20.0) == "neutral"
 
 
-def test_slight_overpay_generates_avoid():
-    """slight_overpay assessment → avoid."""
+def test_slight_overpay_within_noise_is_neutral():
+    """slight_overpay with gap in -8 to 0 range → neutral (auction noise)."""
     signal = derive_system_signal(
         value_assessment="slight_overpay",
         pay_up_flag=False,
@@ -248,4 +251,65 @@ def test_slight_overpay_generates_avoid():
         ai_ceiling=18.0,
         league_price=20.0,
     )
-    assert signal == "avoid"
+    assert signal == "neutral"
+
+
+# ---------------------------------------------------------------------------
+# Tightened avoid threshold tests
+# ---------------------------------------------------------------------------
+
+
+def test_cheap_player_never_avoid():
+    """Player with league_price <= 8 gets neutral or buy, never avoid."""
+    # slight_overpay on $5 player → neutral
+    assert derive_system_signal("slight_overpay", False, -3.0, 2.0, 5.0) == "neutral"
+    # avoid on $3 player → neutral
+    assert derive_system_signal("avoid", False, -5.0, 0.0, 3.0) == "neutral"
+    # good_value on $6 player → strong_buy
+    assert derive_system_signal("good_value", False, 4.0, 10.0, 6.0) == "strong_buy"
+    # fair_value on $2 player → neutral
+    assert derive_system_signal("fair_value", False, 0.0, 2.0, 2.0) == "neutral"
+
+
+def test_small_gap_not_avoid():
+    """value_gap between -8 and 0 → neutral, even with slight_overpay."""
+    # Gap -5, slight_overpay, price $20 → neutral
+    assert derive_system_signal("slight_overpay", False, -5.0, 15.0, 20.0) == "neutral"
+    # Gap -3, avoid assessment, price $15 → neutral
+    assert derive_system_signal("avoid", False, -3.0, 12.0, 15.0) == "neutral"
+    # Gap -7, slight_overpay, price $39 → neutral
+    assert derive_system_signal("slight_overpay", False, -7.0, 32.0, 39.0) == "neutral"
+
+
+def test_large_gap_still_avoid():
+    """value_gap <= -15 with avoid/slight_overpay → strong_avoid."""
+    # BTJ: $51 paid, $22 ceiling, gap=-29 → strong_avoid
+    assert derive_system_signal("avoid", False, -29.0, 22.0, 51.0) == "strong_avoid"
+    # Gap -16, slight_overpay → strong_avoid
+    assert derive_system_signal("slight_overpay", False, -16.0, 4.0, 20.0) == "strong_avoid"
+    # Gap -10, avoid → avoid (meaningful but not extreme)
+    assert derive_system_signal("avoid", False, -10.0, 10.0, 20.0) == "avoid"
+
+
+def test_kelce_not_avoid_after_fix():
+    """Kelce: price=$6, gap=0, slight_overpay → neutral (cheap player rule)."""
+    signal = derive_system_signal(
+        value_assessment="slight_overpay",
+        pay_up_flag=False,
+        value_gap=0.0,
+        ai_ceiling=6.0,
+        league_price=6.0,
+    )
+    assert signal == "neutral"
+
+
+def test_btj_still_strong_avoid_after_fix():
+    """Brian Thomas Jr: price=$51, gap=-29 → strong_avoid."""
+    signal = derive_system_signal(
+        value_assessment="avoid",
+        pay_up_flag=False,
+        value_gap=-29.0,
+        ai_ceiling=22.0,
+        league_price=51.0,
+    )
+    assert signal == "strong_avoid"

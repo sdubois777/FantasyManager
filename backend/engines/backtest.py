@@ -33,25 +33,46 @@ def derive_system_signal(
     """Derive backtest signal from value_assessment + pay_up_flag (primary)
     with value_gap as secondary confirmation.
 
-    This mirrors the actual system logic:  the valuation engine sets
-    value_assessment and pay_up_flag *before* the draft, and those are
-    the fields that drive bid recommendations.  Pure gap arithmetic
-    can disagree when the AI ceiling is close to league price but the
-    system still considers the player a buy (e.g. Nacua: pay_up_flag=True).
+    Key rules:
+    1. pay_up_flag always wins → strong_buy
+    2. Cheap players (price <= $8) never avoid — downside is negligible
+    3. Small negative gaps (-8 to 0) are auction noise → neutral
+    4. Only flag avoid for meaningful gaps (< -8) with confirming assessment
     """
+    # Pay up flag always wins
     if pay_up_flag:
         return "strong_buy"
 
+    # RULE 1: Cheap players ($1-8) should never be avoid regardless of
+    # slight_overpay tag.  Downside is negligible — treat as neutral.
+    if league_price <= 8:
+        if value_assessment in _BUY_ASSESSMENTS:
+            return "strong_buy"
+        return "neutral"
+
+    # RULE 2: Small negative gaps (-8 to 0) are within auction noise —
+    # not actionable avoids.  Downgrade to neutral.
+    if -8 <= value_gap <= 0:
+        if value_assessment in _BUY_ASSESSMENTS:
+            return "buy"
+        return "neutral"
+
+    # RULE 3: Buy signals (positive gap or good assessment)
     if value_assessment in _BUY_ASSESSMENTS:
         return "strong_buy" if value_gap >= 5 else "buy"
 
+    # RULE 4: Avoid signals only for meaningful gaps AND confirming assessment
     if value_assessment in _AVOID_ASSESSMENTS:
-        return "strong_avoid" if value_gap <= -10 else "avoid"
+        if value_gap <= -15:
+            return "strong_avoid"
+        if value_gap <= -8:
+            return "avoid"
+        return "neutral"
 
-    # Fallback for fair_value or missing assessment — use gap only
+    # Default: neutral with gap fallback
     if value_gap >= 5:
         return "buy"
-    if value_gap <= -5:
+    if value_gap <= -8:
         return "avoid"
     return "neutral"
 

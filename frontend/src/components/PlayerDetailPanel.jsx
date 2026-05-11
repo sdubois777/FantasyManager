@@ -8,6 +8,7 @@ import PositionBadge from './shared/PositionBadge'
 import FlagBadge from './shared/FlagBadge'
 import SystemGradeBadge from './shared/SystemGradeBadge'
 import ValueComparisonBar from './shared/ValueComparisonBar'
+import { getDisplaySignal, getSignalBadgeStyle, getSignalLabel } from '../lib/signals'
 
 export default function PlayerDetailPanel({ playerId, onPlayerSelect }) {
   const close = useUIStore((s) => s.closePlayerDetail)
@@ -133,17 +134,14 @@ export default function PlayerDetailPanel({ playerId, onPlayerSelect }) {
               {(player.value_assessment || player.pay_up_flag || player.nomination_target_flag) && (
                 <div className="mb-3">
                   <div className="flex items-center gap-2 flex-wrap mb-2">
-                    {player.value_assessment && (
-                      <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-medium ${
-                        player.value_assessment === 'elite_value' ? 'bg-emerald-500/15 text-emerald-400'
-                          : player.value_assessment === 'good_value' ? 'bg-blue-500/15 text-blue-400'
-                          : player.value_assessment === 'fair_value' ? 'bg-slate-500/15 text-slate-400'
-                          : player.value_assessment === 'slight_overpay' ? 'bg-amber-500/15 text-amber-400'
-                          : 'bg-red-500/15 text-red-400'
-                      }`}>
-                        {player.value_assessment.replace(/_/g, ' ')}
-                      </span>
-                    )}
+                    {player.value_assessment && (() => {
+                      const signal = getDisplaySignal(player)
+                      return (
+                        <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-medium ${getSignalBadgeStyle(signal)}`}>
+                          {getSignalLabel(signal)}
+                        </span>
+                      )
+                    })()}
                     {player.pay_up_flag && (
                       <span className="text-[10px] px-1.5 py-0.5 rounded-full font-medium bg-emerald-500/15 text-emerald-400">
                         PAY UP
