@@ -14,6 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.integrations.nfl_data import get_seasonal_stats
 from backend.models.player import Player, PlayerProfile
+from backend.utils.seasons import get_current_season
 
 logger = logging.getLogger(__name__)
 
@@ -132,8 +133,10 @@ def _load_actual_season(season: int) -> pd.DataFrame:
     return get_seasonal_stats(season)
 
 
-async def run_backtest(session: AsyncSession, season: int = 2025) -> tuple[BacktestMetrics, pd.DataFrame]:
+async def run_backtest(session: AsyncSession, season: int | None = None) -> tuple[BacktestMetrics, pd.DataFrame]:
     """Run the backtest and return (metrics, player_df)."""
+    if season is None:
+        season = get_current_season()
 
     actuals = _load_actual_season(season)
 

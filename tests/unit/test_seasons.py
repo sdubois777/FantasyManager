@@ -182,3 +182,24 @@ def test_no_hardcoded_years_in_agent_files():
         + "\n".join(violations)
         + "\nFix: use get_current_season(), get_analysis_seasons(), or get_analysis_year()"
     )
+
+
+# ---------------------------------------------------------------------------
+# Seed script — no hardcoded years
+# ---------------------------------------------------------------------------
+
+def test_seed_nfl_data_uses_dynamic_seasons():
+    """Verify no hardcoded [2022, 2023, 2024] exists in scripts/seed_nfl_data.py."""
+    source = (Path(__file__).parent.parent.parent / "scripts" / "seed_nfl_data.py").read_text()
+    assert "[2022, 2023, 2024]" not in source, "seed_nfl_data.py still has hardcoded [2022, 2023, 2024]"
+    assert "[2023, 2024]" not in source, "seed_nfl_data.py still has hardcoded [2023, 2024]"
+
+
+def test_get_analysis_seasons_returns_3_consecutive_seasons():
+    """get_analysis_seasons(3) returns a list of 3 consecutive seasons."""
+    with patch("backend.utils.seasons.date") as mock_date:
+        mock_date.today.return_value = date(2026, 8, 1)
+        seasons = get_analysis_seasons(3)
+        assert len(seasons) == 3
+        assert seasons[1] - seasons[0] == 1
+        assert seasons[2] - seasons[1] == 1

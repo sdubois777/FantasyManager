@@ -158,16 +158,47 @@ fantasy-football-ai/
 ## Current Project Status
 
 Update this section as stages complete.
+702 unit tests passing across 36 test files. 54 Python backend files, 43 JS/JSX frontend files.
 
 - [x] Stage 1: Foundation
 - [x] Stage 2: Data ingestion
 - [x] Stage 3: Team Systems agent
+  - Haiku, 500 tokens, 19 tests (12 spec + 7 bonus)
+  - All 32 teams, concurrency=4, dynamic seasons
 - [x] Stage 4: Roster Changes agent
+  - Sonnet, 4000 tokens (spec was 2000 — needed for draft pick complexity), 66 tests
+  - All 6 dependency flag types, McConkey/Allen canonical test passing
+  - QB Trust Model (NFL + college), draft pick comp evaluation
 - [x] Stage 5: Player Profiles agent
+  - Haiku, 4000 tokens (spec was 1000 — needed for ~15 players/team), 130 tests
+  - Smart cache invalidation: profile_needs_refresh() checks prompt version,
+    team system changes, dependency flag changes, and staleness
+  - 825 total profiles (498 veterans + 327 newly added)
+  - Rookie profiling via nfl_comp_builder.py with college comps
+  - Prompt version system for cache invalidation on prompt changes
+  - Committee back classification fixed with explicit RB role thresholds
+  - JJ McCarthy corrected from rookie to IR-year-1 player
+  - Two-pass model: Haiku batch for stable veterans, Sonnet per-player
+    for complex cases (rookies, QBs, aging, team changes, high injury risk)
 - [x] Stage 6: Injury Risk agent
+  - Haiku, 1000 tokens, 67 tests
+  - 6 injury classifications, 6 pattern flags (all auto-detected in Python)
+  - Age risk multiplier, risk modifiers (low/moderate/high/volatile)
 - [x] Stage 7: Schedule agent
+  - Haiku, 1500 tokens, 61 tests
+  - 3 schedule windows, defensive grades from weekly PPR, bye_in_playoff_window
 - [x] Stage 8: Beat Reporter agent
+  - Haiku, 300 tokens, 48 tests
+  - feedparser RSS (ESPN/Rotowire/NFL.com), APScheduler 7am daily
+  - Dedup pre-load, WebSocket broadcast for live news
 - [x] Stage 9: Valuation pass
+  - Pure Python (zero AI calls), 86 tests
+  - PAR method, 5-tier assignment, bid ceiling with anchor weights
+  - Risk discount applied to market BEFORE blending (not on final ceiling)
+  - value_gap_signal now uses ai_bid_ceiling not baseline_value
+  - Signal derivation uses value_assessment + pay_up_flag (not purely math gap)
+  - Cheap player rule: price <= $8 never generates avoid signal
+  - Small gap rule: -8 to 0 range downgraded to neutral (auction noise)
 - [x] Stage 10: Yahoo API integration
   - OAuth flow complete (GET /auth/yahoo, GET /auth/yahoo/callback)
   - All API functions: get_players, get_league, get_teams, get_rosters, get_draft_results
@@ -175,8 +206,10 @@ Update this section as stages complete.
     get_player_details_batch, get_teams_in_league
   - League auction engine: CSV import, Yahoo sync, multi-year tendencies,
     manager style classification, market_value_league refresh
+  - rematch_unmatched_auction_history() for post-sync re-matching
   - Pipeline endpoints: sync-yahoo-players, sync-league-settings,
-    sync-league-history, import-league-auction, refresh-market-values
+    sync-league-history, import-league-auction, refresh-market-values,
+    rematch-auction-history
   - Yahoo credentials (YAHOO_CLIENT_ID, YAHOO_CLIENT_SECRET, YAHOO_LEAGUE_ID,
     YAHOO_REFRESH_TOKEN) all set in .env
 - [x] Stage 11: Playwright draft bridge
@@ -184,17 +217,36 @@ Update this section as stages complete.
   - WebSocketManager singleton for React client push
   - Draft router: WS /ws/draft, POST /draft/bid, /draft/nominate, /draft/pass
   - Synthetic WS frame fixtures (replace with real frames ~August)
-  - 12 tests, 85%/90% coverage on bridge/manager
+  - 35 tests, no-polling AST verification test passing
+- [x] Stage 11.5: Backtest & Validation (operator tool)
+  - scripts/backtest_accuracy.py — full accuracy report against actual season
+  - backend/integrations/nfl_data.py — compute_seasonal_stats_from_pbp()
+    fallback when nflverse parquet unavailable for current season
+  - 2025 actual stats computed from play-by-play data
+  - Verified: 81.5% overall signal accuracy (STRONG grade)
+  - Buy signals: 95% accurate (41 players)
+  - Avoid signals: 38% accurate (13 high-conviction calls)
+  - Top opportunities: 13/15 delivered value (87%)
+  - backtest_results_2025.csv generated for manual review
+  - NOTE: Backtest is operator-only. Not a user-facing feature.
 - [ ] Stage 12: Live draft agent — NOT STARTED
   - agent_loop.py (run_agent with tool-use) ready as infrastructure
   - DraftState + OpponentProfile DB models exist
   - Needs: DraftStateManager, DependencyResolver, OpponentThreatAnalyzer, LiveDraftEngine
-- [~] Stage 13a: Pre-draft UI — ~70%
-  - React + Vite + Tailwind + Zustand app built
+- [x] Stage 13a: Pre-draft UI — COMPLETE
+  - React 19 + Vite + Tailwind 4 + Zustand 5 + React Query 5
   - 7 pages: Dashboard, DraftBoard, Players, Teams, TeamDetail, News, PipelineAdmin
-  - 14+ shared components, 3 Zustand stores, 9 API client modules
-  - Backend endpoints: /players, /draftboard, /teams, /league/tendencies,
-    /league/history, /news/feed, /admin/pipeline-status
+  - 15 shared components: FlagBadge, PlayerCardCompact, PlayerCardExpanded,
+    ValueComparisonBar, SystemGradeBadge, NewsFeedItem, PositionBadge,
+    PlayerDetailPanel, FilterBar, SearchInput, Pagination, Sidebar, Layout,
+    AssistantButton, AssistantPanel
+  - 3 Zustand stores (ui, preferences, assistant)
+  - 9 API client modules (players, teams, news, draftboard, preferences,
+    admin, league, assistant, client)
+  - getDisplaySignal() in lib/signals.js mirrors backend signal derivation
+  - 4 frontend test files (FlagBadge, SystemGradeBadge, ValueComparisonBar, NewsFeedItem)
+  - All pages fetch live data from backend (no mocks)
+  - Dark theme, responsive sidebar, WebSocket live news updates
 - [ ] Stage 13b: Draft UI — NOT STARTED
   - Needs: bid/nominate forms, clock countdown, recommendation cards,
     opponent budget tracker, roster grid, MANUAL_ACTION_REQUIRED alert
@@ -203,5 +255,24 @@ Update this section as stages complete.
 - [ ] Stage 17–19: Trade value + trade analyzer + trade proposals
 - [ ] Stage 20: Lineup optimizer
 - [ ] Stage 21: Waiver wire agent
-- [~] Stage 22: Pipeline admin UI — PARTIAL (PipelineAdmin.jsx + backend endpoints exist)
+- [~] Stage 22: Pipeline admin UI — MOSTLY COMPLETE (8/10 spec items)
+  - PipelineAdmin.jsx: agent status, run/dry-run buttons, cost report, backtest section
+  - Backend: GET /admin/pipeline-status, POST /admin/pipeline/run,
+    POST /admin/pipeline/dry-run, GET /admin/cost-report, GET /admin/backtest
+  - Missing: agent-specific freshness thresholds (all use 7d, spec says
+    team_systems=30d, beat_reporter=2d)
+  - Missing: GET /admin/cost-report/weekly dedicated endpoint
 - [ ] Stage 23: Deployment + testing
+- [ ] Stage 24: Gameday Monitoring
+- [ ] Stage 25: SaaS Foundation — see docs/stages/stage-25-saas-foundation.md
+  LeagueConfig dataclass, DB split, credit system, row-level security
+- [ ] Stage 26: User Auth — see docs/stages/stage-26-user-auth.md
+  Clerk auth, 3 tiers (intro/standard/pro), Stripe billing
+- [ ] Stage 27: Landing Page — see docs/stages/stage-27-landing-page.md
+  Marketing site, validation stats, pricing table
+- [ ] Stage 28: League Sync — see docs/stages/stage-28-league-sync.md
+  Yahoo multi-user OAuth, Sleeper API, ESPN cookie API
+- [ ] Stage 29: Snake Draft — see docs/stages/stage-29-snake-draft.md
+  SnakeValuationEngine, VOE metric, SnakeDraftAgent
+- [ ] Stage 30: Half PPR — see docs/stages/stage-30-half-ppr.md
+  Half PPR scoring, replacement level adjustments

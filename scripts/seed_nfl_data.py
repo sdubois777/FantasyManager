@@ -7,7 +7,7 @@ Usage:
     python scripts/seed_nfl_data.py --verify  # verification only (no download)
 
 Data is cached to data/cache/ as parquet files (gitignored).
-The players table is seeded with every skill-position player active in 2024.
+The players table is seeded with every skill-position player from the current season.
 """
 from __future__ import annotations
 
@@ -26,8 +26,9 @@ from sqlalchemy import select
 from backend.database import AsyncSessionLocal
 from backend.models.player import Player
 from backend.integrations import nfl_data
+from backend.utils.seasons import get_analysis_seasons, get_current_season
 
-SEASONS = [2022, 2023, 2024]
+SEASONS = get_analysis_seasons(3)
 SKILL_POSITIONS = {"QB", "RB", "WR", "TE"}
 
 # ---------------------------------------------------------------------------
@@ -76,8 +77,9 @@ def download_all():
     nfl_data.fetch_players()
     print(" done")
 
-    print("    rosters 2024  ...", end="", flush=True)
-    nfl_data.fetch_rosters(2024)
+    current = get_current_season()
+    print(f"    rosters {current}  ...", end="", flush=True)
+    nfl_data.fetch_rosters(current)
     print(" done")
 
     print("\nAll data cached to data/cache/")
@@ -103,7 +105,7 @@ def _compute_age(birth_date_raw) -> int | None:
 async def seed_players():
     print("\nSeeding players table ...")
 
-    rosters_df = nfl_data.fetch_rosters(2024)
+    rosters_df = nfl_data.fetch_rosters(get_current_season())
 
     # Deduplicate to one row per player (weekly rosters repeat per week)
     roster_skill = (
@@ -184,10 +186,11 @@ VERIFY_PLAYERS = [
 
 def verify_data():
     print("\n" + "=" * 60)
-    print("Verification — 2024 target share for sample players")
+    current = get_current_season()
+    print(f"Verification — {current} target share for sample players")
     print("=" * 60)
 
-    ts = nfl_data.compute_target_share(2024)
+    ts = nfl_data.compute_target_share(current)
 
     print(f"\n{'Player':<28} {'Team':<5} {'Tgts':>5} {'Tgt%':>7} {'AY%':>7} {'PPR/G':>7}")
     print("-" * 60)
@@ -207,11 +210,11 @@ def verify_data():
               f"{int(row['total_targets']):>5} {tgt_pct:>7} {ay_pct:>7} {ppg:>7}")
         found += 1
 
-    print(f"\n{found}/{len(VERIFY_PLAYERS)} sample players found in 2024 data.")
+    print(f"\n{found}/{len(VERIFY_PLAYERS)} sample players found in {current} data.")
 
     # Snap count check
-    print("\n--- Snap % sample (2024) ---")
-    snaps = nfl_data.compute_snap_pct(2024)
+    print(f"\n--- Snap % sample ({current}) ---")
+    snaps = nfl_data.compute_snap_pct(current)
     snap_check = ["Hill", "Lamb", "Jefferson", "Barkley"]
     for last in snap_check:
         mask = snaps["player"].str.contains(last, case=False, na=False)

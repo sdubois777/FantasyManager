@@ -2,8 +2,8 @@
 Backtest: did the system correctly identify undervalued and overvalued players?
 
 Compares pre-season system projections against actual season results.
-Defaults to 2025 actual data with PBP fallback when nflverse hasn't
-published the pre-computed player_stats parquet.
+Defaults to the current season's actual data with PBP fallback when
+nflverse hasn't published the pre-computed player_stats parquet.
 
 Metrics:
   1. PROJECTION ACCURACY — MAE, bias, correlation of projected_ppr vs actual
@@ -29,6 +29,7 @@ from backend.database import AsyncSessionLocal  # noqa: E402
 from backend.engines.backtest import derive_system_signal  # noqa: E402
 from backend.integrations.nfl_data import get_seasonal_stats  # noqa: E402
 from backend.models.player import Player, PlayerProfile  # noqa: E402
+from backend.utils.seasons import get_current_season  # noqa: E402
 
 # $1 of auction spend should return ~3.8 PPR points for "fair value"
 # ($200 budget, ~760 total PPR from starters)
@@ -40,8 +41,10 @@ def load_actual_season(season: int) -> pd.DataFrame:
     return get_seasonal_stats(season)
 
 
-async def run_backtest(actual_season: int = 2025) -> pd.DataFrame:
+async def run_backtest(actual_season: int | None = None) -> pd.DataFrame:
     """Run the full backtest and return player-level results DataFrame."""
+    if actual_season is None:
+        actual_season = get_current_season()
 
     # ── Load actual results ──────────────────────────────
     print(f"Loading {actual_season} actual season data...")
@@ -446,7 +449,7 @@ if __name__ == "__main__":
     import argparse
 
     parser = argparse.ArgumentParser(description="Backtest system accuracy")
-    parser.add_argument("--season", type=int, default=2025, help="Season to backtest against")
+    parser.add_argument("--season", type=int, default=None, help="Season to backtest against (default: current)")
     args = parser.parse_args()
 
     asyncio.run(run_backtest(args.season))
