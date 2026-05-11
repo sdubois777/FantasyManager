@@ -501,9 +501,10 @@ def compute_seasonal_stats_from_pbp(
 
     logger.info("Computed PBP stats for %d players in season %d", len(df), season)
 
-    # Cache result
-    with open(cache_file, "wb") as f:
-        pickle.dump(df, f)
+    # Cache result (skip if use_cache=False to avoid test pollution)
+    if use_cache:
+        with open(cache_file, "wb") as f:
+            pickle.dump(df, f)
 
     return df
 
