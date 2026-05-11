@@ -60,3 +60,4 @@ htmlcov/
 
 # Backtest output
 backtest_results_*.csv
+backtest_results_2025.csv

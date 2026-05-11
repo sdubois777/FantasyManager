@@ -86,46 +86,44 @@ def test_injury_shortened_excluded():
 
 
 # ---------------------------------------------------------------------------
-# Load actual season
+# Load actual season (delegates to get_seasonal_stats)
 # ---------------------------------------------------------------------------
 
 
-def test_load_actual_season_aggregates():
-    """_load_actual_season aggregates weekly data to seasonal totals."""
-    mock_weekly = pd.DataFrame({
-        "player_id": ["001", "001", "001", "002", "002"],
-        "player_display_name": ["Player A", "Player A", "Player A", "Player B", "Player B"],
-        "position": ["RB", "RB", "RB", "WR", "WR"],
-        "recent_team": ["NYG", "NYG", "NYG", "LAC", "LAC"],
-        "fantasy_points_ppr": [20.0, 15.0, 25.0, 10.0, 12.0],
-        "season_type": ["REG", "REG", "REG", "REG", "REG"],
+def test_load_actual_season_delegates_to_get_seasonal_stats():
+    """_load_actual_season calls get_seasonal_stats."""
+    mock_df = pd.DataFrame({
+        "player_id": ["001", "002"],
+        "player_display_name": ["Player A", "Player B"],
+        "position": ["RB", "WR"],
+        "recent_team": ["NYG", "LAC"],
+        "games": [17, 16],
+        "fantasy_points_ppr": [250.0, 180.0],
     })
 
-    with patch("backend.engines.backtest.nfl.import_weekly_data", return_value=mock_weekly):
-        result = _load_actual_season(2024)
+    with patch("backend.engines.backtest.get_seasonal_stats", return_value=mock_df) as mock_fn:
+        result = _load_actual_season(2025)
 
+    mock_fn.assert_called_once_with(2025)
     assert len(result) == 2
-    player_a = result[result["player_id"] == "001"].iloc[0]
-    assert player_a["games"] == 3
-    assert player_a["fantasy_points_ppr"] == 60.0
 
 
 # ---------------------------------------------------------------------------
-# run_backtest integration (mocked DB + nfl_data_py)
+# run_backtest integration (mocked DB + get_seasonal_stats)
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
 async def test_run_backtest_returns_metrics_and_df():
     """run_backtest returns (BacktestMetrics, DataFrame)."""
-    # Mock actual season data
-    mock_weekly = pd.DataFrame({
+    # Mock actual season data (format returned by get_seasonal_stats)
+    mock_seasonal = pd.DataFrame({
         "player_id": ["00-001", "00-002"],
         "player_display_name": ["Test Player", "Other Player"],
         "position": ["RB", "WR"],
         "recent_team": ["NYG", "LAC"],
+        "games": [17, 16],
         "fantasy_points_ppr": [250.0, 180.0],
-        "season_type": ["REG", "REG"],
     })
 
     # Mock DB players
@@ -147,7 +145,7 @@ async def test_run_backtest_returns_metrics_and_df():
     mock_result.fetchall.return_value = [(player1, profile1)]
     mock_session.execute = AsyncMock(return_value=mock_result)
 
-    with patch("backend.engines.backtest.nfl.import_weekly_data", return_value=mock_weekly):
+    with patch("backend.engines.backtest.get_seasonal_stats", return_value=mock_seasonal):
         metrics, df = await run_backtest(mock_session, 2024)
 
     assert isinstance(metrics, BacktestMetrics)

@@ -289,7 +289,7 @@ async def get_cost_report(days: int = 30):
 
 
 @router.get("/backtest")
-async def get_backtest_results(season: int = 2024):
+async def get_backtest_results(season: int = 2025):
     """Run backtest comparing system projections against actual season results."""
     from backend.engines.backtest import run_backtest
 

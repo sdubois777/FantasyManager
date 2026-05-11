@@ -8,11 +8,11 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass, field
 
-import nfl_data_py as nfl
 import pandas as pd
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from backend.integrations.nfl_data import get_seasonal_stats
 from backend.models.player import Player, PlayerProfile
 
 logger = logging.getLogger(__name__)
@@ -71,28 +71,11 @@ class BacktestMetrics:
 
 
 def _load_actual_season(season: int) -> pd.DataFrame:
-    """Load actual season results from nfl_data_py weekly data."""
-    cols = [
-        "player_id", "player_display_name", "position",
-        "recent_team", "fantasy_points_ppr", "season_type",
-    ]
-    weekly = nfl.import_weekly_data([season], cols)
-    weekly = weekly[
-        (weekly["season_type"] == "REG")
-        & (weekly["position"].isin(["QB", "RB", "WR", "TE"]))
-    ]
-    seasonal = (
-        weekly.groupby(["player_id", "player_display_name", "position", "recent_team"])
-        .agg(
-            games=("fantasy_points_ppr", "count"),
-            fantasy_points_ppr=("fantasy_points_ppr", "sum"),
-        )
-        .reset_index()
-    )
-    return seasonal.sort_values("games", ascending=False).drop_duplicates("player_id")
+    """Load actual season results via get_seasonal_stats (PBP fallback)."""
+    return get_seasonal_stats(season)
 
 
-async def run_backtest(session: AsyncSession, season: int = 2024) -> tuple[BacktestMetrics, pd.DataFrame]:
+async def run_backtest(session: AsyncSession, season: int = 2025) -> tuple[BacktestMetrics, pd.DataFrame]:
     """Run the backtest and return (metrics, player_df)."""
 
     actuals = _load_actual_season(season)

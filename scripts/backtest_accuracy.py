@@ -2,7 +2,8 @@
 Backtest: did the system correctly identify undervalued and overvalued players?
 
 Compares pre-season system projections against actual season results.
-Uses 2024 actual data (2025 season hasn't happened yet).
+Defaults to 2025 actual data with PBP fallback when nflverse hasn't
+published the pre-computed player_stats parquet.
 
 Metrics:
   1. PROJECTION ACCURACY — MAE, bias, correlation of projected_ppr vs actual
@@ -22,10 +23,10 @@ import pandas as pd
 # Ensure project root on path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-import nfl_data_py as nfl  # noqa: E402
 from sqlalchemy import select  # noqa: E402
 
 from backend.database import AsyncSessionLocal  # noqa: E402
+from backend.integrations.nfl_data import get_seasonal_stats  # noqa: E402
 from backend.models.player import Player, PlayerProfile  # noqa: E402
 
 # $1 of auction spend should return ~3.8 PPR points for "fair value"
@@ -34,44 +35,16 @@ FAIR_VALUE_PPR_PER_DOLLAR = 3.8
 
 
 def load_actual_season(season: int) -> pd.DataFrame:
-    """Load actual season results from nfl_data_py weekly data, aggregated."""
-    cols = [
-        "player_id", "player_display_name", "position",
-        "recent_team", "fantasy_points_ppr", "season_type",
-    ]
-    weekly = nfl.import_weekly_data([season], cols)
-    weekly = weekly[
-        (weekly["season_type"] == "REG")
-        & (weekly["position"].isin(["QB", "RB", "WR", "TE"]))
-    ]
-    seasonal = (
-        weekly.groupby(["player_id", "player_display_name", "position", "recent_team"])
-        .agg(
-            games=("fantasy_points_ppr", "count"),
-            fantasy_points_ppr=("fantasy_points_ppr", "sum"),
-        )
-        .reset_index()
-    )
-    # Keep best team entry per player (most games)
-    seasonal = seasonal.sort_values("games", ascending=False).drop_duplicates("player_id")
-    return seasonal
+    """Load actual season results via get_seasonal_stats (PBP fallback)."""
+    return get_seasonal_stats(season)
 
 
-async def run_backtest(actual_season: int = 2024) -> pd.DataFrame:
+async def run_backtest(actual_season: int = 2025) -> pd.DataFrame:
     """Run the full backtest and return player-level results DataFrame."""
 
     # ── Load actual results ──────────────────────────────
     print(f"Loading {actual_season} actual season data...")
-    try:
-        actuals = load_actual_season(actual_season)
-    except Exception as e:
-        print(f"Could not load {actual_season}: {e}")
-        if actual_season != 2024:
-            print("Falling back to 2024...")
-            actual_season = 2024
-            actuals = load_actual_season(2024)
-        else:
-            raise
+    actuals = load_actual_season(actual_season)
 
     print(f"Using {actual_season} actual results: {len(actuals)} skill players")
 
@@ -468,7 +441,7 @@ if __name__ == "__main__":
     import argparse
 
     parser = argparse.ArgumentParser(description="Backtest system accuracy")
-    parser.add_argument("--season", type=int, default=2024, help="Season to backtest against")
+    parser.add_argument("--season", type=int, default=2025, help="Season to backtest against")
     args = parser.parse_args()
 
     asyncio.run(run_backtest(args.season))

@@ -270,7 +270,7 @@ export default function PipelineAdmin() {
 function BacktestSection() {
   const { data, isLoading, error, refetch, isFetching } = useQuery({
     queryKey: ['backtest'],
-    queryFn: () => fetchBacktest(2024),
+    queryFn: () => fetchBacktest(2025),
     enabled: false,
     staleTime: Infinity,
   })
@@ -314,7 +314,7 @@ function BacktestSection() {
       {data && (
         <div className="space-y-3">
           <div className="flex items-center gap-2 mb-2">
-            <span className="text-xs text-slate-500">2024 Season</span>
+            <span className="text-xs text-slate-500">2025 Season</span>
             <span className={`text-sm font-semibold ${gradeColor[data.grade] || 'text-slate-400'}`}>
               {data.grade}
             </span>
