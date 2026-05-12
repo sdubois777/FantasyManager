@@ -25,8 +25,6 @@ import json
 import logging
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
-from typing import ClassVar
-
 import pandas as pd
 from sqlalchemy import select, or_
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -34,7 +32,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from backend.agents.base_agent import BaseAgent, parse_json_output, HAIKU, SONNET
 from backend.agents.team_systems import NFL_TEAMS
 from backend.database import AsyncSessionLocal
-from backend.integrations import nfl_data
 from backend.integrations.nfl_data import normalize_player_name, build_player_lookup
 from backend.models.player import Player, PlayerProfile, PlayerInjuryProfile, PlayerSchedule
 from backend.models.dependency import PlayerDependency, BeatReporterSignal
@@ -342,16 +339,13 @@ class PlayerProfilesAgent(BaseAgent):
     AGENT_MODEL      = HAIKU
     AGENT_MAX_TOKENS = 4000
 
-    # Pattern 3: pre-warm once in run_all_teams(), reuse per team
-    _data_cache: ClassVar[dict] = {}
-
     # ------------------------------------------------------------------
-    # Sync data helpers — read from _data_cache (no network calls)
+    # Sync data helpers — read from warehouse (no network calls)
     # ------------------------------------------------------------------
 
     def _get_team_roster(self, team: str, season: int) -> list[dict]:
-        """Return skill-position players on this team from cached roster data."""
-        rosters = self._data_cache.get(f"rosters_{season}")
+        """Return skill-position players on this team from warehouse roster data."""
+        rosters = self._warehouse.rosters
         if rosters is None:
             return []
 
@@ -394,7 +388,7 @@ class PlayerProfilesAgent(BaseAgent):
 
     def _is_backup_qb_season(self, team: str, season: int) -> bool:
         """True if the team's backup QB started 4+ regular-season games in this season."""
-        weekly = self._data_cache.get(f"weekly_{season}")
+        weekly = self._warehouse.get_seasonal_stats(season)
         if weekly is None:
             return False
         # Use REG season only — postseason/preseason weeks inflate QB game counts
@@ -429,7 +423,7 @@ class PlayerProfilesAgent(BaseAgent):
           3. last-name + first-initial cross-team + SAME POSITION fallback —
              ONLY when exactly ONE unique player_id at this position
         """
-        ts_df = self._data_cache.get(f"target_share_{season}")
+        ts_df = self._warehouse.get_target_share(season)
         if ts_df is None:
             return None
 
@@ -576,7 +570,7 @@ class PlayerProfilesAgent(BaseAgent):
         nfl_player_id: str | None = None,
     ) -> dict | None:
         """Return QB-specific season stats from cached qb_season data."""
-        qb_df = self._data_cache.get(f"qb_season_{season}")
+        qb_df = self._warehouse.get_qb_stats(season)
         if qb_df is None:
             return None
 
@@ -641,7 +635,7 @@ class PlayerProfilesAgent(BaseAgent):
 
     def _get_snap_pct(self, player_name: str, team: str, season: int) -> float | None:
         """Return avg offensive snap % from the cached snap_pct df."""
-        snap_df = self._data_cache.get(f"snap_pct_{season}")
+        snap_df = self._warehouse.get_snap_pct(season)
         if snap_df is None:
             return None
 
@@ -667,7 +661,7 @@ class PlayerProfilesAgent(BaseAgent):
 
     def _get_ngs_receiving_stats(self, player_name: str, team: str, season: int) -> dict:
         """Return NGS receiving metrics (separation, YAC) from cached aggregated data."""
-        ngs = self._data_cache.get(f"ngs_receiving_{season}")
+        ngs = self._warehouse.get_ngs_receiving(season)
         if ngs is None or ngs.empty:
             return {}
 
@@ -692,7 +686,7 @@ class PlayerProfilesAgent(BaseAgent):
 
     def _get_ngs_rushing_stats(self, player_name: str, team: str, season: int) -> dict:
         """Return NGS rushing metrics (yards over expected) from cached aggregated data."""
-        ngs = self._data_cache.get(f"ngs_rushing_{season}")
+        ngs = self._warehouse.get_ngs_rushing(season)
         if ngs is None or ngs.empty:
             return {}
 
@@ -952,68 +946,6 @@ class PlayerProfilesAgent(BaseAgent):
         return raw.groupby(group_cols)[valid_cols].mean().reset_index()
 
     # ------------------------------------------------------------------
-    # On-demand cache loader — used by single-team runs
-    # ------------------------------------------------------------------
-
-    def _ensure_cache_loaded(self, analysis_seasons: list[int], current_season: int) -> None:
-        """Load data caches if not already populated (single-team runs bypass run_all_teams)."""
-        for season in analysis_seasons:
-            if f"target_share_{season}" not in self._data_cache:
-                try:
-                    self._data_cache[f"target_share_{season}"] = nfl_data.compute_target_share(season)
-                    logger.info("Loaded target_share %d on demand", season)
-                except Exception as exc:
-                    logger.warning("Could not load target_share %d: %s", season, exc)
-
-            if f"weekly_{season}" not in self._data_cache:
-                try:
-                    self._data_cache[f"weekly_{season}"] = nfl_data.fetch_weekly_stats(season)
-                    logger.info("Loaded weekly_stats %d on demand", season)
-                except Exception as exc:
-                    logger.warning("Could not load weekly_stats %d: %s", season, exc)
-
-            if f"ngs_receiving_{season}" not in self._data_cache:
-                try:
-                    raw = nfl_data.fetch_ngs_data("receiving", season)
-                    self._data_cache[f"ngs_receiving_{season}"] = self._aggregate_ngs(
-                        raw, ["avg_separation", "avg_yac_above_expectation"]
-                    )
-                    logger.info("Loaded ngs_receiving %d on demand", season)
-                except Exception as exc:
-                    logger.warning("Could not load ngs_receiving %d: %s", season, exc)
-
-            if f"ngs_rushing_{season}" not in self._data_cache:
-                try:
-                    raw = nfl_data.fetch_ngs_data("rushing", season)
-                    self._data_cache[f"ngs_rushing_{season}"] = self._aggregate_ngs(
-                        raw, ["rush_yards_over_expected_per_att", "rush_pct_over_expected"]
-                    )
-                    logger.info("Loaded ngs_rushing %d on demand", season)
-                except Exception as exc:
-                    logger.warning("Could not load ngs_rushing %d: %s", season, exc)
-
-            if f"qb_season_{season}" not in self._data_cache:
-                try:
-                    self._data_cache[f"qb_season_{season}"] = nfl_data.compute_qb_season_stats(season)
-                    logger.info("Loaded qb_season %d on demand", season)
-                except Exception as exc:
-                    logger.warning("Could not load qb_season %d: %s", season, exc)
-
-        if f"rosters_{current_season}" not in self._data_cache:
-            try:
-                self._data_cache[f"rosters_{current_season}"] = nfl_data.fetch_rosters(current_season)
-                logger.info("Loaded rosters %d on demand", current_season)
-            except Exception as exc:
-                logger.warning("Could not load rosters %d: %s", current_season, exc)
-
-        if f"snap_pct_{current_season}" not in self._data_cache:
-            try:
-                self._data_cache[f"snap_pct_{current_season}"] = nfl_data.compute_snap_pct(current_season)
-                logger.info("Loaded snap_pct %d on demand", current_season)
-            except Exception as exc:
-                logger.warning("Could not load snap_pct %d: %s", current_season, exc)
-
-    # ------------------------------------------------------------------
     # Context builder — all Python, zero API calls
     # ------------------------------------------------------------------
 
@@ -1022,8 +954,6 @@ class PlayerProfilesAgent(BaseAgent):
         analysis_seasons = get_analysis_seasons(3)
         current_season   = get_current_season()
         analysis_year    = get_analysis_year()
-
-        self._ensure_cache_loaded(analysis_seasons, current_season)
 
         team_system      = await self._get_team_system(team)
         dep_flags        = await self._get_team_dependency_flags(team)
@@ -1280,6 +1210,9 @@ class PlayerProfilesAgent(BaseAgent):
 
         When force=False, only regenerates profiles where upstream data has changed.
         """
+        if self._warehouse is None:
+            from backend.integrations.nfl_data import NflDataWarehouse
+            self._warehouse = NflDataWarehouse.build()
         team = team_abbr.upper()
         logger.info("Building player profiles context for %s", team)
 
@@ -1392,63 +1325,15 @@ class PlayerProfilesAgent(BaseAgent):
     # Full pipeline — pre-warm caches once, then run all 32 teams
     # ------------------------------------------------------------------
 
-    async def run_all_teams(self, concurrency: int = 4, force: bool = False) -> dict[str, int]:
+    async def run_all_teams(
+        self, warehouse=None, concurrency: int = 4, force: bool = False,
+    ) -> dict[str, int]:
         """
-        Pre-loads all shared data caches ONCE before running teams concurrently.
+        Run all 32 teams. Warehouse provides all NFL data — no pre-loading needed.
         Returns {team_abbr: profiles_written}.
         """
-        analysis_seasons = get_analysis_seasons(3)
-        current_season   = get_current_season()
-
-        logger.info("Pre-loading Player Profiles data for seasons %s...", analysis_seasons)
-        for season in analysis_seasons:
-            if f"target_share_{season}" not in self._data_cache:
-                try:
-                    self._data_cache[f"target_share_{season}"] = nfl_data.compute_target_share(season)
-                    logger.info("Cached target_share %d", season)
-                except Exception as exc:
-                    logger.warning("Could not pre-load target_share %d: %s", season, exc)
-
-            if f"weekly_{season}" not in self._data_cache:
-                try:
-                    self._data_cache[f"weekly_{season}"] = nfl_data.fetch_weekly_stats(season)
-                    logger.info("Cached weekly_stats %d", season)
-                except Exception as exc:
-                    logger.warning("Could not pre-load weekly_stats %d: %s", season, exc)
-
-            if f"ngs_receiving_{season}" not in self._data_cache:
-                try:
-                    raw = nfl_data.fetch_ngs_data("receiving", season)
-                    self._data_cache[f"ngs_receiving_{season}"] = self._aggregate_ngs(
-                        raw, ["avg_separation", "avg_yac_above_expectation"]
-                    )
-                    logger.info("Cached ngs_receiving %d", season)
-                except Exception as exc:
-                    logger.warning("Could not pre-load ngs_receiving %d: %s", season, exc)
-
-            if f"ngs_rushing_{season}" not in self._data_cache:
-                try:
-                    raw = nfl_data.fetch_ngs_data("rushing", season)
-                    self._data_cache[f"ngs_rushing_{season}"] = self._aggregate_ngs(
-                        raw, ["rush_yards_over_expected_per_att", "rush_pct_over_expected"]
-                    )
-                    logger.info("Cached ngs_rushing %d", season)
-                except Exception as exc:
-                    logger.warning("Could not pre-load ngs_rushing %d: %s", season, exc)
-
-        if f"rosters_{current_season}" not in self._data_cache:
-            try:
-                self._data_cache[f"rosters_{current_season}"] = nfl_data.fetch_rosters(current_season)
-                logger.info("Cached rosters %d", current_season)
-            except Exception as exc:
-                logger.warning("Could not pre-load rosters %d: %s", current_season, exc)
-
-        if f"snap_pct_{current_season}" not in self._data_cache:
-            try:
-                self._data_cache[f"snap_pct_{current_season}"] = nfl_data.compute_snap_pct(current_season)
-                logger.info("Cached snap_pct %d", current_season)
-            except Exception as exc:
-                logger.warning("Could not pre-load snap_pct %d: %s", current_season, exc)
+        if warehouse is not None:
+            self._warehouse = warehouse
 
         logger.info(
             "Starting Player Profiles pipeline (concurrency=%d)", concurrency
@@ -2249,10 +2134,12 @@ def _to_decimal(value) -> Decimal | None:
 _agent_instance: PlayerProfilesAgent | None = None
 
 
-def _get_agent(dry_run: bool = False) -> PlayerProfilesAgent:
+def _get_agent(dry_run: bool = False, warehouse=None) -> PlayerProfilesAgent:
     global _agent_instance
     if _agent_instance is None or _agent_instance.dry_run != dry_run:
-        _agent_instance = PlayerProfilesAgent(dry_run=dry_run)
+        _agent_instance = PlayerProfilesAgent(dry_run=dry_run, warehouse=warehouse)
+    elif warehouse is not None:
+        _agent_instance._warehouse = warehouse
     return _agent_instance
 
 
@@ -2260,5 +2147,9 @@ async def run_for_team(team_abbr: str, dry_run: bool = False, force: bool = Fals
     return await _get_agent(dry_run).run_for_team(team_abbr, force=force)
 
 
-async def run_all_teams(concurrency: int = 4, dry_run: bool = False, force: bool = False) -> dict[str, int]:
-    return await _get_agent(dry_run).run_all_teams(concurrency, force=force)
+async def run_all_teams(
+    concurrency: int = 4, dry_run: bool = False, force: bool = False, warehouse=None,
+) -> dict[str, int]:
+    return await _get_agent(dry_run, warehouse=warehouse).run_all_teams(
+        warehouse=warehouse, concurrency=concurrency, force=force,
+    )

@@ -22,7 +22,6 @@ import asyncio
 import json
 import logging
 from decimal import Decimal
-from typing import ClassVar
 
 import pandas as pd
 from sqlalchemy import select, or_
@@ -31,7 +30,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from backend.agents.base_agent import BaseAgent, parse_json_output, HAIKU
 from backend.agents.team_systems import NFL_TEAMS
 from backend.database import AsyncSessionLocal
-from backend.integrations import nfl_data
 from backend.models.player import Player, PlayerInjuryProfile
 from backend.utils.seasons import get_current_season, get_analysis_seasons, get_analysis_year
 
@@ -265,16 +263,13 @@ class InjuryRiskAgent(BaseAgent):
     AGENT_MODEL      = HAIKU
     AGENT_MAX_TOKENS = 1000
 
-    # Pattern 3: pre-warm once in run_all_teams(), reuse per team
-    _data_cache: ClassVar[dict] = {}
-
     # ------------------------------------------------------------------
-    # Sync data helpers — read from _data_cache (no network calls)
+    # Sync data helpers — read from warehouse (no network calls)
     # ------------------------------------------------------------------
 
     def _get_team_roster(self, team: str, season: int) -> list[dict]:
-        """Return skill-position players on this team from cached roster data."""
-        rosters = self._data_cache.get(f"rosters_{season}")
+        """Return skill-position players on this team from warehouse roster data."""
+        rosters = self._warehouse.rosters
         if rosters is None:
             return []
 
@@ -317,7 +312,7 @@ class InjuryRiskAgent(BaseAgent):
         Extract injury events and games missed for one player in one season.
         Returns {season, injuries: [{injury_text, category, area}], games_missed}.
         """
-        inj_df = self._data_cache.get(f"injuries_{season}")
+        inj_df = self._warehouse.get_injuries(season)
         if inj_df is None or inj_df.empty:
             return {"season": season, "injuries": [], "games_missed": 0}
 
@@ -390,7 +385,7 @@ class InjuryRiskAgent(BaseAgent):
 
     def _get_player_carries(self, player_name: str, team: str, season: int) -> int:
         """Return total carries for one player in one season from the carries cache."""
-        carry_df = self._data_cache.get(f"carries_{season}")
+        carry_df = self._warehouse.get_target_share(season)
         if carry_df is None or carry_df.empty:
             return 0
 
@@ -414,47 +409,14 @@ class InjuryRiskAgent(BaseAgent):
             return 0
 
     # ------------------------------------------------------------------
-    # On-demand cache loader — used by single-team runs
-    # ------------------------------------------------------------------
-
-    def _ensure_cache_loaded(self, analysis_seasons: list[int], current_season: int) -> None:
-        """Load data caches if not already populated (single-team runs)."""
-        for season in analysis_seasons:
-            if f"injuries_{season}" not in self._data_cache:
-                try:
-                    self._data_cache[f"injuries_{season}"] = nfl_data.fetch_injuries(season)
-                    logger.info("Loaded injuries %d on demand", season)
-                except Exception as exc:
-                    logger.warning("Could not load injuries %d: %s", season, exc)
-
-            if f"carries_{season}" not in self._data_cache:
-                try:
-                    ts   = nfl_data.compute_target_share(season)
-                    cols = [c for c in ("player_name", "recent_team", "position", "total_carries")
-                            if c in ts.columns]
-                    self._data_cache[f"carries_{season}"] = ts[cols].copy()
-                    logger.info("Loaded carries %d on demand", season)
-                except Exception as exc:
-                    logger.warning("Could not load carries %d: %s", season, exc)
-
-        if f"rosters_{current_season}" not in self._data_cache:
-            try:
-                self._data_cache[f"rosters_{current_season}"] = nfl_data.fetch_rosters(current_season)
-                logger.info("Loaded rosters %d on demand", current_season)
-            except Exception as exc:
-                logger.warning("Could not load rosters %d: %s", current_season, exc)
-
-    # ------------------------------------------------------------------
     # Context builder — all Python, zero API calls
     # ------------------------------------------------------------------
 
     async def _build_team_context(self, team_abbr: str) -> dict:
         team             = team_abbr.upper()
-        analysis_seasons = get_analysis_seasons(3)
         current_season   = get_current_season()
+        analysis_seasons = get_analysis_seasons(3)
         analysis_year    = get_analysis_year()
-
-        self._ensure_cache_loaded(analysis_seasons, current_season)
 
         roster = self._get_team_roster(team, current_season)
         seen:    set[str]   = set()
@@ -512,6 +474,10 @@ class InjuryRiskAgent(BaseAgent):
 
     async def run_for_team(self, team_abbr: str) -> int:
         """Run for one team. Returns number of injury profile records written."""
+        if self._warehouse is None:
+            from backend.integrations.nfl_data import NflDataWarehouse
+            self._warehouse = NflDataWarehouse.build()
+
         team = team_abbr.upper()
         logger.info("Building injury risk context for %s", team)
 
@@ -555,39 +521,18 @@ class InjuryRiskAgent(BaseAgent):
     # Full pipeline — pre-warm caches once, then run all 32 teams
     # ------------------------------------------------------------------
 
-    async def run_all_teams(self, concurrency: int = 4) -> dict[str, int]:
+    async def run_all_teams(
+        self, warehouse=None, concurrency: int = 4
+    ) -> dict[str, int]:
         """
-        Pre-loads all shared data caches ONCE before running teams concurrently.
+        Reads all data from the warehouse — no independent data fetching.
         Returns {team_abbr: profiles_written}.
         """
-        analysis_seasons = get_analysis_seasons(3)
-        current_season   = get_current_season()
-
-        logger.info("Pre-loading Injury Risk data for seasons %s...", analysis_seasons)
-        for season in analysis_seasons:
-            if f"injuries_{season}" not in self._data_cache:
-                try:
-                    self._data_cache[f"injuries_{season}"] = nfl_data.fetch_injuries(season)
-                    logger.info("Cached injuries %d", season)
-                except Exception as exc:
-                    logger.warning("Could not pre-load injuries %d: %s", season, exc)
-
-            if f"carries_{season}" not in self._data_cache:
-                try:
-                    ts   = nfl_data.compute_target_share(season)
-                    cols = [c for c in ("player_name", "recent_team", "position", "total_carries")
-                            if c in ts.columns]
-                    self._data_cache[f"carries_{season}"] = ts[cols].copy()
-                    logger.info("Cached carries %d", season)
-                except Exception as exc:
-                    logger.warning("Could not pre-load carries %d: %s", season, exc)
-
-        if f"rosters_{current_season}" not in self._data_cache:
-            try:
-                self._data_cache[f"rosters_{current_season}"] = nfl_data.fetch_rosters(current_season)
-                logger.info("Cached rosters %d", current_season)
-            except Exception as exc:
-                logger.warning("Could not pre-load rosters %d: %s", current_season, exc)
+        if warehouse is not None:
+            self._warehouse = warehouse
+        if self._warehouse is None:
+            from backend.integrations.nfl_data import NflDataWarehouse
+            self._warehouse = NflDataWarehouse.build()
 
         semaphore = asyncio.Semaphore(concurrency)
         results: dict[str, int] = {}
@@ -773,5 +718,7 @@ async def run_for_team(team_abbr: str, dry_run: bool = False) -> int:
     return await _get_agent(dry_run).run_for_team(team_abbr)
 
 
-async def run_all_teams(concurrency: int = 4, dry_run: bool = False) -> dict[str, int]:
-    return await _get_agent(dry_run).run_all_teams(concurrency)
+async def run_all_teams(
+    concurrency: int = 4, dry_run: bool = False, warehouse=None
+) -> dict[str, int]:
+    return await _get_agent(dry_run).run_all_teams(warehouse=warehouse, concurrency=concurrency)

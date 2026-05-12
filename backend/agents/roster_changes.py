@@ -24,8 +24,7 @@ import asyncio
 import json
 import logging
 from datetime import datetime, timezone
-from typing import ClassVar
-
+import pandas as pd
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -37,21 +36,6 @@ from backend.models.player import Player
 from backend.utils.seasons import get_analysis_seasons, get_analysis_year, get_current_season
 
 logger = logging.getLogger(__name__)
-
-# ---------------------------------------------------------------------------
-# Shared data cache — loaded once in run_all_teams(), reused per team
-# ---------------------------------------------------------------------------
-
-_DATA_CACHE: dict = {}
-
-
-def _get_cached_data(key: str):
-    return _DATA_CACHE.get(key)
-
-
-def _set_cached_data(key: str, value) -> None:
-    _DATA_CACHE[key] = value
-
 
 # ---------------------------------------------------------------------------
 # System prompt — dynamic year, no hardcoded integers
@@ -281,6 +265,10 @@ class RosterChangesAgent(BaseAgent):
     AGENT_MODEL      = SONNET
     AGENT_MAX_TOKENS = 4000
 
+    def __init__(self, dry_run: bool = False, warehouse=None):
+        super().__init__(dry_run=dry_run, warehouse=warehouse)
+        self._college_cache: dict = {}
+
     # ------------------------------------------------------------------
     # Data pre-aggregation — all Python, zero API calls
     # ------------------------------------------------------------------
@@ -333,23 +321,15 @@ class RosterChangesAgent(BaseAgent):
     async def _fetch_target_shares(self, roster: list[dict]) -> dict:
         """
         Build target share history for all players on the roster.
-        Uses _DATA_CACHE — compute_target_share loads once per season,
-        then slices it per player. Never reloads the full dataset.
+        Reads from warehouse — data loaded once before pipeline starts.
         """
         result: dict[str, list[dict]] = {}
         analysis_seasons = get_analysis_seasons(3)
 
         for season in analysis_seasons:
-            cache_key = f"target_share_{season}"
-            ts_df = _get_cached_data(cache_key)
-
-            if ts_df is None:
-                try:
-                    ts_df = nfl_data.compute_target_share(season)
-                    _set_cached_data(cache_key, ts_df)
-                except Exception as exc:
-                    logger.warning("Could not load target share %d: %s", season, exc)
-                    continue
+            ts_df = self._warehouse.get_target_share(season)
+            if ts_df is None or (isinstance(ts_df, pd.DataFrame) and ts_df.empty):
+                continue
 
             for player in roster:
                 name = player.get("name", "")
@@ -378,15 +358,10 @@ class RosterChangesAgent(BaseAgent):
 
     async def _fetch_backfield(self, team: str) -> dict:
         current_season = get_current_season()
-        cache_key = f"target_share_{current_season}"
-        ts_df = _get_cached_data(cache_key)
+        ts_df = self._warehouse.get_target_share(current_season)
 
-        if ts_df is None:
-            try:
-                ts_df = nfl_data.compute_target_share(current_season)
-                _set_cached_data(cache_key, ts_df)
-            except Exception as exc:
-                return {"error": str(exc)}
+        if ts_df is None or (isinstance(ts_df, pd.DataFrame) and ts_df.empty):
+            return {"error": "target share not available"}
 
         rbs = ts_df[
             (ts_df["recent_team"] == team) & (ts_df["position"] == "RB")
@@ -405,14 +380,9 @@ class RosterChangesAgent(BaseAgent):
         analysis_seasons = get_analysis_seasons(3)
 
         for season in analysis_seasons:
-            cache_key = f"weekly_stats_{season}"
-            weekly = _get_cached_data(cache_key)
-            if weekly is None:
-                try:
-                    weekly = nfl_data.fetch_weekly_stats(season)
-                    _set_cached_data(cache_key, weekly)
-                except Exception:
-                    continue
+            weekly = self._warehouse.get_seasonal_stats(season)
+            if weekly is None or (isinstance(weekly, pd.DataFrame) and weekly.empty):
+                continue
 
             for qb in qbs:
                 qb_last = qb["name"].split()[-1]
@@ -493,7 +463,7 @@ class RosterChangesAgent(BaseAgent):
         if team_picks.empty:
             return []
 
-        college_df = _get_cached_data("college_target_share")
+        college_df = self._college_cache.get("college_target_share")
 
         result = []
         for _, pick in team_picks.iterrows():
@@ -537,7 +507,7 @@ class RosterChangesAgent(BaseAgent):
 
     def _get_college_profile(self, player_name: str, position: str) -> dict:
         """Look up college profile from the shared college_target_share cache."""
-        college_df = _get_cached_data("college_target_share")
+        college_df = self._college_cache.get("college_target_share")
         if college_df is None or college_df.empty:
             return {}
         last = player_name.split()[-1].lower() if player_name else ""
@@ -768,13 +738,13 @@ class RosterChangesAgent(BaseAgent):
         profile_grade = nfl_comp_builder.grade_college_profile_by_pick(pick_num)
 
         # Historical comps from nfl_comp_builder (nfl_data_py only — no R needed)
-        nfl_comp_table = _get_cached_data("nfl_comp_table")
+        nfl_comp_table = self._college_cache.get("nfl_comp_table")
         comps = nfl_comp_builder.find_comps(
             nfl_comp_table, position, pick_num, n=5,
         ) if nfl_comp_table is not None else []
 
         # Tier-based average PPG (reliable aggregate even when individual comps are sparse)
-        tier_avgs = _get_cached_data("nfl_comp_tier_averages") or {}
+        tier_avgs = self._college_cache.get("nfl_comp_tier_averages") or {}
         tier_key = (position, profile_grade)
         tier_avg = tier_avgs.get(tier_key, {})
 
@@ -907,24 +877,19 @@ class RosterChangesAgent(BaseAgent):
         departs. Same pattern as _generate_rookie_displacement_flags — pure
         Python, no API call.
 
-        Detection: compares previous season's roster (nfl_data_py) against
+        Detection: compares previous season's roster (warehouse prev_rosters) against
         current roster. Only flags departures of players with meaningful
-        production (>=50 targets for WR/TE, >=80 carries for RB).
+        production (>=80 targets for WR/TE, >=150 carries for RB).
         """
-        from backend.integrations.nfl_data import fetch_rosters, compute_target_share
-        from backend.utils.seasons import get_current_season
-
         team = team_abbr.upper()
         skill_pos = {"WR", "RB", "TE"}
         current_names = {p["name"] for p in roster if p.get("position") in skill_pos}
 
         prev_season = get_current_season() - 1
 
-        # Load previous roster
-        try:
-            prev_rosters = fetch_rosters(prev_season)
-        except Exception as exc:
-            logger.warning("Could not load %d rosters for departure detection: %s", prev_season, exc)
+        # Load previous roster from warehouse
+        prev_rosters = self._warehouse.prev_rosters
+        if prev_rosters is None or (isinstance(prev_rosters, pd.DataFrame) and prev_rosters.empty):
             return []
 
         team_col = next((c for c in ("team", "team_abbr") if c in prev_rosters.columns), None)
@@ -932,11 +897,8 @@ class RosterChangesAgent(BaseAgent):
         if not team_col or not name_col:
             return []
 
-        # Load target share for production filter — keyed by player_id
-        try:
-            ts_df = compute_target_share(prev_season)
-        except Exception:
-            ts_df = None
+        # Load target share for production filter from warehouse
+        ts_df = self._warehouse.get_target_share(prev_season)
 
         # Build production lookup: player_id -> (targets, carries)
         prod_by_id: dict[str, tuple[int, int]] = {}
@@ -1040,13 +1002,11 @@ class RosterChangesAgent(BaseAgent):
         Generate DISPLACED + CONTINGENT flags for incumbents when a significant
         player arrives on the team. Mirror of _handle_departures().
 
-        Detection: compares current roster against previous season's roster for
-        this team. Players currently on the roster who were NOT on this team
-        last season are arrivals. Only flags arrivals with meaningful prior
-        production (>=80 targets for WR/TE, >=150 carries for RB).
+        Detection: compares current roster against previous season's roster
+        (warehouse prev_rosters) for this team. Players currently on the roster
+        who were NOT on this team last season are arrivals. Only flags arrivals
+        with meaningful prior production (>=80 targets for WR/TE, >=150 carries for RB).
         """
-        from backend.integrations.nfl_data import fetch_rosters, compute_target_share
-
         team = team_abbr.upper()
         skill_pos = {"WR", "RB", "TE"}
 
@@ -1056,14 +1016,9 @@ class RosterChangesAgent(BaseAgent):
 
         prev_season = get_current_season() - 1
 
-        # Load previous roster to identify who was on this team last year
-        try:
-            prev_rosters = fetch_rosters(prev_season)
-        except Exception as exc:
-            logger.warning(
-                "Could not load %d rosters for arrival detection: %s",
-                prev_season, exc,
-            )
+        # Load previous roster from warehouse
+        prev_rosters = self._warehouse.prev_rosters
+        if prev_rosters is None or (isinstance(prev_rosters, pd.DataFrame) and prev_rosters.empty):
             return []
 
         team_col = next(
@@ -1084,11 +1039,8 @@ class RosterChangesAgent(BaseAgent):
         if not arrival_names:
             return []
 
-        # Load target share for production filter (ALL teams — arrival was elsewhere)
-        try:
-            ts_df = compute_target_share(prev_season)
-        except Exception:
-            ts_df = None
+        # Load target share for production filter from warehouse (ALL teams — arrival was elsewhere)
+        ts_df = self._warehouse.get_target_share(prev_season)
 
         # Build production lookup by player_id
         prod_by_id: dict[str, tuple[int, int]] = {}
@@ -1211,6 +1163,9 @@ class RosterChangesAgent(BaseAgent):
 
     async def run_for_team(self, team_abbr: str) -> list[dict]:
         """Run for one team. One Sonnet call. Returns list of flag dicts."""
+        if self._warehouse is None:
+            from backend.integrations.nfl_data import NflDataWarehouse
+            self._warehouse = NflDataWarehouse.build()
         logger.info("Building context for %s", team_abbr)
 
         try:
@@ -1241,7 +1196,7 @@ class RosterChangesAgent(BaseAgent):
                     f["player_team"] = team_abbr.upper()
 
             # Draft pick prospect evaluation — Python-computed, no extra API call
-            comp_table = _get_cached_data("historical_comp_table")
+            comp_table = self._college_cache.get("historical_comp_table")
             draft_picks = context.get("draft_picks", [])
             for pick in draft_picks:
                 try:
@@ -1310,38 +1265,29 @@ class RosterChangesAgent(BaseAgent):
     # Full pipeline — pre-warm caches once, then run all 32 teams
     # ------------------------------------------------------------------
 
-    async def run_all_teams(self, concurrency: int = 2) -> dict[str, int]:
+    async def run_all_teams(self, warehouse=None, concurrency: int = 2) -> dict[str, int]:
         """
-        Pre-loads shared data caches ONCE before concurrent team runs.
+        Run all 32 teams. NFL data from warehouse, college/comp data loaded here.
         Returns {team_abbr: flag_count}.
         """
         from backend.agents.team_systems import NFL_TEAMS
 
-        analysis_seasons = get_analysis_seasons(3)
-        current_season   = get_current_season()
-        analysis_year    = get_analysis_year()
+        if warehouse is not None:
+            self._warehouse = warehouse
+
+        current_season = get_current_season()
+        analysis_year  = get_analysis_year()
 
         # Pre-load OTC transactions once for all teams
         logger.info("Pre-loading OTC transactions for %d...", analysis_year)
         await overthecap.preload_transactions([analysis_year])
-
-        logger.info("Pre-loading NFL data caches for seasons %s...", analysis_seasons)
-        for season in analysis_seasons:
-            try:
-                ts = nfl_data.compute_target_share(season)
-                _set_cached_data(f"target_share_{season}", ts)
-                weekly = nfl_data.fetch_weekly_stats(season)
-                _set_cached_data(f"weekly_stats_{season}", weekly)
-                logger.info("Cached season %d data", season)
-            except Exception as exc:
-                logger.warning("Could not pre-load season %d: %s", season, exc)
 
         # Pre-load college data for draft pick evaluation (optional — may fail without R)
         try:
             college_seasons = list(range(current_season - 6, current_season))
             logger.info("Pre-loading college target share for seasons %s...", college_seasons)
             college_df = cfb_data.get_college_target_share(college_seasons)
-            _set_cached_data("college_target_share", college_df)
+            self._college_cache["college_target_share"] = college_df
         except Exception as exc:
             logger.warning("Could not pre-load college data (R not installed — using draft capital only): %s", exc)
 
@@ -1349,9 +1295,9 @@ class RosterChangesAgent(BaseAgent):
         try:
             logger.info("Building NFL comp table from historical draft data...")
             nfl_comp_table = nfl_comp_builder.build_comp_table()
-            _set_cached_data("nfl_comp_table", nfl_comp_table)
+            self._college_cache["nfl_comp_table"] = nfl_comp_table
             tier_avgs = nfl_comp_builder.get_tier_averages(nfl_comp_table)
-            _set_cached_data("nfl_comp_tier_averages", tier_avgs)
+            self._college_cache["nfl_comp_tier_averages"] = tier_avgs
             logger.info("NFL comp table: %d records, %d tier averages", len(nfl_comp_table), len(tier_avgs))
         except Exception as exc:
             logger.warning("Could not build NFL comp table: %s", exc)
@@ -1359,18 +1305,10 @@ class RosterChangesAgent(BaseAgent):
         # Legacy cfb_data comp table (kept for backwards compat if R is installed)
         try:
             comp_table = cfb_data.build_historical_comp_table()
-            _set_cached_data("historical_comp_table", comp_table)
+            self._college_cache["historical_comp_table"] = comp_table
             logger.info("Historical comp table (cfb): %d records", len(comp_table))
         except Exception as exc:
             logger.debug("cfb comp table not available (expected without R): %s", exc)
-
-        # Also cache current season for backfield (may overlap with analysis_seasons)
-        if f"target_share_{current_season}" not in _DATA_CACHE:
-            try:
-                ts = nfl_data.compute_target_share(current_season)
-                _set_cached_data(f"target_share_{current_season}", ts)
-            except Exception as exc:
-                logger.warning("Could not pre-load current season target share: %s", exc)
 
         logger.info(
             "Starting Roster Changes pipeline (concurrency=%d)", concurrency
@@ -1585,10 +1523,12 @@ async def _write_flags(flags: list[dict]) -> int:
 _agent_instance: RosterChangesAgent | None = None
 
 
-def _get_agent(dry_run: bool = False) -> RosterChangesAgent:
+def _get_agent(dry_run: bool = False, warehouse=None) -> RosterChangesAgent:
     global _agent_instance
     if _agent_instance is None or _agent_instance.dry_run != dry_run:
-        _agent_instance = RosterChangesAgent(dry_run=dry_run)
+        _agent_instance = RosterChangesAgent(dry_run=dry_run, warehouse=warehouse)
+    elif warehouse is not None:
+        _agent_instance._warehouse = warehouse
     return _agent_instance
 
 
@@ -1596,5 +1536,9 @@ async def run_for_team(team_abbr: str, dry_run: bool = False) -> list[dict]:
     return await _get_agent(dry_run).run_for_team(team_abbr)
 
 
-async def run_all_teams(concurrency: int = 4, dry_run: bool = False) -> dict[str, int]:
-    return await _get_agent(dry_run).run_all_teams(concurrency)
+async def run_all_teams(
+    concurrency: int = 4, dry_run: bool = False, warehouse=None,
+) -> dict[str, int]:
+    return await _get_agent(dry_run, warehouse=warehouse).run_all_teams(
+        warehouse=warehouse, concurrency=concurrency,
+    )

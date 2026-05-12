@@ -23,7 +23,6 @@ import json
 import logging
 from datetime import date
 from decimal import Decimal
-from typing import ClassVar
 
 import pandas as pd
 from sqlalchemy import select, or_
@@ -32,7 +31,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from backend.agents.base_agent import BaseAgent, parse_json_output, HAIKU
 from backend.agents.team_systems import NFL_TEAMS
 from backend.database import AsyncSessionLocal
-from backend.integrations import nfl_data
 from backend.models.player import Player, PlayerSchedule
 from backend.utils.seasons import get_current_season, get_analysis_seasons, get_analysis_year
 
@@ -212,16 +210,13 @@ class ScheduleAgent(BaseAgent):
     AGENT_MODEL      = HAIKU
     AGENT_MAX_TOKENS = 1500
 
-    # Pattern 3: pre-warm once in run_all_teams(), reuse per team
-    _data_cache: ClassVar[dict] = {}
-
     # ------------------------------------------------------------------
-    # Sync data helpers — read from _data_cache (no network calls)
+    # Sync data helpers — read from warehouse (no network calls)
     # ------------------------------------------------------------------
 
     def _get_team_roster(self, team: str, season: int) -> list[dict]:
-        """Return skill-position players for this team from cached roster data."""
-        rosters = self._data_cache.get(f"rosters_{season}")
+        """Return skill-position players for this team from warehouse roster data."""
+        rosters = self._warehouse.rosters
         if rosters is None:
             return []
 
@@ -259,8 +254,8 @@ class ScheduleAgent(BaseAgent):
           - def_vs_wr / def_vs_rb / def_vs_te grades (from pre-computed def_grades)
         Returns list sorted by week, excluding the bye week.
         """
-        sched_df   = self._data_cache.get("schedule_df")
-        def_grades = self._data_cache.get("def_grades", pd.DataFrame())
+        sched_df   = self._warehouse.schedule
+        def_grades = self._warehouse.get_most_recent_def_grades()
 
         if sched_df is None or sched_df.empty:
             return []
@@ -300,7 +295,7 @@ class ScheduleAgent(BaseAgent):
 
     def _get_bye_week(self, team: str) -> int | None:
         """Compute the bye week by finding the missing week in the team's schedule."""
-        sched_df = self._data_cache.get("schedule_df")
+        sched_df = self._warehouse.schedule
         if sched_df is None or sched_df.empty:
             return None
 
@@ -314,71 +309,6 @@ class ScheduleAgent(BaseAgent):
         return int(min(byes)) if byes else None
 
     # ------------------------------------------------------------------
-    # On-demand cache loader — used by single-team runs
-    # ------------------------------------------------------------------
-
-    def _ensure_cache_loaded(self, current_season: int, analysis_year: int) -> None:
-        """Load data caches on demand for single-team runs."""
-        if "schedule_df" not in self._data_cache:
-            self._load_schedule(analysis_year, current_season)
-
-        if "def_grades" not in self._data_cache:
-            self._load_def_grades(current_season)
-
-        if f"rosters_{current_season}" not in self._data_cache:
-            try:
-                self._data_cache[f"rosters_{current_season}"] = nfl_data.fetch_rosters(current_season)
-                logger.info("Loaded rosters %d on demand", current_season)
-            except Exception as exc:
-                logger.warning("Could not load rosters %d: %s", current_season, exc)
-
-    def _load_schedule(self, analysis_year: int, current_season: int) -> None:
-        """Load schedule for analysis_year; fall back through recent seasons."""
-        # Try analysis_year first, then current, then last completed season
-        candidates = list(dict.fromkeys([analysis_year, current_season, current_season - 1]))
-        for yr in candidates:
-            try:
-                df = nfl_data.fetch_schedules(yr)
-                reg = df[df["game_type"] == "REG"] if "game_type" in df.columns else df
-                if not reg.empty:
-                    self._data_cache["schedule_df"] = reg.copy()
-                    self._data_cache["schedule_year"] = yr
-                    if yr != analysis_year:
-                        logger.warning(
-                            "%d schedule unavailable — using %d as proxy", analysis_year, yr
-                        )
-                    else:
-                        logger.info("Loaded %d schedule", yr)
-                    return
-            except Exception as exc:
-                logger.warning("Could not load schedule %d: %s", yr, exc)
-
-        logger.error("No schedule data available for %s", candidates)
-        self._data_cache["schedule_df"] = pd.DataFrame()
-
-    def _load_def_grades(self, current_season: int) -> None:
-        """Compute defensive grades from the most recently completed season's weekly data.
-        Falls back through recent seasons until weekly data is found."""
-        for yr in (current_season, current_season - 1, current_season - 2):
-            try:
-                weekly = nfl_data.fetch_weekly_stats(yr)
-                grades = compute_def_grades(weekly)
-                if not grades.empty:
-                    self._data_cache["def_grades"] = grades
-                    if yr != current_season:
-                        logger.warning(
-                            "%d weekly data unavailable — using %d for defensive grades", current_season, yr
-                        )
-                    else:
-                        logger.info("Computed defensive grades from %d weekly data", yr)
-                    return
-            except Exception as exc:
-                logger.warning("Could not compute defensive grades from %d: %s", yr, exc)
-
-        logger.error("No weekly data available for %d through %d", current_season, current_season - 2)
-        self._data_cache["def_grades"] = pd.DataFrame()
-
-    # ------------------------------------------------------------------
     # Context builder — all Python, zero API calls
     # ------------------------------------------------------------------
 
@@ -387,12 +317,10 @@ class ScheduleAgent(BaseAgent):
         current_season = get_current_season()
         analysis_year  = get_analysis_year()
 
-        self._ensure_cache_loaded(current_season, analysis_year)
-
         roster         = self._get_team_roster(team, current_season)
         schedule_weeks = self._get_team_schedule_weeks(team)
         bye_week       = self._get_bye_week(team)
-        schedule_year  = self._data_cache.get("schedule_year", current_season)
+        schedule_year  = self._warehouse.schedule_year
 
         # Retrieve team system context (coordinator scheme for adjustment context)
         team_system = await self._get_team_system(team)
@@ -437,6 +365,10 @@ class ScheduleAgent(BaseAgent):
 
     async def run_for_team(self, team_abbr: str) -> int:
         """Run for one team. Returns number of schedule records written."""
+        if self._warehouse is None:
+            from backend.integrations.nfl_data import NflDataWarehouse
+            self._warehouse = NflDataWarehouse.build()
+
         team = team_abbr.upper()
         logger.info("Building schedule context for %s", team)
 
@@ -479,24 +411,18 @@ class ScheduleAgent(BaseAgent):
     # Full pipeline — pre-warm caches once, then run all 32 teams
     # ------------------------------------------------------------------
 
-    async def run_all_teams(self, concurrency: int = 4) -> dict[str, int]:
+    async def run_all_teams(
+        self, warehouse=None, concurrency: int = 4
+    ) -> dict[str, int]:
         """
-        Pre-loads all shared data caches ONCE before running teams concurrently.
+        Reads all data from the warehouse — no independent data fetching.
         Returns {team_abbr: records_written}.
         """
-        current_season = get_current_season()
-        analysis_year  = get_analysis_year()
-
-        logger.info("Pre-loading Schedule Agent data...")
-        self._load_schedule(analysis_year, current_season)
-        self._load_def_grades(current_season)
-
-        if f"rosters_{current_season}" not in self._data_cache:
-            try:
-                self._data_cache[f"rosters_{current_season}"] = nfl_data.fetch_rosters(current_season)
-                logger.info("Cached rosters %d", current_season)
-            except Exception as exc:
-                logger.warning("Could not pre-load rosters %d: %s", current_season, exc)
+        if warehouse is not None:
+            self._warehouse = warehouse
+        if self._warehouse is None:
+            from backend.integrations.nfl_data import NflDataWarehouse
+            self._warehouse = NflDataWarehouse.build()
 
         semaphore = asyncio.Semaphore(concurrency)
         results: dict[str, int] = {}
@@ -664,5 +590,7 @@ async def run_for_team(team_abbr: str, dry_run: bool = False) -> int:
     return await _get_agent(dry_run).run_for_team(team_abbr)
 
 
-async def run_all_teams(concurrency: int = 4, dry_run: bool = False) -> dict[str, int]:
-    return await _get_agent(dry_run).run_all_teams(concurrency)
+async def run_all_teams(
+    concurrency: int = 4, dry_run: bool = False, warehouse=None
+) -> dict[str, int]:
+    return await _get_agent(dry_run).run_all_teams(warehouse=warehouse, concurrency=concurrency)

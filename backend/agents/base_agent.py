@@ -92,11 +92,12 @@ class BaseAgent:
     AGENT_MODEL: str       # required — no default
     AGENT_MAX_TOKENS: int  # required — no default
 
-    def __init__(self, dry_run: bool = False):
+    def __init__(self, dry_run: bool = False, warehouse=None):
         for attr in ("AGENT_NAME", "AGENT_MODEL", "AGENT_MAX_TOKENS"):
             if not getattr(type(self), attr, None):
                 raise ValueError(f"{type(self).__name__} must declare {attr}")
         self.dry_run = dry_run
+        self._warehouse = warehouse
         self._client = get_client()
 
     # ------------------------------------------------------------------
