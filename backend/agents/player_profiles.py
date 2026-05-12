@@ -1006,6 +1006,12 @@ class PlayerProfilesAgent(BaseAgent):
 
             nfl_pid = info.get("nfl_player_id")
             pos = info["position"]
+
+            # Look up depth chart rank for this player
+            depth_rank = None
+            if nfl_pid and self._warehouse:
+                depth_rank = self._warehouse.get_player_depth_rank(nfl_pid)
+
             seasons_data: list[dict] = []
 
             if pos == "QB":
@@ -1071,6 +1077,7 @@ class PlayerProfilesAgent(BaseAgent):
                     "name":           pname,
                     "position":       pos,
                     "nfl_player_id":  nfl_pid,
+                    "depth_chart_rank": depth_rank,
                 })
                 continue
 
@@ -1091,6 +1098,7 @@ class PlayerProfilesAgent(BaseAgent):
                 "seasons":          seasons_data,
                 "dependency_flags": dep_flags.get(pname, []),
                 "nfl_player_id":    nfl_pid,  # pass through for DB ID resolution
+                "depth_chart_rank": depth_rank,  # 1=starter, 2=backup, None=unknown
                 # Upstream agent context (for needs_sonnet_reasoning + AI projection)
                 "injury_profile":   injury_profiles.get(pname, {}),
                 "schedule":         schedules.get(pname, {}),
