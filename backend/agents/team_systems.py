@@ -27,6 +27,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.agents.base_agent import BaseAgent, parse_json_output, HAIKU
 from backend.database import AsyncSessionLocal
+from backend.integrations.nfl_data import normalize_player_name
 from backend.models.team_system import TeamSystem
 from backend.utils.seasons import get_current_season, get_analysis_seasons
 
@@ -180,8 +181,6 @@ class TeamSystemsAgent(BaseAgent):
         2. QB stats from warehouse → pull that QB's stats
         3. Fallback: most passing yards on this team
         """
-        from backend.integrations.nfl_data import normalize_player_name
-
         current_season = get_current_season()
 
         # --- Source 0: Depth chart QB1 (most authoritative) ---
@@ -381,9 +380,23 @@ class TeamSystemsAgent(BaseAgent):
             # Enforce team_abbr from our canonical list
             data["team_abbr"] = team
 
+            # Enforce QB name from data, not model hallucination.
+            # The model may output a QB who is no longer on this team.
+            qb_data = context.get("qb_metrics", {})
+            data_qb = qb_data.get("starter_name")
+            model_qb = data.get("qb_name")
+            if data_qb and model_qb:
+                data_norm = normalize_player_name(data_qb)
+                model_norm = normalize_player_name(model_qb)
+                if data_norm != model_norm:
+                    logger.warning(
+                        "%s: model output qb_name=%r but data says %r — overriding",
+                        team, model_qb, data_qb,
+                    )
+                    data["qb_name"] = data_qb
+
             # Attach Python-computed numerics (NOT from model output)
             oline_data = context.get("oline", {})
-            qb_data = context.get("qb_metrics", {})
             data["_sack_rate"] = oline_data.get("sack_rate")
             data["_avg_time_to_throw"] = oline_data.get("avg_time_to_throw")
             data["_qb_mobility"] = _derive_qb_mobility(qb_data)
