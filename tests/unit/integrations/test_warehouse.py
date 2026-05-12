@@ -174,6 +174,7 @@ def test_warehouse_summary():
     wh.ngs_receiving = {}
     wh.ngs_rushing = {}
     wh.snap_pct = {}
+    wh.depth_charts = {}
     wh.rosters = pd.DataFrame({"a": [1, 2]})
     wh.seasonal_rosters = pd.DataFrame()
     wh.prev_rosters = pd.DataFrame()

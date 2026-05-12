@@ -1317,11 +1317,13 @@ class NflDataWarehouse:
                     "qb_stats": len(self.qb_stats.get(season, [])),
                     "oline_stats": len(self.oline_stats.get(season, [])),
                     "injuries": len(self.injuries.get(season, [])),
+                    "depth_charts": len(self.depth_charts.get(season, [])),
                 }
                 for season in self.analysis_seasons
             },
             "rosters": len(self.rosters),
             "schedule_year": self.schedule_year,
+            "depth_charts_loaded": len(self.depth_charts),
         }
 
 
