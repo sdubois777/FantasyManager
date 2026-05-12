@@ -91,32 +91,32 @@ def test_analysis_seasons_returns_correct_lookback():
         assert len(seasons) == 3
 
 
-def test_analysis_seasons_excludes_current_season():
+def test_analysis_seasons_includes_current_season():
     """
-    The current season should NOT be in the analysis window
-    (incomplete data for the current season).
+    The current (most recently completed) season MUST be in the analysis window.
+    In May 2026, current=2025 (completed season) — must be included.
     """
     with patch("backend.utils.seasons.date") as mock_date:
         mock_date.today.return_value = date(2026, 4, 30)
         current = get_current_season()
         seasons = get_analysis_seasons(3)
-        assert current not in seasons
+        assert current in seasons
 
 
 def test_analysis_seasons_correct_values_before_june():
-    """In March 2026, current=2025, analysis_seasons(3) = [2022, 2023, 2024]."""
+    """In March 2026, current=2025, analysis_seasons(3) = [2023, 2024, 2025]."""
     with patch("backend.utils.seasons.date") as mock_date:
         mock_date.today.return_value = date(2026, 3, 15)
         seasons = get_analysis_seasons(3)
-        assert seasons == [2022, 2023, 2024]
+        assert seasons == [2023, 2024, 2025]
 
 
 def test_analysis_seasons_correct_values_after_june():
-    """In July 2026, current=2026, analysis_seasons(3) = [2023, 2024, 2025]."""
+    """In July 2026, current=2026, analysis_seasons(3) = [2024, 2025, 2026]."""
     with patch("backend.utils.seasons.date") as mock_date:
         mock_date.today.return_value = date(2026, 7, 1)
         seasons = get_analysis_seasons(3)
-        assert seasons == [2023, 2024, 2025]
+        assert seasons == [2024, 2025, 2026]
 
 
 def test_analysis_seasons_five_season_lookback():
@@ -126,6 +126,33 @@ def test_analysis_seasons_five_season_lookback():
         seasons = get_analysis_seasons(5)
         assert len(seasons) == 5
         assert seasons == sorted(seasons)  # must be ascending
+        assert seasons == [2021, 2022, 2023, 2024, 2025]
+
+
+def test_analysis_seasons_includes_current_in_may():
+    """In May 2026, current=2025, analysis should include 2025."""
+    with patch("backend.utils.seasons.date") as mock_date:
+        mock_date.today.return_value = date(2026, 5, 15)
+        seasons = get_analysis_seasons(3)
+        assert get_current_season() in seasons
+        assert len(seasons) == 3
+        assert seasons == sorted(seasons)  # ascending order
+
+
+def test_analysis_seasons_most_recent_is_current():
+    """Most recent season in window = current season."""
+    with patch("backend.utils.seasons.date") as mock_date:
+        mock_date.today.return_value = date(2026, 5, 15)
+        seasons = get_analysis_seasons(3)
+        assert max(seasons) == get_current_season()
+
+
+def test_analysis_seasons_correct_count():
+    """Lookback count is exact."""
+    with patch("backend.utils.seasons.date") as mock_date:
+        mock_date.today.return_value = date(2026, 5, 15)
+        assert len(get_analysis_seasons(3)) == 3
+        assert len(get_analysis_seasons(5)) == 5
 
 
 # ---------------------------------------------------------------------------

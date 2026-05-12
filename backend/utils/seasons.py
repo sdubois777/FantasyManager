@@ -60,21 +60,24 @@ def get_analysis_year() -> int:
 
 def get_analysis_seasons(lookback: int = 3) -> list[int]:
     """
-    Returns the last N completed seasons for historical data analysis.
-    Never includes the current/upcoming season (incomplete data).
+    Returns the last N seasons including the current (most recently completed)
+    season for historical data analysis.
 
     Args:
         lookback: Number of seasons to include. Default 3.
 
-    Examples (called in July 2026, current season = 2026):
+    Examples (called in May 2026, current season = 2025):
         get_analysis_seasons(3) → [2023, 2024, 2025]
         get_analysis_seasons(5) → [2021, 2022, 2023, 2024, 2025]
 
-    Examples (called in March 2026, current season = 2025):
-        get_analysis_seasons(3) → [2022, 2023, 2024]
+    Examples (called in August 2026, current season = 2026):
+        get_analysis_seasons(3) → [2024, 2025, 2026]
+        # Note: 2026 will be incomplete mid-season —
+        # agents handle this via get_seasonal_stats()
+        # PBP fallback for incomplete seasons
     """
     current = get_current_season()
-    return list(range(current - lookback, current))
+    return list(range(current - lookback + 1, current + 1))
 
 
 def get_previous_season() -> int:

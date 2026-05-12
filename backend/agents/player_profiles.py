@@ -1780,6 +1780,62 @@ def _compute_season_averages(
 _MINIMUM_TOUCHES_FOR_PROJECTION = 50  # career receptions + carries across all seasons
 _MINIMUM_QB_GAMES = 10  # minimum career games for QB projection
 
+# Recency weights: most recent season weighted most heavily
+_RECENCY_WEIGHTS = {0: 0.50, 1: 0.30, 2: 0.20}
+# 0 = most recent, 1 = one year ago, 2 = two years ago
+# Older than 2 years back gets 10% each
+
+
+def _compute_weighted_baseline(
+    season_stats: dict[int, float],
+    injury_shortened: set[int],
+) -> float:
+    """
+    Compute PPR baseline weighted toward recent seasons.
+    Excludes injury-shortened seasons (< 10 games).
+
+    Args:
+        season_stats: {season_year: ppr_total}
+        injury_shortened: set of seasons with < 10 games
+
+    Returns:
+        weighted average PPR
+    """
+    # Filter out injury-shortened seasons
+    clean_seasons = {
+        yr: ppr for yr, ppr in season_stats.items()
+        if yr not in injury_shortened
+    }
+
+    if not clean_seasons:
+        # All seasons injury-shortened — use best available
+        clean_seasons = season_stats
+
+    if not clean_seasons:
+        return 0.0
+
+    # Sort by year descending (most recent first)
+    sorted_seasons = sorted(
+        clean_seasons.items(),
+        key=lambda x: x[0],
+        reverse=True,
+    )
+
+    # Assign weights
+    total_weight = 0.0
+    weighted_sum = 0.0
+
+    for i, (year, ppr) in enumerate(sorted_seasons):
+        weight = _RECENCY_WEIGHTS.get(i, 0.10)
+        weighted_sum += ppr * weight
+        total_weight += weight
+
+    if total_weight == 0:
+        return 0.0
+
+    # Normalize in case not all 3 seasons available
+    return weighted_sum / total_weight
+
 
 def _compute_qb_baseline(seasons: list[dict]) -> dict:
     """
@@ -1822,7 +1878,21 @@ def _compute_qb_baseline(seasons: list[dict]) -> dict:
         career_ppg = sum(season_ppgs) / len(season_ppgs)
         avg_ppg = recent_ppg * 0.6 + career_ppg * 0.4
     else:
-        avg_ppg = sum(season_ppgs) / len(season_ppgs)
+        # Recency-weighted average: most recent season counts most
+        # Use _compute_weighted_baseline on season PPR totals, then convert to PPG
+        injury_shortened = {
+            s.get("year") for s in seasons if 0 < s.get("games", 0) < 10
+        }
+        season_ppr_totals = {}
+        for s in sorted_clean:
+            yr = s.get("year", 0)
+            ppg = _season_ppg(s)
+            games = s.get("games", 1)
+            season_ppr_totals[yr] = ppg * games if games > 0 else 0.0
+        weighted_total = _compute_weighted_baseline(season_ppr_totals, injury_shortened)
+        # Convert back to PPG using average games from clean seasons
+        avg_games = sum(s.get("games", 1) for s in sorted_clean) / len(sorted_clean)
+        avg_ppg = weighted_total / avg_games if avg_games > 0 else 0.0
 
     ppr_points = round(avg_ppg * 17, 1)  # 17-game projection
 
@@ -1853,10 +1923,14 @@ def _compute_qb_baseline(seasons: list[dict]) -> dict:
 
 def _compute_clean_baseline(seasons: list[dict]) -> dict:
     """
-    Compute clean_season_baseline as an average across clean seasons.
+    Compute clean_season_baseline with recency weighting across clean seasons.
 
     Clean season = games >= 10 AND NOT backup_qb_season.
     Falls back to all seasons with games > 0 if no clean seasons exist.
+
+    Recency weighting (most recent first): 50%, 30%, 20%.
+    Older seasons get 10% each. Weights are normalized if fewer
+    seasons are available.
 
     Minimum usage threshold: player must have at least 50 career touches
     (receptions + carries) to receive a projection. This prevents low-usage
@@ -1864,9 +1938,9 @@ def _compute_clean_baseline(seasons: list[dict]) -> dict:
     inflated baselines.
 
     Career decline detection: if the most recent season's PPR is below 65%
-    of the career peak, weight recent season at 60% and career average at 40%
-    instead of flat averaging. This prevents aging/injured players (e.g. Chubb)
-    from projecting at their peak.
+    of the career peak, weight recent season at 60% and career average at 40%.
+    This prevents aging/injured players (e.g. Chubb) from projecting at
+    their peak. Takes priority over recency weighting when triggered.
 
     PPR formula (LEAGUE_RULES.md Rule #7):
         ppr_points = receptions × 1 + (rec_yards + rush_yards) × 0.1 + (rec_tds + rush_tds) × 6
@@ -1919,12 +1993,25 @@ def _compute_clean_baseline(seasons: list[dict]) -> dict:
         rush_yards = recent.get("rush_yards", 0) * 0.6 + career_rush_yards * 0.4
         rush_tds = recent.get("rush_tds", 0) * 0.6 + career_rush_tds * 0.4
     else:
-        n = len(clean)
-        rec = sum(s.get("receptions", 0) for s in clean) / n
-        rec_yards = sum(s.get("rec_yards", 0) for s in clean) / n
-        rec_tds = sum(s.get("rec_tds", 0) for s in clean) / n
-        rush_yards = sum(s.get("rush_yards", 0) for s in clean) / n
-        rush_tds = sum(s.get("rush_tds", 0) for s in clean) / n
+        # Recency-weighted average: most recent season counts most
+        # Sort descending by year (most recent first) for weight assignment
+        desc_clean = sorted(sorted_clean, key=lambda s: s.get("year", 0), reverse=True)
+        total_weight = 0.0
+        rec = rec_yards = rec_tds = rush_yards = rush_tds = 0.0
+        for i, s in enumerate(desc_clean):
+            w = _RECENCY_WEIGHTS.get(i, 0.10)
+            rec += s.get("receptions", 0) * w
+            rec_yards += s.get("rec_yards", 0) * w
+            rec_tds += s.get("rec_tds", 0) * w
+            rush_yards += s.get("rush_yards", 0) * w
+            rush_tds += s.get("rush_tds", 0) * w
+            total_weight += w
+        if total_weight > 0:
+            rec /= total_weight
+            rec_yards /= total_weight
+            rec_tds /= total_weight
+            rush_yards /= total_weight
+            rush_tds /= total_weight
 
     yards = rec_yards + rush_yards
     tds   = rec_tds + rush_tds

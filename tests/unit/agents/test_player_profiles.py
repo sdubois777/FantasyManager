@@ -24,6 +24,7 @@ from backend.agents.player_profiles import (
     _build_rookie_profile,
     _compute_clean_baseline,
     _compute_season_averages,
+    _compute_weighted_baseline,
     _estimate_year1_role,
     _to_decimal,
     _write_profiles,
@@ -2492,3 +2493,32 @@ def test_sonnet_prompt_contains_rb_role_definitions():
     assert "committee_back" in SONNET_SYSTEM_PROMPT
     assert "workhorse" in SONNET_SYSTEM_PROMPT
     assert "DO NOT use just because a backup exists" in SONNET_SYSTEM_PROMPT
+
+
+# ---------------------------------------------------------------------------
+# Weighted baseline tests
+# ---------------------------------------------------------------------------
+
+def test_weighted_baseline_excludes_injury_season():
+    """Injury-shortened seasons excluded from baseline."""
+    stats = {2023: 391.3, 2024: 34.8, 2025: 414.6}
+    injured = {2024}
+    baseline = _compute_weighted_baseline(stats, injured)
+    # Should be ~405, not 279
+    assert baseline > 380
+
+
+def test_weighted_baseline_weights_recent_more():
+    """Recent season contributes more than older seasons."""
+    stats = {2023: 100.0, 2024: 200.0, 2025: 300.0}
+    baseline = _compute_weighted_baseline(stats, set())
+    # Weighted toward 300 (2025) not simple avg 200
+    # 300*0.5 + 200*0.3 + 100*0.2 = 150+60+20 = 230
+    assert baseline > 220
+
+
+def test_weighted_baseline_handles_missing_seasons():
+    """Works when player only has 1-2 seasons of data."""
+    stats = {2025: 250.0}
+    baseline = _compute_weighted_baseline(stats, set())
+    assert baseline == 250.0
