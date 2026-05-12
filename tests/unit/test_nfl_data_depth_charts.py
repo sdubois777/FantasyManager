@@ -10,7 +10,7 @@ Tests for depth chart integration in NflDataWarehouse:
 import pandas as pd
 import pytest
 
-from backend.integrations.nfl_data import NflDataWarehouse
+from backend.integrations.nfl_data import NflDataWarehouse, _filter_depth_charts_by_roster
 
 
 # ---------------------------------------------------------------------------
@@ -198,3 +198,77 @@ class TestGsisIdPopulation:
         """Players without nfl_ prefix should not produce gsis_id."""
         yahoo_id = "12345"
         assert not yahoo_id.startswith("nfl_")
+
+
+# ---------------------------------------------------------------------------
+# Roster cross-reference filter
+# ---------------------------------------------------------------------------
+
+
+def _make_roster_df():
+    """Minimal roster DataFrame with player_id (gsis_id) and team."""
+    return pd.DataFrame([
+        {"player_id": "00-0034857", "team": "BUF", "week": 17},
+        {"player_id": "00-0033567", "team": "BUF", "week": 17},
+        {"player_id": "00-0039100", "team": "BUF", "week": 17},
+        {"player_id": "00-0033290", "team": "BUF", "week": 17},
+        {"player_id": "00-0033880", "team": "BUF", "week": 17},
+        {"player_id": "00-0036355", "team": "KC", "week": 17},
+        {"player_id": "00-0037197", "team": "KC", "week": 17},  # Pacheco on KC
+    ])
+
+
+class TestRosterCrossReferenceFilter:
+    def test_stale_entries_removed(self):
+        """Player on wrong team in depth chart is removed."""
+        dc = _make_depth_chart_df()
+        # Add Pacheco as DET RB2 (stale — roster says KC)
+        stale_row = pd.DataFrame([{
+            "team": "DET", "position": "RB", "full_name": "Isiah Pacheco",
+            "gsis_id": "00-0037197", "depth_rank": 2,
+        }])
+        dc = pd.concat([dc, stale_row], ignore_index=True)
+        rosters = _make_roster_df()
+
+        filtered = _filter_depth_charts_by_roster(dc, rosters)
+        # Pacheco should be removed from DET
+        det_rbs = filtered[(filtered["team"] == "DET") & (filtered["position"] == "RB")]
+        assert "00-0037197" not in det_rbs["gsis_id"].values
+        assert len(filtered) == len(dc) - 1
+
+    def test_new_signings_kept(self):
+        """Player not in roster data (new signing) is kept."""
+        dc = _make_depth_chart_df()
+        # Add a new signing not in rosters
+        new_row = pd.DataFrame([{
+            "team": "BUF", "position": "RB", "full_name": "New Signing",
+            "gsis_id": "00-9999999", "depth_rank": 3,
+        }])
+        dc = pd.concat([dc, new_row], ignore_index=True)
+        rosters = _make_roster_df()
+
+        filtered = _filter_depth_charts_by_roster(dc, rosters)
+        assert "00-9999999" in filtered["gsis_id"].values
+
+    def test_matching_teams_kept(self):
+        """Players whose roster team matches depth chart team are kept."""
+        dc = _make_depth_chart_df()
+        rosters = _make_roster_df()
+
+        filtered = _filter_depth_charts_by_roster(dc, rosters)
+        # All original entries have matching teams — none should be removed
+        assert len(filtered) == len(dc)
+
+    def test_no_gsis_id_kept(self):
+        """Rows with missing gsis_id are kept (can't verify)."""
+        dc = _make_depth_chart_df()
+        # Add a row with no gsis_id
+        no_id_row = pd.DataFrame([{
+            "team": "DET", "position": "WR", "full_name": "Unknown Player",
+            "gsis_id": None, "depth_rank": 4,
+        }])
+        dc = pd.concat([dc, no_id_row], ignore_index=True)
+        rosters = _make_roster_df()
+
+        filtered = _filter_depth_charts_by_roster(dc, rosters)
+        assert "Unknown Player" in filtered["full_name"].values

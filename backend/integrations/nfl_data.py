@@ -177,8 +177,10 @@ def fetch_ngs_data(stat_type: str, season: int) -> pd.DataFrame:
 
 def fetch_depth_charts(season: int) -> pd.DataFrame:
     """
-    Fetch NFL depth charts for a season, filtered to latest week, offense only.
-    Normalizes column names across 2024 vs 2025+ schema differences.
+    Fetch NFL depth charts for a season, filtered to latest date, offense only.
+    Normalizes column names across different nfl_data_py schema versions:
+      - 2024: club_code, depth_position, depth_team, full_name, week
+      - 2025+: team, pos_abb, pos_rank, pos_grp, player_name, dt
     Returns DataFrame with columns: team, position, full_name, gsis_id, depth_rank.
     """
     cache_name = f"depth_charts_{season}"
@@ -196,33 +198,130 @@ def fetch_depth_charts(season: int) -> pd.DataFrame:
     if raw.empty:
         return pd.DataFrame()
 
-    # Normalize column names: 2024 uses club_code/depth_position,
-    # 2025+ uses team/pos_abb
+    # --- Normalize column names across schema versions ---
+    # Team column
     if "club_code" in raw.columns and "team" not in raw.columns:
         raw = raw.rename(columns={"club_code": "team"})
-    if "depth_position" in raw.columns and "position" not in raw.columns:
-        raw = raw.rename(columns={"depth_position": "position"})
 
-    # Filter to offense only
+    # Position column: depth_position (2024) or pos_abb (2025+)
+    if "position" not in raw.columns:
+        if "depth_position" in raw.columns:
+            raw = raw.rename(columns={"depth_position": "position"})
+        elif "pos_abb" in raw.columns:
+            raw = raw.rename(columns={"pos_abb": "position"})
+
+    # Name column: full_name (2024) or player_name (2025+) → full_name
+    if "full_name" not in raw.columns and "player_name" in raw.columns:
+        raw = raw.rename(columns={"player_name": "full_name"})
+
+    # Verify required columns exist
+    if "position" not in raw.columns or "team" not in raw.columns:
+        logger.warning("Depth charts %d: missing required columns (have: %s)",
+                        season, list(raw.columns))
+        return pd.DataFrame()
+
+    # --- Filter to offense only ---
     if "depth_team" in raw.columns:
         raw = raw[raw["depth_team"].str.lower() == "offense"].copy()
+    elif "pos_grp" in raw.columns:
+        # 2025+ schema: pos_grp contains group names like "Base Offense"
+        # Filter to offense by matching known offensive position abbreviations
+        _OFFENSE_POS = {"QB", "RB", "WR", "TE", "LT", "LG", "C", "RG", "RT", "FB"}
+        raw = raw[raw["position"].str.upper().isin(_OFFENSE_POS)].copy()
 
-    # Filter to latest week per team
+    # --- Filter to latest snapshot per team ---
     if "week" in raw.columns:
         max_week = raw.groupby("team")["week"].transform("max")
         raw = raw[raw["week"] == max_week].copy()
+    elif "dt" in raw.columns:
+        # 2025+ schema: dt is a datetime string, use latest date per team
+        raw["_dt_parsed"] = pd.to_datetime(raw["dt"], errors="coerce")
+        max_dt = raw.groupby("team")["_dt_parsed"].transform("max")
+        raw = raw[raw["_dt_parsed"] == max_dt].copy()
+        raw = raw.drop(columns=["_dt_parsed"])
 
-    # Keep only skill positions
-    if "position" in raw.columns:
-        raw = raw[raw["position"].isin(SKILL_POSITIONS)].copy()
+    # --- Keep only skill positions ---
+    raw = raw[raw["position"].str.upper().isin(SKILL_POSITIONS)].copy()
+    if raw.empty:
+        return pd.DataFrame()
 
-    # Compute depth rank within (team, position) — nfl_data_py returns
-    # rows in depth chart order, so cumcount gives the correct ranking.
-    raw = raw.sort_values(["team", "position"]).copy()
-    raw["depth_rank"] = raw.groupby(["team", "position"]).cumcount() + 1
+    # Normalize position to uppercase
+    raw["position"] = raw["position"].str.upper()
+
+    # --- Compute depth rank ---
+    if "pos_rank" in raw.columns:
+        # 2025+ schema already has pos_rank
+        raw["depth_rank"] = raw["pos_rank"].astype(int)
+    else:
+        # 2024 schema: compute from row order within (team, position)
+        raw = raw.sort_values(["team", "position"]).copy()
+        raw["depth_rank"] = raw.groupby(["team", "position"]).cumcount() + 1
 
     raw.to_parquet(path, index=False)
     return raw
+
+
+def _normalize_team_abbr(abbr: str) -> str:
+    """Normalize team abbreviations across data sources.
+    ESPN depth charts use 'LA' for Rams; rosters use 'LA' or 'LAR'."""
+    _ALIASES = {"LAR": "LA", "SL": "LA", "STL": "LA",
+                "OAK": "LV", "SD": "LAC", "WSH": "WAS"}
+    upper = str(abbr).upper()
+    return _ALIASES.get(upper, upper)
+
+
+def _filter_depth_charts_by_roster(
+    depth_charts: pd.DataFrame, rosters: pd.DataFrame
+) -> pd.DataFrame:
+    """
+    Remove depth chart entries where the player's roster team doesn't match
+    the depth chart team.  ESPN's depth chart feed contains stale entries
+    (e.g. Pacheco listed on DET when roster confirms he's on KC).
+
+    Keeps rows where:
+      1. gsis_id matches a roster row AND roster team == depth chart team, OR
+      2. gsis_id is missing/NaN (can't verify — keep as-is)
+
+    Players with a valid gsis_id whose roster team != depth chart team are dropped.
+    """
+    if depth_charts.empty or rosters.empty:
+        return depth_charts
+
+    if "gsis_id" not in depth_charts.columns:
+        return depth_charts
+
+    # Build gsis_id → most-recent roster team mapping
+    if "player_id" not in rosters.columns or "team" not in rosters.columns:
+        return depth_charts
+
+    # Use the latest week per player to get current team
+    roster_cols = rosters[["player_id", "team"]].copy()
+    if "week" in rosters.columns:
+        roster_cols["week"] = rosters["week"]
+        latest = roster_cols.sort_values("week").drop_duplicates(
+            subset=["player_id"], keep="last"
+        )
+    else:
+        latest = roster_cols.drop_duplicates(subset=["player_id"], keep="last")
+
+    gsis_to_team = dict(zip(latest["player_id"], latest["team"]))
+
+    # Filter: keep row if no gsis_id OR roster team matches depth chart team
+    def _keep(row):
+        gsis = row.get("gsis_id")
+        if pd.isna(gsis) or not gsis:
+            return True  # Can't verify — keep
+        roster_team = gsis_to_team.get(str(gsis))
+        if roster_team is None:
+            return True  # Not in roster data — keep (could be new signing)
+        return _normalize_team_abbr(roster_team) == _normalize_team_abbr(row["team"])
+
+    mask = depth_charts.apply(_keep, axis=1)
+    filtered = depth_charts[mask].copy()
+    dropped = len(depth_charts) - len(filtered)
+    if dropped > 0:
+        logger.info("Depth charts: removed %d stale entries via roster cross-ref", dropped)
+    return filtered
 
 
 def _compute_target_share_from_pbp(season: int) -> pd.DataFrame:
@@ -1127,14 +1226,26 @@ class NflDataWarehouse:
         except Exception as e:
             logger.warning("Previous rosters %d failed: %s", prev, e)
 
-        # Depth charts for current season
-        try:
-            dc = fetch_depth_charts(self.current_season)
-            if not dc.empty:
-                self.depth_charts[self.current_season] = dc
-                logger.info("Depth charts %d: %d entries", self.current_season, len(dc))
-        except Exception as e:
-            logger.warning("Depth charts %d failed: %s", self.current_season, e)
+        # Depth charts — try current season first, fall back to previous
+        raw_dc = pd.DataFrame()
+        for dc_year in (self.current_season, self.current_season - 1):
+            try:
+                raw_dc = fetch_depth_charts(dc_year)
+                if not raw_dc.empty:
+                    if dc_year != self.current_season:
+                        logger.info("Depth charts: using %d as proxy for %d (%d raw entries)",
+                                    dc_year, self.current_season, len(raw_dc))
+                    else:
+                        logger.info("Depth charts %d: %d raw entries", dc_year, len(raw_dc))
+                    break
+            except Exception as e:
+                logger.warning("Depth charts %d failed: %s", dc_year, e)
+
+        # Cross-reference against rosters to remove stale team entries
+        if not raw_dc.empty:
+            dc = _filter_depth_charts_by_roster(raw_dc, self.rosters)
+            self.depth_charts[self.current_season] = dc
+            logger.info("Depth charts after roster filter: %d entries", len(dc))
 
     def _load_schedule(self) -> None:
         """Schedule for upcoming season."""
@@ -1235,11 +1346,11 @@ class NflDataWarehouse:
         if dc.empty:
             return None
 
-        team_upper = team.upper()
+        team_norm = _normalize_team_abbr(team)
         pos_upper = position.upper()
 
         mask = (
-            (dc["team"].str.upper() == team_upper)
+            (dc["team"].apply(_normalize_team_abbr) == team_norm)
             & (dc["position"].str.upper() == pos_upper)
             & (dc["depth_rank"] == 1)
         )
@@ -1284,8 +1395,8 @@ class NflDataWarehouse:
         if dc.empty:
             return {}
 
-        team_upper = team.upper()
-        team_dc = dc[dc["team"].str.upper() == team_upper].sort_values(
+        team_norm = _normalize_team_abbr(team)
+        team_dc = dc[dc["team"].apply(_normalize_team_abbr) == team_norm].sort_values(
             ["position", "depth_rank"]
         )
 
