@@ -21,20 +21,20 @@ from backend.utils.seasons import (
 # ---------------------------------------------------------------------------
 
 def test_fantasypros_year_before_july_returns_current_season():
-    """In months 1-6: returns current_season (last completed season)."""
+    """In months 3-6: returns current_season, is_current=False (FP not ready)."""
     with patch("backend.utils.seasons.date") as mock_date:
         mock_date.today.return_value = date(2026, 3, 15)
         year, is_current = get_fantasypros_auction_year()
-        assert year == 2025  # current_season=2025 in March 2026
+        assert year == 2026  # current_season=2026 in March 2026
         assert is_current is False
 
 
 def test_fantasypros_year_may_returns_current_season():
-    """May — current_season is 2025, FP data not yet refreshed for 2026."""
+    """May — current_season is 2026, FP data not yet refreshed (month < 7)."""
     with patch("backend.utils.seasons.date") as mock_date:
         mock_date.today.return_value = date(2026, 5, 6)
         year, is_current = get_fantasypros_auction_year()
-        assert year == 2025
+        assert year == 2026
         assert is_current is False
 
 
@@ -86,11 +86,11 @@ async def test_fallback_when_current_year_insufficient():
 
     async def mock_scraper(fmt, yr):
         call_log.append(yr)
-        # May 2026: current_season=2025, preferred=2025
-        if yr == 2025:
+        # May 2026: current_season=2026, preferred=2026
+        if yr == 2026:
             return [{"name": f"p{i}"} for i in range(50)]  # too few
         else:
-            return [{"name": f"p{i}"} for i in range(200)]  # fallback (2024)
+            return [{"name": f"p{i}"} for i in range(200)]  # fallback (2025)
 
     with patch("backend.utils.seasons.date") as mock_date:
         mock_date.today.return_value = date(2026, 5, 1)
@@ -100,9 +100,9 @@ async def test_fallback_when_current_year_insufficient():
 
     assert len(values) == 200
     assert is_current is False
-    # Should have tried preferred year (2025) first, then fallback (2024)
+    # Should have tried preferred year (2026) first, then fallback (2025)
     assert len(call_log) == 2
-    assert call_log == [2025, 2024]
+    assert call_log == [2026, 2025]
 
 
 @pytest.mark.asyncio
@@ -126,19 +126,19 @@ async def test_no_fallback_when_current_year_sufficient():
 async def test_fallback_when_preferred_year_errors():
     """If preferred year raises exception, falls back to previous."""
     async def mock_scraper(fmt, yr):
-        if yr == 2025:
+        if yr == 2026:
             raise RuntimeError("scrape failed")
         return [{"name": f"p{i}"} for i in range(150)]
 
     with patch("backend.utils.seasons.date") as mock_date:
-        # May 2026: current_season=2025, preferred=2025 → error → fallback=2024
+        # May 2026: current_season=2026, preferred=2026 → error → fallback=2025
         mock_date.today.return_value = date(2026, 5, 1)
         values, year, is_current = await get_best_available_auction_year(
             mock_scraper, format="ppr"
         )
 
     assert len(values) == 150
-    assert year == 2024
+    assert year == 2025
     assert is_current is False
 
 

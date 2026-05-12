@@ -5,14 +5,16 @@ All agents must import from here. Never hardcode season years.
 
 NFL season calendar:
   - Regular season: September–January
-  - Offseason/draft prep: February–August
-  - New season starts: September
+  - Playoffs + Super Bowl: January–February
+  - New league year (free agency): March
+  - NFL Draft: April
+  - Training camp / preseason: July–August
 
 Logic:
-  - If current month >= 6 (June), the current calendar year IS the current NFL season
-    (e.g. in July 2026, we're preparing for the 2026 season)
-  - If current month < 6 (Jan–May), we're in the tail of the previous season
-    (e.g. in March 2026, the 2025 season just ended)
+  - If current month >= 3 (March), the current calendar year IS the current NFL season
+    (new league year begins in March — free agency, new contracts)
+  - If current month < 3 (Jan–Feb), we're in the tail of the previous season
+    (playoffs + Super Bowl still in progress)
 
 Usage:
     from backend.utils.seasons import (
@@ -35,15 +37,22 @@ logger = logging.getLogger(__name__)
 
 def get_current_season() -> int:
     """
-    Returns the most recently completed (or current) NFL season year.
+    Returns the most recently started NFL season year.
 
-    Examples (assuming standard NFL calendar):
-      - Called in July 2026  → 2026  (2026 season is imminent/current)
-      - Called in March 2026 → 2025  (2025 season just ended)
-      - Called in August 2026 → 2026 (draft prep is for 2026 season)
+    The NFL new league year begins in March (free agency
+    opens, new contracts signed). January and February
+    are the only months where the prior year's season
+    is still the current one (playoffs + Super Bowl).
+
+    Examples:
+      January 2026  → 2025 (playoffs in progress)
+      February 2026 → 2025 (Super Bowl month)
+      March 2026    → 2026 (new league year begins)
+      August 2026   → 2026 (draft prep / training camp)
+      December 2026 → 2026 (regular season week 14)
     """
     today = date.today()
-    return today.year if today.month >= 6 else today.year - 1
+    return today.year if today.month >= 3 else today.year - 1
 
 
 def get_analysis_year() -> int:
@@ -60,24 +69,21 @@ def get_analysis_year() -> int:
 
 def get_analysis_seasons(lookback: int = 3) -> list[int]:
     """
-    Returns the last N seasons including the current (most recently completed)
-    season for historical data analysis.
+    Returns the last N completed seasons for historical data analysis.
+    The current season is excluded (may be incomplete or not yet started).
 
     Args:
         lookback: Number of seasons to include. Default 3.
 
-    Examples (called in May 2026, current season = 2025):
+    Examples (called in March 2026, current season = 2026):
         get_analysis_seasons(3) → [2023, 2024, 2025]
         get_analysis_seasons(5) → [2021, 2022, 2023, 2024, 2025]
 
-    Examples (called in August 2026, current season = 2026):
-        get_analysis_seasons(3) → [2024, 2025, 2026]
-        # Note: 2026 will be incomplete mid-season —
-        # agents handle this via get_seasonal_stats()
-        # PBP fallback for incomplete seasons
+    Examples (called in January 2026, current season = 2025):
+        get_analysis_seasons(3) → [2022, 2023, 2024]
     """
     current = get_current_season()
-    return list(range(current - lookback + 1, current + 1))
+    return list(range(current - lookback, current))
 
 
 def get_previous_season() -> int:
