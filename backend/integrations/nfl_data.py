@@ -1205,16 +1205,39 @@ class NflDataWarehouse:
             self.def_grades[season] = pd.DataFrame()
             logger.warning("  %d def_grades: unavailable", season)
 
-        # Injury reports
-        try:
-            self.injuries[season] = fetch_injuries(season)
-            logger.info("  %d injuries: %d rows", season, len(self.injuries[season]))
-        except Exception as e:
-            self.injuries[season] = pd.DataFrame()
-            logger.warning("  %d injuries unavailable: %s", season, e)
+        # Injury reports — Sleeper for current season, nfl_data_py for historical
+        if season == self.current_season:
+            try:
+                from backend.integrations.sleeper import get_sleeper_injuries
+                inj = get_sleeper_injuries()
+                if not inj.empty:
+                    self.injuries[season] = inj
+                    logger.info("  %d injuries from Sleeper: %d rows", season, len(inj))
+                else:
+                    raise ValueError("Sleeper injuries empty")
+            except Exception as e:
+                logger.warning("  %d Sleeper injuries failed, trying nfl_data_py: %s", season, e)
+                try:
+                    self.injuries[season] = fetch_injuries(season)
+                    logger.info("  %d injuries from nfl_data_py: %d rows", season, len(self.injuries[season]))
+                except Exception as e2:
+                    self.injuries[season] = pd.DataFrame()
+                    logger.warning("  %d injuries unavailable: %s", season, e2)
+        else:
+            try:
+                self.injuries[season] = fetch_injuries(season)
+                logger.info("  %d injuries: %d rows", season, len(self.injuries[season]))
+            except Exception as e:
+                self.injuries[season] = pd.DataFrame()
+                logger.warning("  %d injuries unavailable: %s", season, e)
 
     def _load_infrastructure(self) -> None:
-        """Rosters for current and previous season."""
+        """Rosters + depth charts + injuries for current season.
+
+        Depth charts and injuries now come from Sleeper API (accurate, daily-updated).
+        Rosters still use nfl_data_py for weekly game-level roster data needed by
+        roster_changes agent for departure/arrival detection.
+        """
         try:
             self.rosters = fetch_rosters(self.current_season)
             logger.info("Rosters %d: %d rows", self.current_season, len(self.rosters))
@@ -1235,22 +1258,43 @@ class NflDataWarehouse:
         except Exception as e:
             logger.warning("Previous rosters %d failed: %s", prev, e)
 
-        # Depth charts — try current season first, fall back to previous
+        # Depth charts from Sleeper (primary) with nfl_data_py fallback
+        self._load_depth_charts()
+
+    def _load_depth_charts(self) -> None:
+        """Load depth charts from Sleeper API. Fall back to nfl_data_py if Sleeper fails."""
+        try:
+            from backend.integrations.sleeper import get_sleeper_depth_charts
+            dc = get_sleeper_depth_charts()
+            if not dc.empty:
+                # Normalize column names to match warehouse schema
+                col_map = {}
+                if "pos_abb" in dc.columns and "position" not in dc.columns:
+                    col_map["pos_abb"] = "position"
+                if "pos_rank" in dc.columns and "depth_rank" not in dc.columns:
+                    col_map["pos_rank"] = "depth_rank"
+                if "player_name" in dc.columns and "full_name" not in dc.columns:
+                    col_map["player_name"] = "full_name"
+                if col_map:
+                    dc = dc.rename(columns=col_map)
+                self.depth_charts[self.current_season] = dc
+                logger.info("Depth charts from Sleeper: %d entries", len(dc))
+                return
+        except Exception as e:
+            logger.warning("Sleeper depth charts failed: %s", e)
+
+        # Fallback to nfl_data_py
         raw_dc = pd.DataFrame()
         for dc_year in (self.current_season, self.current_season - 1):
             try:
                 raw_dc = fetch_depth_charts(dc_year)
                 if not raw_dc.empty:
-                    if dc_year != self.current_season:
-                        logger.info("Depth charts: using %d as proxy for %d (%d raw entries)",
-                                    dc_year, self.current_season, len(raw_dc))
-                    else:
-                        logger.info("Depth charts %d: %d raw entries", dc_year, len(raw_dc))
+                    logger.info("Depth charts fallback (nfl_data_py %d): %d entries",
+                                dc_year, len(raw_dc))
                     break
             except Exception as e:
                 logger.warning("Depth charts %d failed: %s", dc_year, e)
 
-        # Cross-reference against rosters to remove stale team entries
         if not raw_dc.empty:
             dc = _filter_depth_charts_by_roster(raw_dc, self.rosters)
             self.depth_charts[self.current_season] = dc

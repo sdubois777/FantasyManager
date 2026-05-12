@@ -821,6 +821,10 @@ class PlayerProfilesAgent(BaseAgent):
                 entry["nfl_player_id"] = p.gsis_id
             elif p.yahoo_player_id and p.yahoo_player_id.startswith("nfl_"):
                 entry["nfl_player_id"] = p.yahoo_player_id[4:]
+            if p.sleeper_id:
+                entry["sleeper_id"] = p.sleeper_id
+            if p.sportradar_id:
+                entry["sportradar_id"] = p.sportradar_id
             result.append(entry)
         return result
 
