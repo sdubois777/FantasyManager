@@ -178,6 +178,7 @@ async def seed_players():
             continue
         records.append({
             "yahoo_player_id": f"nfl_{gsis_id}",
+            "gsis_id": str(gsis_id),
             "name": str(name),
             "team_abbr": str(row.get("team", "")) or None,
             "position": str(row.get("position", "")) or None,
@@ -212,7 +213,8 @@ async def seed_players():
                 Player.__table__.update()
                 .where(Player.yahoo_player_id == r["yahoo_player_id"])
                 .values(name=r["name"], team_abbr=r["team_abbr"],
-                        position=r["position"], age=r["age"])
+                        position=r["position"], age=r["age"],
+                        gsis_id=r.get("gsis_id"))
             )
 
         await session.commit()

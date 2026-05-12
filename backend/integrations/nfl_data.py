@@ -1326,6 +1326,67 @@ class NflDataWarehouse:
 
 
 # ---------------------------------------------------------------------------
+# gsis_id population from depth charts
+# ---------------------------------------------------------------------------
+
+
+async def populate_gsis_from_depth_charts(warehouse: "NflDataWarehouse") -> int:
+    """
+    Populate gsis_id on players table from depth chart data.
+
+    Players with yahoo_player_id='nfl_XXX' should already have gsis_id set
+    by the migration backfill or seed script. This function handles remaining
+    players by matching name + team against depth chart data.
+
+    Returns count of players updated.
+    """
+    from backend.database import AsyncSessionLocal
+    from backend.models.player import Player
+    from sqlalchemy import select
+
+    dc = warehouse.get_depth_chart(warehouse.current_season)
+    if dc.empty:
+        logger.info("No depth chart data — skipping gsis_id population")
+        return 0
+
+    name_col = next(
+        (c for c in ("full_name", "player_name") if c in dc.columns),
+        None,
+    )
+    if not name_col or "gsis_id" not in dc.columns:
+        return 0
+
+    updated = 0
+    async with AsyncSessionLocal() as session:
+        result = await session.execute(
+            select(Player).where(Player.gsis_id.is_(None))
+        )
+        players_without_gsis = result.scalars().all()
+
+        for player in players_without_gsis:
+            if not player.name or not player.team_abbr:
+                continue
+
+            norm_name = normalize_player_name(player.name)
+            team_dc = dc[dc["team"].str.upper() == player.team_abbr.upper()]
+
+            for _, row in team_dc.iterrows():
+                dc_name = str(row.get(name_col, ""))
+                dc_gsis = row.get("gsis_id")
+                if not dc_gsis or pd.isna(dc_gsis):
+                    continue
+                if normalize_player_name(dc_name) == norm_name:
+                    player.gsis_id = str(dc_gsis)
+                    updated += 1
+                    break
+
+        await session.commit()
+
+    logger.info("Populated gsis_id for %d players from depth charts", updated)
+    return updated
+
+
+# ---------------------------------------------------------------------------
 # Draft capital and AV chart
 # ---------------------------------------------------------------------------
 

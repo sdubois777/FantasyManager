@@ -760,10 +760,15 @@ class PlayerProfilesAgent(BaseAgent):
             logger.debug("Could not fetch DB team players for %s: %s", team, exc)
             return []
 
-        return [
-            {"name": p.name, "position": p.position, "age": p.age}
-            for p in players
-        ]
+        result = []
+        for p in players:
+            entry = {"name": p.name, "position": p.position, "age": p.age}
+            if p.gsis_id:
+                entry["nfl_player_id"] = p.gsis_id
+            elif p.yahoo_player_id and p.yahoo_player_id.startswith("nfl_"):
+                entry["nfl_player_id"] = p.yahoo_player_id[4:]
+            result.append(entry)
+        return result
 
     async def _get_team_rookie_fields(self, team: str) -> dict[str, dict]:
         """

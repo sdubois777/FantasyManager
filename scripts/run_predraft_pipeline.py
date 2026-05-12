@@ -344,12 +344,17 @@ async def main() -> None:
         run_seed()
 
     # Build warehouse once — all agents read from this shared data store
-    from backend.integrations.nfl_data import NflDataWarehouse
+    from backend.integrations.nfl_data import NflDataWarehouse, populate_gsis_from_depth_charts
     print("[warehouse] Building NflDataWarehouse (one-time data load)...")
     t0 = time.monotonic()
     warehouse = NflDataWarehouse.build()
     summary = warehouse.summary()
     print(f"[warehouse] Built in {time.monotonic() - t0:.1f}s — {summary}")
+
+    # Populate gsis_id for players that don't have it yet
+    gsis_count = await populate_gsis_from_depth_charts(warehouse)
+    if gsis_count:
+        print(f"[gsis_id] Populated {gsis_count} players from depth charts")
     print()
 
     teams = [team_filter] if team_filter else None
