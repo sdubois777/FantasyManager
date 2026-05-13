@@ -1,3 +1,5 @@
 {
-  "packages": ["node"]
+  "packages": {
+    "node": "22"
+  }
 }
