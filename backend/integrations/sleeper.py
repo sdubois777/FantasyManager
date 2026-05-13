@@ -14,6 +14,7 @@ Retained nfl_data_py usage (no Sleeper equivalent):
 from __future__ import annotations
 
 import logging
+import os
 import time
 from pathlib import Path
 
@@ -23,7 +24,7 @@ import requests
 logger = logging.getLogger(__name__)
 
 SLEEPER_BASE = "https://api.sleeper.app/v1"
-CACHE_DIR = Path("data/cache/sleeper")
+CACHE_DIR = Path(os.environ.get("CACHE_DIR", "data/cache")) / "sleeper"
 SKILL_POSITIONS = {"QB", "RB", "WR", "TE"}
 CACHE_TTL_HOURS = 24  # players/injuries refresh daily
 CACHE_TTL_HISTORICAL = None  # historical stats: forever

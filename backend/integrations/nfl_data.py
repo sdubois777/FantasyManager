@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import pickle
 import re
 from pathlib import Path
@@ -19,7 +20,7 @@ import nfl_data_py as nfl
 
 logger = logging.getLogger(__name__)
 
-CACHE_DIR = Path("data/cache")
+CACHE_DIR = Path(os.environ.get("CACHE_DIR", "data/cache"))
 SKILL_POSITIONS = {"QB", "RB", "WR", "TE"}
 
 
