@@ -2671,8 +2671,23 @@ def test_fringe_player_gets_depth_profile():
     assert depth["role_classification"] == "depth"
     assert depth["confidence"] == "low"
     assert depth["efficiency_signal"] == "below_average"
-    assert depth["positional_scarcity_tier"] == 5
+    assert depth["positional_scarcity_tier"] == "deep"
     assert depth["clean_season_baseline"] == {}
+
+
+def test_depth_profile_all_fields_correct_types():
+    """All fields in depth profile match DB column types.
+    positional_scarcity_tier must be str not int.
+    profile_source must be str if present.
+    confidence must be str.
+    """
+    profile = _build_depth_profile("WR")
+    assert isinstance(profile["positional_scarcity_tier"], str)
+    assert isinstance(profile["confidence"], str)
+    assert isinstance(profile["role_classification"], str)
+    assert isinstance(profile["efficiency_signal"], str)
+    assert isinstance(profile["breakout_flag"], bool)
+    assert isinstance(profile["clean_season_baseline"], dict)
 
 
 def test_nfl_player_id_match_takes_priority():

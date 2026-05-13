@@ -821,6 +821,10 @@ class PlayerProfilesAgent(BaseAgent):
                 entry["nfl_player_id"] = p.gsis_id
             elif p.yahoo_player_id and p.yahoo_player_id.startswith("nfl_"):
                 entry["nfl_player_id"] = p.yahoo_player_id[4:]
+            if p.sleeper_id:
+                entry["sleeper_id"] = p.sleeper_id
+            if p.sportradar_id:
+                entry["sportradar_id"] = p.sportradar_id
             result.append(entry)
         return result
 
@@ -2108,7 +2112,7 @@ def _build_depth_profile(position: str) -> dict:
         "age_curve_position": "unknown",
         "career_trajectory": "unknown",
         "breakout_flag": False,
-        "positional_scarcity_tier": 5,
+        "positional_scarcity_tier": "deep",
         "confidence": "low",
         "clean_season_baseline": {},  # no baseline — no stats
     }
