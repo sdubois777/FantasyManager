@@ -20,14 +20,14 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from typing import ClassVar
 
+import pandas as pd
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.agents.base_agent import BaseAgent, parse_json_output, HAIKU
 from backend.database import AsyncSessionLocal
-from backend.integrations import nfl_data
+from backend.integrations.nfl_data import normalize_player_name
 from backend.models.team_system import TeamSystem
 from backend.utils.seasons import get_current_season, get_analysis_seasons
 
@@ -97,9 +97,6 @@ class TeamSystemsAgent(BaseAgent):
     AGENT_MODEL      = HAIKU
     AGENT_MAX_TOKENS = 500
 
-    # Shared data cache — loaded once in run_all_teams(), reused per team
-    _data_cache: ClassVar[dict] = {}
-
     # ------------------------------------------------------------------
     # Data pre-aggregation — all Python, zero API calls
     # ------------------------------------------------------------------
@@ -108,14 +105,23 @@ class TeamSystemsAgent(BaseAgent):
         """
         Pre-fetch and aggregate ALL data for one team.
         Returns a compact dict ready to pass to the model.
-        No API calls here — only nfl_data_py and DB lookups.
+        No API calls here — reads from warehouse only.
         """
         current_season = get_current_season()
+        analysis_seasons = get_analysis_seasons(3)
 
-        oline = await self._get_oline_data(team, current_season)
-        qb    = await self._get_qb_data(team, current_season)
-        pers  = await self._get_personnel_data(team, current_season)
-        roster = await self._get_roster_summary(team, current_season)
+        # Use most recent season with available data for stats.
+        stats_season = current_season
+        if self._warehouse.get_seasonal_stats(current_season).empty:
+            for s in sorted(analysis_seasons, reverse=True):
+                if not self._warehouse.get_seasonal_stats(s).empty:
+                    stats_season = s
+                    break
+
+        oline = await self._get_oline_data(team, stats_season)
+        qb    = await self._get_qb_data(team, stats_season)
+        pers  = await self._get_personnel_data(team, stats_season)
+        roster = await self._get_roster_summary(team)
 
         return {
             "team": team,
@@ -132,112 +138,191 @@ class TeamSystemsAgent(BaseAgent):
         }
 
     async def _get_oline_data(self, team: str, season: int) -> dict:
-        cache_key = f"weekly_{season}"
-        weekly = self._data_cache.get(cache_key)
-        if weekly is None:
-            try:
-                weekly = nfl_data.fetch_weekly_stats(season)
-                self._data_cache[cache_key] = weekly
-            except Exception as exc:
-                logger.warning("Could not load weekly stats %d: %s", season, exc)
-                return {"team": team, "note": "No data — use model knowledge"}
-
-        team_df = weekly[weekly["recent_team"] == team]
-        if team_df.empty:
+        oline_stats = self._warehouse.get_oline_stats(season)
+        if oline_stats.empty:
             return {"team": team, "note": "No data — use model knowledge"}
 
-        total_attempts = team_df["attempts"].sum()
-        total_sacks    = team_df["sacks"].sum() if "sacks" in team_df.columns else 0
-        sack_rate      = float(total_sacks / total_attempts) if total_attempts > 0 else None
+        team_row = oline_stats[oline_stats["team"] == team]
+        if team_row.empty:
+            return {"team": team, "note": "No data — use model knowledge"}
+
+        row = team_row.iloc[0]
+        sack_rate = row.get("sack_rate")
+        if sack_rate is not None and pd.notna(sack_rate):
+            sack_rate = round(float(sack_rate), 4)
+        else:
+            sack_rate = None
+
+        avg_ttt = row.get("avg_time_to_throw")
+        if avg_ttt is not None and pd.notna(avg_ttt):
+            avg_ttt = round(float(avg_ttt), 3)
+        else:
+            avg_ttt = None
+
+        total_dropbacks = int(row.get("total_dropbacks", 0) or 0)
 
         return {
             "team": team,
             "season": season,
-            "total_dropbacks": int(total_attempts),
-            "sack_rate": round(sack_rate, 4) if sack_rate is not None else None,
-            "note": "Sack rate is a proxy for pass protection. Supplement with your knowledge of this team's O-line personnel.",
+            "total_dropbacks": total_dropbacks,
+            "sack_rate": sack_rate,
+            "avg_time_to_throw": avg_ttt,
+            "note": (
+                "Use sack_rate and avg_time_to_throw as primary inputs for pass_protection_grade. "
+                "Lower sack_rate (<5%) and moderate time_to_throw (~2.6-2.8s) indicate good protection."
+            ),
         }
 
     async def _get_qb_data(self, team: str, season: int) -> dict:
-        cache_key = f"weekly_{season}"
-        weekly = self._data_cache.get(cache_key)
-        if weekly is None:
-            try:
-                weekly = nfl_data.fetch_weekly_stats(season)
-                self._data_cache[cache_key] = weekly
-            except Exception as exc:
-                logger.warning("Could not load weekly stats %d: %s", season, exc)
-                return {"team": team, "note": "No QB data — use model knowledge"}
+        """
+        Three-source QB identification:
+        0. Depth chart QB1 (most authoritative for current season)
+        1. Seasonal roster (current_season) → who IS the QB
+        2. QB stats from warehouse → pull that QB's stats
+        3. Fallback: most passing yards on this team
+        """
+        current_season = get_current_season()
 
-        qb_data = weekly[(weekly["recent_team"] == team) & (weekly["position"] == "QB")]
-        if qb_data.empty:
+        # --- Source 0: Depth chart QB1 (most authoritative) ---
+        starter_name = None
+        if hasattr(self._warehouse, "get_starter"):
+            dc_starter = self._warehouse.get_starter(team, "QB")
+            if dc_starter:
+                starter_name = dc_starter["name"]
+                logger.debug("%s: QB1 from depth chart: %s", team, starter_name)
+
+        # --- Source 1: Identify current QB from seasonal roster (fallback) ---
+        roster = self._warehouse.seasonal_rosters
+        if not starter_name and not roster.empty:
+            team_qbs = roster[
+                (roster["team"] == team)
+                & (roster["position"] == "QB")
+                & (roster["status"] == "ACT")
+            ]
+            if not team_qbs.empty:
+                if len(team_qbs) == 1:
+                    starter_name = team_qbs.iloc[0]["player_name"]
+                else:
+                    # Multiple active QBs — cross-reference with stats to find starter
+                    qb_stats_df = self._warehouse.get_qb_stats(season)
+                    if not qb_stats_df.empty:
+                        team_col = "recent_team" if "recent_team" in qb_stats_df.columns else "team"
+                        name_col_qs = "player_name" if "player_name" in qb_stats_df.columns else "player_display_name"
+                        team_qb_stats = qb_stats_df[qb_stats_df[team_col] == team]
+                        if not team_qb_stats.empty:
+                            starter_name = team_qb_stats.sort_values(
+                                "passing_yards", ascending=False, na_position="last"
+                            ).iloc[0][name_col_qs]
+                    if starter_name is None:
+                        starter_name = team_qbs.iloc[0]["player_name"]
+
+        # --- Source 2: QB stats from warehouse ---
+        qb_stats = self._warehouse.get_qb_stats(season)
+        if qb_stats.empty:
+            if starter_name:
+                return {
+                    "team": team, "season": season,
+                    "starter_name": starter_name,
+                    "source": "roster_only",
+                    "note": f"{starter_name} identified from roster but no stats available — use model knowledge",
+                }
             return {"team": team, "note": "No QB data — use model knowledge"}
 
-        starter_name = (
-            qb_data.groupby("player_name")["attempts"]
-            .sum()
-            .sort_values(ascending=False)
-            .index[0]
-        )
-        starter_df = qb_data[qb_data["player_name"] == starter_name]
-        total_att  = starter_df["attempts"].sum()
+        # Find the QB's stats
+        name_col = "player_name" if "player_name" in qb_stats.columns else "player_display_name"
+
+        if starter_name:
+            norm_target = normalize_player_name(starter_name)
+            qb_copy = qb_stats.copy()
+            qb_copy["_norm"] = qb_copy[name_col].apply(normalize_player_name)
+            starter_df = qb_copy[qb_copy["_norm"] == norm_target]
+
+            # Log QB change if roster QB differs from stats leader on this team
+            team_col = "recent_team" if "recent_team" in qb_stats.columns else "team"
+            team_qb_stats = qb_stats[qb_stats[team_col] == team]
+            if not team_qb_stats.empty:
+                stats_leader = team_qb_stats.sort_values(
+                    "passing_yards", ascending=False
+                ).iloc[0][name_col]
+                if normalize_player_name(stats_leader) != norm_target:
+                    logger.info(
+                        "QB CHANGE: %s — roster=%s, stats_leader=%s",
+                        team, starter_name, stats_leader,
+                    )
+
+            if starter_df.empty:
+                return {
+                    "team": team, "season": season,
+                    "starter_name": starter_name,
+                    "source": "roster_only",
+                    "note": f"{starter_name} identified from roster but no stats found — use model knowledge",
+                }
+            row = starter_df.iloc[0]
+        else:
+            # --- Fallback: most passing yards on this team ---
+            team_col = "recent_team" if "recent_team" in qb_stats.columns else "team"
+            team_qb_data = qb_stats[qb_stats[team_col] == team]
+            if team_qb_data.empty:
+                return {"team": team, "note": "No QB data — use model knowledge"}
+            row = team_qb_data.sort_values("passing_yards", ascending=False).iloc[0]
+            starter_name = row[name_col]
+
+        def _safe_int(val):
+            try:
+                return int(val)
+            except (TypeError, ValueError):
+                return 0
+
+        total_att = _safe_int(row.get("attempts", 0))
+        completions = _safe_int(row.get("completions", 0))
+        games = _safe_int(row.get("games", 0))
 
         return {
             "team": team,
             "season": season,
             "starter_name": starter_name,
-            "games_played": int(len(starter_df)),
-            "total_attempts": int(total_att),
-            "completion_pct": (
-                round(float(starter_df["completions"].sum() / total_att), 3)
-                if total_att > 0 else None
-            ),
-            "passing_yards": int(starter_df["passing_yards"].sum()),
-            "passing_tds": int(starter_df["passing_tds"].sum()),
-            "interceptions": int(starter_df["interceptions"].sum()),
-            "air_yards_per_attempt": (
-                round(float(starter_df["passing_air_yards"].sum() / total_att), 2)
-                if total_att > 0 else None
-            ),
-            "dakota": (
-                round(float(starter_df["dakota"].mean()), 3)
-                if "dakota" in starter_df.columns and not starter_df["dakota"].isna().all()
-                else None
-            ),
+            "source": "roster+stats" if not roster.empty else "stats_fallback",
+            "games_played": games,
+            "total_attempts": total_att,
+            "completion_pct": round(completions / total_att, 3) if total_att > 0 else None,
+            "passing_yards": _safe_int(row.get("passing_yards", 0)),
+            "passing_tds": _safe_int(row.get("passing_tds", 0)),
+            "interceptions": _safe_int(row.get("interceptions", 0)),
+            "rushing_yards": _safe_int(row.get("rushing_yards", 0)),
+            "rushing_tds": _safe_int(row.get("rushing_tds", 0)),
             "note": "Supplement with your knowledge of this QB's performance under pressure and CPOE.",
         }
 
     async def _get_personnel_data(self, team: str, season: int) -> dict:
-        cache_key = f"weekly_{season}"
-        weekly = self._data_cache.get(cache_key)
-        if weekly is None:
-            try:
-                weekly = nfl_data.fetch_weekly_stats(season)
-                self._data_cache[cache_key] = weekly
-            except Exception as exc:
-                logger.warning("Could not load weekly stats %d: %s", season, exc)
-                return {"team": team, "note": "No data — use model knowledge"}
+        ts_df = self._warehouse.get_target_share(season)
+        if ts_df.empty:
+            return {"team": team, "note": "No data — use model knowledge"}
 
-        skill = weekly[
-            (weekly["recent_team"] == team) &
-            (weekly["position"].isin(["WR", "TE", "RB"]))
+        team_col = "recent_team" if "recent_team" in ts_df.columns else "team"
+        skill = ts_df[
+            (ts_df[team_col] == team) &
+            (ts_df["position"].isin(["WR", "TE", "RB"]))
         ]
         if skill.empty:
             return {"team": team, "note": "No skill position data"}
 
-        pos_targets = skill.groupby("position")["targets"].sum()
+        # Target distribution by position
+        targets_col = "total_targets" if "total_targets" in skill.columns else "targets"
+        pos_targets = skill.groupby("position")[targets_col].sum()
         total_targets = pos_targets.sum()
         target_share_by_pos = {
             str(pos): round(float(t / total_targets), 3)
             for pos, t in pos_targets.items()
         } if total_targets > 0 else {}
 
+        # Top TD scorers
+        td_col = "total_rec_tds" if "total_rec_tds" in skill.columns else "receiving_tds"
+        name_col = "player_name" if "player_name" in skill.columns else "player_display_name"
         top_scorers = (
-            skill.groupby(["player_name", "position"])["receiving_tds"]
-            .sum()
-            .sort_values(ascending=False)
+            skill[[name_col, "position", td_col]]
+            .sort_values(td_col, ascending=False)
             .head(5)
-            .reset_index()
+            .rename(columns={name_col: "player_name", td_col: "receiving_tds"})
             .to_dict(orient="records")
         )
 
@@ -249,16 +334,10 @@ class TeamSystemsAgent(BaseAgent):
             "note": "Supplement with your knowledge of 11/12/21 personnel rates and red zone tendencies.",
         }
 
-    async def _get_roster_summary(self, team: str, season: int) -> dict:
-        cache_key = f"rosters_{season}"
-        rosters = self._data_cache.get(cache_key)
-        if rosters is None:
-            try:
-                rosters = nfl_data.fetch_rosters(season)
-                self._data_cache[cache_key] = rosters
-            except Exception as exc:
-                logger.warning("Could not load rosters %d: %s", season, exc)
-                return {"team": team, "note": "No roster data"}
+    async def _get_roster_summary(self, team: str) -> dict:
+        rosters = self._warehouse.rosters
+        if rosters.empty:
+            return {"team": team, "note": "No roster data"}
 
         team_roster = rosters[rosters["team"] == team]
         skill = team_roster[
@@ -273,6 +352,10 @@ class TeamSystemsAgent(BaseAgent):
 
     async def run_for_team(self, team_abbr: str) -> dict | None:
         """Run agent for one team. Returns parsed JSON dict or None on failure."""
+        if self._warehouse is None:
+            from backend.integrations.nfl_data import NflDataWarehouse
+            self._warehouse = NflDataWarehouse.build()
+
         team = team_abbr.upper()
         logger.info("Building context for %s", team)
 
@@ -297,6 +380,27 @@ class TeamSystemsAgent(BaseAgent):
             # Enforce team_abbr from our canonical list
             data["team_abbr"] = team
 
+            # Enforce QB name from data, not model hallucination.
+            # The model may output a QB who is no longer on this team.
+            qb_data = context.get("qb_metrics", {})
+            data_qb = qb_data.get("starter_name")
+            model_qb = data.get("qb_name")
+            if data_qb and model_qb:
+                data_norm = normalize_player_name(data_qb)
+                model_norm = normalize_player_name(model_qb)
+                if data_norm != model_norm:
+                    logger.warning(
+                        "%s: model output qb_name=%r but data says %r — overriding",
+                        team, model_qb, data_qb,
+                    )
+                    data["qb_name"] = data_qb
+
+            # Attach Python-computed numerics (NOT from model output)
+            oline_data = context.get("oline", {})
+            data["_sack_rate"] = oline_data.get("sack_rate")
+            data["_avg_time_to_throw"] = oline_data.get("avg_time_to_throw")
+            data["_qb_mobility"] = _derive_qb_mobility(qb_data)
+
             async with AsyncSessionLocal() as session:
                 await _upsert_team_system(session, data)
 
@@ -310,35 +414,19 @@ class TeamSystemsAgent(BaseAgent):
     # Full pipeline — pre-warm caches once, then run all 32 teams
     # ------------------------------------------------------------------
 
-    async def run_all_teams(self, concurrency: int = 4) -> dict[str, bool]:
+    async def run_all_teams(
+        self, warehouse=None, concurrency: int = 4
+    ) -> dict[str, bool]:
         """
         Run for all 32 teams with bounded concurrency.
-        Pre-warms shared data caches BEFORE starting concurrent team runs
-        so each team call slices from pre-loaded data instead of re-downloading.
+        Reads all data from the warehouse — no independent data fetching.
         Returns {team_abbr: success_bool}.
         """
-        current_season = get_current_season()
-        analysis_seasons = get_analysis_seasons(3)
-
-        logger.info(
-            "Pre-loading NFL data caches for seasons %s...", analysis_seasons
-        )
-        for season in analysis_seasons:
-            cache_key = f"weekly_{season}"
-            if cache_key not in self._data_cache:
-                try:
-                    self._data_cache[cache_key] = nfl_data.fetch_weekly_stats(season)
-                    logger.info("Cached weekly stats %d", season)
-                except Exception as exc:
-                    logger.warning("Could not pre-load weekly stats %d: %s", season, exc)
-
-        rosters_key = f"rosters_{current_season}"
-        if rosters_key not in self._data_cache:
-            try:
-                self._data_cache[rosters_key] = nfl_data.fetch_rosters(current_season)
-                logger.info("Cached rosters %d", current_season)
-            except Exception as exc:
-                logger.warning("Could not pre-load rosters %d: %s", current_season, exc)
+        if warehouse is not None:
+            self._warehouse = warehouse
+        if self._warehouse is None:
+            from backend.integrations.nfl_data import NflDataWarehouse
+            self._warehouse = NflDataWarehouse.build()
 
         logger.info(
             "Starting Team Systems pipeline for all 32 teams (concurrency=%d)", concurrency
@@ -356,6 +444,30 @@ class TeamSystemsAgent(BaseAgent):
         success = sum(1 for v in results.values() if v)
         logger.info("Team Systems pipeline complete: %d/32 teams successful", success)
         return results
+
+
+# ---------------------------------------------------------------------------
+# QB mobility helper
+# ---------------------------------------------------------------------------
+
+
+def _derive_qb_mobility(qb_data: dict) -> str | None:
+    """
+    Classify QB mobility from rushing stats.
+    > 40 rush yards/game = elite (Lamar, Hurts)
+    15-40 = average
+    < 15 = pocket_only
+    """
+    games = qb_data.get("games_played", 0)
+    rush_yards = qb_data.get("rushing_yards", 0) if isinstance(qb_data.get("rushing_yards"), (int, float)) else 0
+    if not games or games < 5:
+        return None
+    rush_ypg = rush_yards / games
+    if rush_ypg > 40:
+        return "elite"
+    if rush_ypg >= 15:
+        return "average"
+    return "pocket_only"
 
 
 # ---------------------------------------------------------------------------
@@ -403,6 +515,11 @@ async def _upsert_team_system(session: AsyncSession, data: dict) -> None:
     record.system_grade                = data.get("system_grade")
     record.notes                       = data.get("notes")
 
+    # Python-computed numerics (prefixed with _ in data dict)
+    record.sack_rate                   = data.get("_sack_rate")
+    record.avg_time_to_throw           = data.get("_avg_time_to_throw")
+    record.qb_mobility                 = data.get("_qb_mobility")
+
     await session.commit()
     logger.info(
         "Upserted TeamSystem: %s — Grade: %s  rookie_qb=%s  compound_risk=%s",
@@ -428,5 +545,7 @@ async def run_for_team(team_abbr: str, dry_run: bool = False) -> dict | None:
     return await _get_agent(dry_run).run_for_team(team_abbr)
 
 
-async def run_all_teams(concurrency: int = 4, dry_run: bool = False) -> dict[str, bool]:
-    return await _get_agent(dry_run).run_all_teams(concurrency)
+async def run_all_teams(
+    concurrency: int = 4, dry_run: bool = False, warehouse=None
+) -> dict[str, bool]:
+    return await _get_agent(dry_run).run_all_teams(warehouse=warehouse, concurrency=concurrency)

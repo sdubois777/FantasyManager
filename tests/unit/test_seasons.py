@@ -12,6 +12,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import pytest
+from freezegun import freeze_time
 
 from backend.utils.seasons import (
     get_analysis_seasons,
@@ -26,31 +27,28 @@ from backend.utils.seasons import (
 # get_current_season()
 # ---------------------------------------------------------------------------
 
-def test_current_season_before_june_returns_previous_year():
-    """In January–May, the current season is the previous calendar year."""
-    with patch("backend.utils.seasons.date") as mock_date:
-        mock_date.today.return_value = date(2026, 3, 15)
+def test_current_season_january():
+    with freeze_time("2026-01-15"):
         assert get_current_season() == 2025
 
 
-def test_current_season_after_june_returns_current_year():
-    """In June–December, the current season is the current calendar year."""
-    with patch("backend.utils.seasons.date") as mock_date:
-        mock_date.today.return_value = date(2026, 7, 1)
+def test_current_season_february():
+    with freeze_time("2026-02-09"):
+        assert get_current_season() == 2025
+
+
+def test_current_season_march():
+    with freeze_time("2026-03-01"):
         assert get_current_season() == 2026
 
 
-def test_current_season_exactly_june_first_is_current_year():
-    """June 1 is the exact boundary — should return current calendar year."""
-    with patch("backend.utils.seasons.date") as mock_date:
-        mock_date.today.return_value = date(2026, 6, 1)
+def test_current_season_august():
+    with freeze_time("2026-08-15"):
         assert get_current_season() == 2026
 
 
-def test_current_season_december_is_current_year():
-    """December should return current calendar year (season ongoing)."""
-    with patch("backend.utils.seasons.date") as mock_date:
-        mock_date.today.return_value = date(2026, 12, 31)
+def test_current_season_december():
+    with freeze_time("2026-12-15"):
         assert get_current_season() == 2026
 
 
@@ -58,30 +56,57 @@ def test_current_season_december_is_current_year():
 # get_analysis_year()
 # ---------------------------------------------------------------------------
 
-def test_analysis_year_is_one_ahead_of_current():
-    """get_analysis_year() always returns get_current_season() + 1."""
-    with patch("backend.utils.seasons.date") as mock_date:
-        mock_date.today.return_value = date(2026, 4, 30)
-        assert get_analysis_year() == get_current_season() + 1
+def test_analysis_year_equals_current_season():
+    """analysis_year == current_season (we draft FOR the current season)."""
+    assert get_analysis_year() == get_current_season()
 
 
-def test_analysis_year_before_june():
-    """In March 2026, analysis_year = 2026 (preparing for 2026 draft)."""
-    with patch("backend.utils.seasons.date") as mock_date:
-        mock_date.today.return_value = date(2026, 3, 15)
+def test_analysis_year_may_2026():
+    """In May 2026, analysis_year should be 2026 (not 2027)."""
+    with freeze_time("2026-05-11"):
         assert get_analysis_year() == 2026
 
 
-def test_analysis_year_after_june():
-    """In July 2026, analysis_year = 2027 (preparing for 2027 draft)."""
-    with patch("backend.utils.seasons.date") as mock_date:
-        mock_date.today.return_value = date(2026, 7, 1)
-        assert get_analysis_year() == 2027
+def test_analysis_year_january_2026():
+    """In January 2026, still in 2025 season, analysis_year = 2025."""
+    with freeze_time("2026-01-15"):
+        assert get_analysis_year() == 2025
+
+
+def test_analysis_year_august_2026():
+    """In August 2026, analysis_year = 2026 (draft month)."""
+    with freeze_time("2026-08-15"):
+        assert get_analysis_year() == 2026
 
 
 # ---------------------------------------------------------------------------
 # get_analysis_seasons()
 # ---------------------------------------------------------------------------
+
+def test_analysis_seasons_march_2026():
+    with freeze_time("2026-03-01"):
+        assert get_analysis_seasons(3) == [2023, 2024, 2025]
+
+
+def test_analysis_seasons_august_2026():
+    with freeze_time("2026-08-15"):
+        assert get_analysis_seasons(3) == [2023, 2024, 2025]
+
+
+def test_analysis_seasons_january_2026():
+    with freeze_time("2026-01-15"):
+        assert get_analysis_seasons(3) == [2022, 2023, 2024]
+
+
+def test_analysis_seasons_february_2026():
+    with freeze_time("2026-02-09"):
+        assert get_analysis_seasons(3) == [2022, 2023, 2024]
+
+
+def test_analysis_seasons_never_includes_current():
+    seasons = get_analysis_seasons(3)
+    assert get_current_season() not in seasons
+
 
 def test_analysis_seasons_returns_correct_lookback():
     """get_analysis_seasons(3) returns exactly 3 seasons."""
@@ -91,41 +116,20 @@ def test_analysis_seasons_returns_correct_lookback():
         assert len(seasons) == 3
 
 
-def test_analysis_seasons_excludes_current_season():
-    """
-    The current season should NOT be in the analysis window
-    (incomplete data for the current season).
-    """
-    with patch("backend.utils.seasons.date") as mock_date:
-        mock_date.today.return_value = date(2026, 4, 30)
-        current = get_current_season()
-        seasons = get_analysis_seasons(3)
-        assert current not in seasons
-
-
-def test_analysis_seasons_correct_values_before_june():
-    """In March 2026, current=2025, analysis_seasons(3) = [2022, 2023, 2024]."""
-    with patch("backend.utils.seasons.date") as mock_date:
-        mock_date.today.return_value = date(2026, 3, 15)
-        seasons = get_analysis_seasons(3)
-        assert seasons == [2022, 2023, 2024]
-
-
-def test_analysis_seasons_correct_values_after_june():
-    """In July 2026, current=2026, analysis_seasons(3) = [2023, 2024, 2025]."""
-    with patch("backend.utils.seasons.date") as mock_date:
-        mock_date.today.return_value = date(2026, 7, 1)
-        seasons = get_analysis_seasons(3)
-        assert seasons == [2023, 2024, 2025]
-
-
 def test_analysis_seasons_five_season_lookback():
-    """get_analysis_seasons(5) returns 5 seasons."""
-    with patch("backend.utils.seasons.date") as mock_date:
-        mock_date.today.return_value = date(2026, 4, 30)
+    """get_analysis_seasons(5) returns 5 completed seasons before current."""
+    with freeze_time("2026-04-30"):
         seasons = get_analysis_seasons(5)
         assert len(seasons) == 5
         assert seasons == sorted(seasons)  # must be ascending
+        assert seasons == [2021, 2022, 2023, 2024, 2025]
+
+
+def test_analysis_seasons_correct_count():
+    """Lookback count is exact."""
+    with freeze_time("2026-05-15"):
+        assert len(get_analysis_seasons(3)) == 3
+        assert len(get_analysis_seasons(5)) == 5
 
 
 # ---------------------------------------------------------------------------
@@ -182,3 +186,23 @@ def test_no_hardcoded_years_in_agent_files():
         + "\n".join(violations)
         + "\nFix: use get_current_season(), get_analysis_seasons(), or get_analysis_year()"
     )
+
+
+# ---------------------------------------------------------------------------
+# Seed script — no hardcoded years
+# ---------------------------------------------------------------------------
+
+def test_seed_nfl_data_uses_dynamic_seasons():
+    """Verify no hardcoded [2022, 2023, 2024] exists in scripts/seed_nfl_data.py."""
+    source = (Path(__file__).parent.parent.parent / "scripts" / "seed_nfl_data.py").read_text()
+    assert "[2022, 2023, 2024]" not in source, "seed_nfl_data.py still has hardcoded [2022, 2023, 2024]"
+    assert "[2023, 2024]" not in source, "seed_nfl_data.py still has hardcoded [2023, 2024]"
+
+
+def test_get_analysis_seasons_returns_3_consecutive_seasons():
+    """get_analysis_seasons(3) returns a list of 3 consecutive seasons."""
+    with freeze_time("2026-08-01"):
+        seasons = get_analysis_seasons(3)
+        assert len(seasons) == 3
+        assert seasons[1] - seasons[0] == 1
+        assert seasons[2] - seasons[1] == 1

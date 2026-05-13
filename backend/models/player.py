@@ -21,6 +21,9 @@ class Player(Base):
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     yahoo_player_id: Mapped[Optional[str]] = mapped_column(String(50), unique=True, nullable=True)
+    gsis_id: Mapped[Optional[str]] = mapped_column(String(20), nullable=True, index=True)
+    sportradar_id: Mapped[Optional[str]] = mapped_column(String(50), nullable=True, index=True)
+    sleeper_id: Mapped[Optional[str]] = mapped_column(String(50), nullable=True, index=True)
     name: Mapped[str] = mapped_column(String(100), nullable=False)
     team_abbr: Mapped[Optional[str]] = mapped_column(String(5))
     position: Mapped[Optional[str]] = mapped_column(String(5))  # QB, RB, WR, TE, K, DEF
@@ -39,6 +42,7 @@ class Player(Base):
     market_value_fantasypros: Mapped[Optional[Decimal]] = mapped_column(Numeric(5, 2))
     market_value_sleeper: Mapped[Optional[Decimal]] = mapped_column(Numeric(5, 2))
     market_value_underdog: Mapped[Optional[Decimal]] = mapped_column(Numeric(5, 2))
+    market_value_league: Mapped[Optional[Decimal]] = mapped_column(Numeric(5, 2))
     market_value_confidence: Mapped[Optional[str]] = mapped_column(String(20))
     market_value_updated_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
 
@@ -51,13 +55,45 @@ class Player(Base):
     let_go_threshold: Mapped[Optional[Decimal]] = mapped_column(Numeric(5, 2))
     elite_anchor_weight: Mapped[Optional[Decimal]] = mapped_column(Numeric(3, 2))
 
+    # AI valuation agent output
+    ai_bid_ceiling: Mapped[Optional[int]] = mapped_column(Integer)
+    ai_confidence_floor: Mapped[Optional[int]] = mapped_column(Integer)
+    ai_confidence_ceiling: Mapped[Optional[int]] = mapped_column(Integer)
+    value_assessment: Mapped[Optional[str]] = mapped_column(String(20))  # elite_value/good_value/fair_value/slight_overpay/avoid
+    auction_note: Mapped[Optional[str]] = mapped_column(Text)
+    pay_up_flag: Mapped[bool] = mapped_column(Boolean, default=False)
+    nomination_target_flag: Mapped[bool] = mapped_column(Boolean, default=False)
+
     # Situation summary
     situation_score: Mapped[Optional[str]] = mapped_column(String(20))  # strong/moderate/weak/volatile
     positional_scarcity_modifier: Mapped[Optional[Decimal]] = mapped_column(Numeric(3, 2))
     breakout_flag: Mapped[bool] = mapped_column(Boolean, default=False)
 
+    # Draft metadata
+    draft_round: Mapped[Optional[int]] = mapped_column(Integer)
+    draft_pick: Mapped[Optional[int]] = mapped_column(Integer)       # Overall pick number
+    draft_year: Mapped[Optional[int]] = mapped_column(Integer)
+    nfl_seasons_played: Mapped[Optional[int]] = mapped_column(Integer)
+
+    # Rookie evaluation fields (written by Agent 2: Roster Changes)
+    is_rookie: Mapped[bool] = mapped_column(Boolean, default=False)
+    college_profile_grade: Mapped[Optional[str]] = mapped_column(String(20))     # elite/strong/average/weak
+    draft_capital_signal: Mapped[Optional[str]] = mapped_column(String(10))      # high/medium/low
+    draft_capital_value: Mapped[Optional[Decimal]] = mapped_column(Numeric(5, 1))
+    adjusted_dominator_rating: Mapped[Optional[Decimal]] = mapped_column(Numeric(4, 3))
+    conference: Mapped[Optional[str]] = mapped_column(String(30))
+    historical_comp_names: Mapped[Optional[list]] = mapped_column(JSONB)
+    comp_yr1_avg_ppg: Mapped[Optional[Decimal]] = mapped_column(Numeric(5, 2))
+    comp_yr2_avg_ppg: Mapped[Optional[Decimal]] = mapped_column(Numeric(5, 2))
+    landing_spot_modifier: Mapped[Optional[Decimal]] = mapped_column(Numeric(4, 3))
+    projection_confidence: Mapped[Optional[str]] = mapped_column(String(10))    # low/medium/high
+    variance_flag: Mapped[bool] = mapped_column(Boolean, default=False)
+
     # Human-readable summary (2-3 sentences, shown during live draft)
     notes: Mapped[Optional[str]] = mapped_column(Text)
+
+    # Team change tracking (for profile cache invalidation)
+    team_updated_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
 
     # Pipeline metadata
     last_pipeline_run: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
@@ -123,7 +159,18 @@ class PlayerProfile(Base):
     # Breakout
     breakout_flag: Mapped[bool] = mapped_column(Boolean, default=False)
     breakout_reasoning: Mapped[Optional[str]] = mapped_column(Text)
+    projection_reasoning: Mapped[Optional[str]] = mapped_column(Text)
     positional_scarcity_tier: Mapped[Optional[str]] = mapped_column(String(20))  # scarce/moderate/deep
+
+    # Rookie-specific profile fields (populated when is_rookie=True)
+    is_rookie: Mapped[bool] = mapped_column(Boolean, default=False)
+    profile_source: Mapped[Optional[str]] = mapped_column(String(20))   # nfl_history/college_comps
+    ceiling_value_ppr: Mapped[Optional[Decimal]] = mapped_column(Numeric(6, 1))
+    floor_value_ppr: Mapped[Optional[Decimal]] = mapped_column(Numeric(6, 1))
+    confidence: Mapped[Optional[str]] = mapped_column(String(10))       # low/medium/high
+    variance_flag: Mapped[bool] = mapped_column(Boolean, default=False)
+    breakout_window: Mapped[Optional[str]] = mapped_column(String(20))  # year_1/year_2_to_3/year_2_to_4/year_3_to_4
+    year1_role: Mapped[Optional[str]] = mapped_column(String(20))       # starter/rotational/depth
 
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
@@ -178,6 +225,7 @@ class PlayerSchedule(Base):
     season_year: Mapped[int] = mapped_column(Integer, nullable=False)
 
     bye_week: Mapped[Optional[int]] = mapped_column(Integer)
+    bye_in_playoff_window: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default="false")  # bye falls in weeks 14-17
 
     # Early window (weeks 1-6)
     early_window_grade: Mapped[Optional[str]] = mapped_column(String(20))  # favorable/neutral/tough

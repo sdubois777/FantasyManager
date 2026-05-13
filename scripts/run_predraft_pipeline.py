@@ -45,13 +45,13 @@ AGENT_SPECS: dict[str, dict] = {
         "description": "Player dependency flags (DISPLACED, CONTINGENT, etc.)",
     },
     "player_profiles": {
-        "model": "haiku",
+        "model": "mixed",
         "model_id": "claude-haiku-4-5-20251001",
-        "max_tokens": 1000,
-        "est_input_tokens": 500,
-        "api_calls": 32,
+        "max_tokens": 4000,
+        "est_input_tokens": 1500,
+        "api_calls": 120,
         "status": "built",
-        "description": "Player role classification and efficiency metrics",
+        "description": "Player projections — Haiku batch + Sonnet for complex players",
     },
     "injury_risk": {
         "model": "haiku",
@@ -59,16 +59,16 @@ AGENT_SPECS: dict[str, dict] = {
         "max_tokens": 1000,
         "est_input_tokens": 400,
         "api_calls": 32,
-        "status": "not_built",
+        "status": "built",
         "description": "Injury risk profiles and risk-adjusted value modifiers",
     },
     "schedule": {
         "model": "haiku",
         "model_id": "claude-haiku-4-5-20251001",
-        "max_tokens": 800,
+        "max_tokens": 1500,
         "est_input_tokens": 400,
         "api_calls": 32,
-        "status": "not_built",
+        "status": "built",
         "description": "Schedule grades (early/full/playoff windows)",
     },
     "beat_reporter": {
@@ -77,18 +77,38 @@ AGENT_SPECS: dict[str, dict] = {
         "max_tokens": 300,
         "est_input_tokens": 200,
         "api_calls": None,  # variable — RSS feed-driven
-        "status": "not_built",
+        "status": "built",
         "description": "Beat reporter signals (daily RSS ingestion)",
+    },
+    "valuation": {
+        "model": "none",
+        "model_id": "none",
+        "max_tokens": 0,
+        "est_input_tokens": 0,
+        "api_calls": 0,  # pure Python — no API calls
+        "status": "built",
+        "description": "Draft bible valuation pass (bid ceilings, tiers, value gap)",
+    },
+    "valuation_agent": {
+        "model": "mixed",
+        "model_id": "claude-sonnet-4-6",
+        "max_tokens": 600,
+        "est_input_tokens": 800,
+        "api_calls": 60,
+        "status": "built",
+        "description": "AI ceiling calibration (confidence ranges, auction notes, flags)",
     },
 }
 
 PIPELINE_ORDER = [
     "team_systems",
     "roster_changes",
-    "player_profiles",
     "injury_risk",
     "schedule",
     "beat_reporter",
+    "player_profiles",   # runs LAST — synthesizes all upstream agent outputs
+    "valuation",
+    "valuation_agent",   # AI ceiling calibration — runs after math valuation
 ]
 
 # Cost per million tokens
@@ -101,7 +121,23 @@ _RATES = {
 def _estimate_cost(spec: dict, calls: int) -> float | None:
     if calls == 0:
         return None
-    rates = _RATES[spec["model"]]
+    model = spec["model"]
+    if model == "mixed":
+        # Estimate: 32 haiku batch + remaining sonnet individual
+        haiku_calls = min(32, calls)
+        sonnet_calls = max(0, calls - 32)
+        h = haiku_calls * (
+            spec["est_input_tokens"] * _RATES["haiku"]["input"]
+            + spec["max_tokens"] * _RATES["haiku"]["output"]
+        ) / 1_000_000
+        s = sonnet_calls * (
+            spec["est_input_tokens"] * _RATES["sonnet"]["input"]
+            + 800 * _RATES["sonnet"]["output"]  # 800 max_tokens for Sonnet per-player
+        ) / 1_000_000
+        return h + s
+    if model == "none":
+        return 0.0
+    rates = _RATES[model]
     input_cost  = spec["est_input_tokens"] * calls * rates["input"]  / 1_000_000
     output_cost = spec["max_tokens"]       * calls * rates["output"] / 1_000_000
     return input_cost + output_cost
@@ -126,6 +162,9 @@ def print_dry_run(agents: list[str], single_team: bool) -> None:
         if spec["api_calls"] is None:
             calls_str = "variable"
             cost_str  = "variable"
+        elif spec["api_calls"] == 0:
+            calls_str = "0"
+            cost_str  = "$0.0000"
         else:
             calls = scope_calls
             cost  = _estimate_cost(spec, calls)
@@ -166,7 +205,7 @@ def run_seed() -> None:
 # Agent dispatch
 # ---------------------------------------------------------------------------
 
-async def run_agent(name: str, teams: list[str] | None) -> None:
+async def run_agent(name: str, teams: list[str] | None, force: bool = False, warehouse=None) -> None:
     spec = AGENT_SPECS[name]
     if spec["status"] == "not_built":
         print(f"[{name}] SKIPPED — not built yet.")
@@ -177,31 +216,73 @@ async def run_agent(name: str, teams: list[str] | None) -> None:
 
     if name == "team_systems":
         from backend.agents.team_systems import TeamSystemsAgent, NFL_TEAMS
-        agent = TeamSystemsAgent(dry_run=False)
-        for team in (teams or NFL_TEAMS):
-            await agent.run_for_team(team)
+        agent = TeamSystemsAgent(dry_run=False, warehouse=warehouse)
+        if teams:
+            for team in teams:
+                await agent.run_for_team(team)
+        else:
+            await agent.run_all_teams(warehouse=warehouse)
 
     elif name == "roster_changes":
         from backend.agents.roster_changes import RosterChangesAgent
-        from backend.agents.team_systems import NFL_TEAMS
-        agent = RosterChangesAgent(dry_run=False)
+        agent = RosterChangesAgent(dry_run=False, warehouse=warehouse)
         if teams:
             for team in teams:
                 await agent.run_for_team(team)
         else:
-            await agent.run_all_teams()  # pre-loads OTC transactions before team loop
+            await agent.run_all_teams(warehouse=warehouse)
 
     elif name == "player_profiles":
         from backend.agents.player_profiles import PlayerProfilesAgent
-        from backend.agents.team_systems import NFL_TEAMS
-        agent = PlayerProfilesAgent(dry_run=False)
+        agent = PlayerProfilesAgent(dry_run=False, warehouse=warehouse)
+        if teams:
+            for team in teams:
+                await agent.run_for_team(team, force=force)
+        else:
+            await agent.run_all_teams(warehouse=warehouse, force=force)
+
+    elif name == "injury_risk":
+        from backend.agents.injury_risk import InjuryRiskAgent
+        agent = InjuryRiskAgent(dry_run=False, warehouse=warehouse)
         if teams:
             for team in teams:
                 await agent.run_for_team(team)
         else:
-            await agent.run_all_teams()
+            await agent.run_all_teams(warehouse=warehouse)
 
-    # Remaining agents will be wired in as they are built (Stages 6-8)
+    elif name == "schedule":
+        from backend.agents.schedule import ScheduleAgent
+        agent = ScheduleAgent(dry_run=False, warehouse=warehouse)
+        if teams:
+            for team in teams:
+                await agent.run_for_team(team)
+        else:
+            await agent.run_all_teams(warehouse=warehouse)
+
+    elif name == "beat_reporter":
+        from backend.agents.beat_reporter import BeatReporterAgent
+        agent = BeatReporterAgent(dry_run=False)
+        # Beat reporter is not team-batched — ignores --team flag, runs all feeds
+        signals = await agent.run()
+        print(f"[{name}] {signals} new signal(s) written.")
+
+    elif name == "valuation":
+        from backend.engines.valuation import run_valuation_pass
+        result = await run_valuation_pass()
+        print(
+            f"[{name}] {result['updated']} player(s) updated, "
+            f"{result['skipped']} skipped "
+            f"(analysis_year={result['analysis_year']})."
+        )
+
+    elif name == "valuation_agent":
+        from backend.agents.valuation_agent import ValuationAgent
+        agent = ValuationAgent(dry_run=False)
+        result = await agent.run_all()
+        print(
+            f"[{name}] {result['processed']} player(s) processed, "
+            f"{result['skipped']} skipped."
+        )
 
     elapsed = time.monotonic() - t0
     print(f"[{name}] Done in {elapsed:.1f}s.\n")
@@ -217,7 +298,7 @@ async def main() -> None:
         "--agent",
         default="all",
         metavar="NAME",
-        help="Agent to run: all | team_systems | roster_changes | player_profiles | injury_risk | schedule | beat_reporter",
+        help="Agent to run: all | team_systems | roster_changes | player_profiles | injury_risk | schedule | beat_reporter | valuation | valuation_agent",
     )
     parser.add_argument(
         "--team",
@@ -234,6 +315,11 @@ async def main() -> None:
         "--skip-seed",
         action="store_true",
         help="Skip re-seeding the players table (assume it is already populated)",
+    )
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Force regeneration of all profiles, bypassing cache invalidation",
     )
     args = parser.parse_args()
 
@@ -257,9 +343,23 @@ async def main() -> None:
     if not args.skip_seed:
         run_seed()
 
+    # Build warehouse once — all agents read from this shared data store
+    from backend.integrations.nfl_data import NflDataWarehouse, populate_gsis_from_depth_charts
+    print("[warehouse] Building NflDataWarehouse (one-time data load)...")
+    t0 = time.monotonic()
+    warehouse = NflDataWarehouse.build()
+    summary = warehouse.summary()
+    print(f"[warehouse] Built in {time.monotonic() - t0:.1f}s — {summary}")
+
+    # Populate gsis_id for players that don't have it yet
+    gsis_count = await populate_gsis_from_depth_charts(warehouse)
+    if gsis_count:
+        print(f"[gsis_id] Populated {gsis_count} players from depth charts")
+    print()
+
     teams = [team_filter] if team_filter else None
     for name in agents:
-        await run_agent(name, teams)
+        await run_agent(name, teams, force=args.force, warehouse=warehouse)
 
     print("=== Pipeline complete ===\n")
 
