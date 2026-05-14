@@ -280,7 +280,7 @@ fantasy-football-ai/
 
 ## Current Project Status
 
-883 tests passing.
+883 tests passing (backend). 29 frontend tests passing.
 
 - [x] Stage 1: Foundation
 - [x] Stage 2: Data ingestion
@@ -394,8 +394,10 @@ fantasy-football-ai/
   Credits: intro=25 signup, standard=75 signup+20/mo, pro=200 signup+50/mo
   Live draft = tier entitlement (not credit cost)
   9 auth tests, user_id scoped preferences, real email from Clerk API
-- [ ] Stage 27: Landing Page — see docs/stages/stage-27-landing-page.md
-  Use validated backtest stats: 74.1% accuracy, 29.6 MAE, 93% buy accuracy
+- [x] Stage 27: Landing Page — DraftMind marketing site
+  Public landing at /, pricing at /pricing, 9 components, dark theme
+  Hero, social proof, how-it-works, validation stats, feature comparison,
+  3-tier pricing table, FAQ accordion, footer CTA, SEO meta tags
 - [ ] Stage 28: League Sync — see docs/stages/stage-28-league-sync.md
   Yahoo multi-user OAuth, Sleeper leagues, ESPN cookie API
   NOTE: Sleeper player API already built — Stage 28 adds multi-user league sync
