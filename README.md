@@ -52,6 +52,8 @@ The gap between them is the edge. Bid ceilings blend both values based on player
 | Task scheduling | APScheduler |
 | Yahoo draft control | Playwright |
 | Frontend | React + Vite + Tailwind + Zustand |
+| Auth | Clerk (JWT + webhooks) |
+| Hosting | Railway |
 | CI/CD | GitHub Actions |
 
 ---
@@ -121,31 +123,37 @@ The assistant references actual system values, bid ceilings, dependency flags, a
 
 ## Project Status
 
+883 tests passing.
+
 ### Completed
 
 - [x] **Stage 1: Foundation** — Repo structure, ORM models, FastAPI app, Alembic migrations
-- [x] **Stage 2: Data Ingestion** — nfl_data_py wrapper, OTC scraper, FantasyPros Playwright scraper, seed script
+- [x] **Stage 2: Data Ingestion** — Sleeper API (primary), nfl_data_py (schedules/PBP/NGS only)
 - [x] **Stage 3: Team Systems Agent** — Haiku, 500 tokens, 32 calls, dynamic season years
 - [x] **Stage 4: Roster Changes Agent** — Sonnet, 4000 tokens, causal reasoning, displacement/contingency flags
-- [x] **Stage 5: Player Profiles Agent** — Haiku, 4000 tokens, role classification, 463 player profiles
+- [x] **Stage 5: Player Profiles Agent** — Haiku, 4000 tokens, role classification, 682 player profiles, dynamic per-player lookback
 - [x] **Stage 6: Injury Risk Agent** — Haiku, 1000 tokens, pattern flags pre-computed in Python
 - [x] **Stage 7: Schedule Agent** — Haiku, 1500 tokens, defensive grades inverted from weekly PPR, bye-in-playoff flag
 - [x] **Stage 8: Beat Reporter Agent** — Haiku, 300 tokens, feedparser RSS, APScheduler daily at 7am, dedup
 - [x] **Stage 9: Valuation Pass** — Pure Python, PAR method, two-value bid ceiling, positional scarcity modifiers
-
-### In Progress
-
-- [~] **Stage 10: Yahoo API Integration** — OAuth flow implemented, `get_players()` works year-round. League endpoints (`get_league`, `get_teams`, `get_rosters`, `get_draft_results`) implemented but untestable until league is active (~August)
-- [~] **Stage 11: Playwright Draft Bridge** — Foundation complete. WebSocket interception, MutationObserver fallback, health check, `MANUAL_ACTION_REQUIRED` failure handling, WebSocketManager singleton, draft router with WS endpoint. Synthetic test fixtures in place; real Yahoo WS frames needed in August
+- [x] **Stage 10: Yahoo API Integration** — OAuth, league history, auction engine, market values
+- [x] **Stage 11: Playwright Draft Bridge** — WS interception, MutationObserver fallback, health check, 35 tests
+- [x] **Stage 12: Live Draft Agent** — DraftStateManager, DependencyResolver, OpponentThreatAnalyzer, LiveDraftEngine
+- [x] **Stage 13a: Pre-Draft UI** — React 19 + Vite + Tailwind 4 + Zustand 5, 7 pages, 15 components
+- [x] **Stage 13b: Draft Room UI** — 4-zone full-screen layout, WebSocket auto-reconnect, color-coded recommendations
+- [x] **Stage 22: Pipeline Admin UI** — Status dashboard, manual triggers, cost reports (8/10 spec items)
+- [x] **Stage 25: SaaS Foundation** — LeagueConfig, user/credit/league models, middleware, exception handlers
+- [x] **Stage 26: User Auth** — Clerk JWT verification, webhook lifecycle, protected routes, account dashboard
 
 ### Remaining
 
-- [ ] **Stage 12:** Live Draft Agent (Sonnet, real-time decision engine with opponent modeling)
-- [ ] **Stage 13:** Draft UI (React — nomination panel, recommendation cards, bid controls, draft board, opponent tracker)
 - [ ] **Stage 14:** Season Roster Store (post-draft sync via Yahoo API)
 - [ ] **Stages 15-21:** In-season features (Roster Monitor, Trade Analyzer, Trade Proposals, Lineup Optimizer, Waiver Wire, Opponent Analyzer)
-- [ ] **Stage 22:** Pipeline Admin UI (status dashboard, manual triggers, cost reports)
 - [ ] **Stage 23:** Deployment + testing (Railway, GitHub Actions CI/CD)
+- [ ] **Stage 27:** Landing Page
+- [ ] **Stage 28:** League Sync (Yahoo multi-user OAuth, Sleeper leagues, ESPN)
+- [ ] **Stage 29:** Snake Draft support
+- [ ] **Stage 30:** Half PPR scoring
 
 ---
 
@@ -162,14 +170,21 @@ The assistant references actual system values, bid ceilings, dependency flags, a
 
 ```env
 ANTHROPIC_API_KEY=
+DATABASE_URL=postgresql+asyncpg://user:password@host:5432/fantasy_football
+SECRET_KEY=
+ENVIRONMENT=development
+
+# Clerk auth
+CLERK_SECRET_KEY=
+VITE_CLERK_PUBLISHABLE_KEY=
+CLERK_WEBHOOK_SECRET=     # Optional — skipped in dev
+
+# Yahoo Fantasy
 YAHOO_CLIENT_ID=
 YAHOO_CLIENT_SECRET=
 YAHOO_REDIRECT_URI=http://localhost:8000/auth/yahoo/callback
 YAHOO_LEAGUE_ID=          # Set once league is created (~August)
 YAHOO_REFRESH_TOKEN=      # Set after completing OAuth flow
-DATABASE_URL=postgresql+asyncpg://user:password@host:5432/fantasy_football
-SECRET_KEY=
-ENVIRONMENT=development
 ```
 
 ### Running
