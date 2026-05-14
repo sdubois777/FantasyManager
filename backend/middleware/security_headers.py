@@ -55,7 +55,10 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
                 "wss: ws:; "
                 "frame-src "
                 "https://*.clerk.accounts.dev "
-                "https://challenges.cloudflare.com;"
+                "https://challenges.cloudflare.com; "
+                "worker-src 'self' blob:; "
+                "font-src 'self' data: "
+                "https://*.clerk.accounts.dev;"
             )
 
         return response
