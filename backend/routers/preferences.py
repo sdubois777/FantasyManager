@@ -14,11 +14,13 @@ import logging
 import uuid
 from typing import Optional
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy import delete, select
 
+from backend.core.dependencies import get_current_user
 from backend.database import AsyncSessionLocal
+from backend.models.user import User
 from backend.models.user_preference import UserPreference
 
 logger = logging.getLogger(__name__)
@@ -57,12 +59,13 @@ class SetStrategyRequest(BaseModel):
 # ---------------------------------------------------------------------------
 
 @router.get("/watchlist", response_model=WatchlistResponse)
-async def get_watchlist():
-    """List all watchlist player IDs."""
+async def get_watchlist(user: User = Depends(get_current_user)):
+    """List all watchlist player IDs for current user."""
     async with AsyncSessionLocal() as session:
         result = await session.execute(
             select(UserPreference)
             .where(UserPreference.preference_type == "watchlist")
+            .where(UserPreference.user_id == user.id)
             .order_by(UserPreference.created_at.desc())
         )
         prefs = result.scalars().all()
@@ -79,14 +82,15 @@ async def get_watchlist():
 
 
 @router.post("/watchlist", response_model=WatchlistItem, status_code=201)
-async def add_to_watchlist(body: AddWatchlistRequest):
+async def add_to_watchlist(body: AddWatchlistRequest, user: User = Depends(get_current_user)):
     """Add a player to the watchlist."""
     async with AsyncSessionLocal() as session:
-        # Check if already in watchlist
+        # Check if already in watchlist for this user
         existing = await session.execute(
             select(UserPreference)
             .where(UserPreference.preference_type == "watchlist")
             .where(UserPreference.entity_id == body.player_id)
+            .where(UserPreference.user_id == user.id)
         )
         if existing.scalar_one_or_none():
             raise HTTPException(status_code=409, detail="Player already in watchlist")
@@ -94,6 +98,7 @@ async def add_to_watchlist(body: AddWatchlistRequest):
         pref = UserPreference(
             preference_type="watchlist",
             entity_id=body.player_id,
+            user_id=user.id,
             value={},
         )
         session.add(pref)
@@ -108,13 +113,14 @@ async def add_to_watchlist(body: AddWatchlistRequest):
 
 
 @router.delete("/watchlist/{player_id}", status_code=204)
-async def remove_from_watchlist(player_id: str):
+async def remove_from_watchlist(player_id: str, user: User = Depends(get_current_user)):
     """Remove a player from the watchlist."""
     async with AsyncSessionLocal() as session:
         result = await session.execute(
             delete(UserPreference)
             .where(UserPreference.preference_type == "watchlist")
             .where(UserPreference.entity_id == player_id)
+            .where(UserPreference.user_id == user.id)
         )
         await session.commit()
 
@@ -130,12 +136,13 @@ VALID_STRATEGIES = {"hero_rb", "zero_rb", "stars_and_scrubs", "balanced"}
 
 
 @router.get("/strategy", response_model=StrategyResponse)
-async def get_strategy():
-    """Get the active draft strategy."""
+async def get_strategy(user: User = Depends(get_current_user)):
+    """Get the active draft strategy for current user."""
     async with AsyncSessionLocal() as session:
         result = await session.execute(
             select(UserPreference)
             .where(UserPreference.preference_type == "strategy")
+            .where(UserPreference.user_id == user.id)
             .limit(1)
         )
         pref = result.scalar_one_or_none()
@@ -148,8 +155,8 @@ async def get_strategy():
 
 
 @router.put("/strategy", response_model=StrategyResponse)
-async def set_strategy(body: SetStrategyRequest):
-    """Set the draft strategy."""
+async def set_strategy(body: SetStrategyRequest, user: User = Depends(get_current_user)):
+    """Set the draft strategy for current user."""
     if body.strategy not in VALID_STRATEGIES:
         raise HTTPException(
             status_code=400,
@@ -160,6 +167,7 @@ async def set_strategy(body: SetStrategyRequest):
         result = await session.execute(
             select(UserPreference)
             .where(UserPreference.preference_type == "strategy")
+            .where(UserPreference.user_id == user.id)
             .limit(1)
         )
         pref = result.scalar_one_or_none()
@@ -170,6 +178,7 @@ async def set_strategy(body: SetStrategyRequest):
             pref = UserPreference(
                 preference_type="strategy",
                 entity_id=None,
+                user_id=user.id,
                 value={"strategy": body.strategy},
             )
             session.add(pref)

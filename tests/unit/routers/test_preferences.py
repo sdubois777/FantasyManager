@@ -8,7 +8,20 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from httpx import ASGITransport, AsyncClient
 
+from backend.core.dependencies import get_current_user
 from backend.main import app
+
+_USER_ID = uuid.uuid4()
+
+
+def _mock_user():
+    m = MagicMock()
+    m.id = _USER_ID
+    m.external_id = "test-user"
+    m.email = "test@test.com"
+    m.tier = "intro"
+    m.credits_remaining = 25
+    return m
 
 
 def _make_pref(ptype="watchlist", entity_id="player-1", value=None):
@@ -41,9 +54,13 @@ async def test_get_watchlist():
     ctx.__aenter__ = AsyncMock(return_value=session)
     ctx.__aexit__ = AsyncMock(return_value=False)
 
-    with patch("backend.routers.preferences.AsyncSessionLocal", return_value=ctx):
-        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
-            resp = await ac.get("/preferences/watchlist")
+    app.dependency_overrides[get_current_user] = _mock_user
+    try:
+        with patch("backend.routers.preferences.AsyncSessionLocal", return_value=ctx):
+            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+                resp = await ac.get("/preferences/watchlist")
+    finally:
+        app.dependency_overrides.pop(get_current_user, None)
 
     assert resp.status_code == 200
     data = resp.json()
@@ -69,9 +86,13 @@ async def test_add_to_watchlist():
     ctx.__aenter__ = AsyncMock(return_value=session)
     ctx.__aexit__ = AsyncMock(return_value=False)
 
-    with patch("backend.routers.preferences.AsyncSessionLocal", return_value=ctx):
-        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
-            resp = await ac.post("/preferences/watchlist", json={"player_id": "player-2"})
+    app.dependency_overrides[get_current_user] = _mock_user
+    try:
+        with patch("backend.routers.preferences.AsyncSessionLocal", return_value=ctx):
+            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+                resp = await ac.post("/preferences/watchlist", json={"player_id": "player-2"})
+    finally:
+        app.dependency_overrides.pop(get_current_user, None)
 
     assert resp.status_code == 201
     data = resp.json()
@@ -91,9 +112,13 @@ async def test_add_to_watchlist_duplicate():
     ctx.__aenter__ = AsyncMock(return_value=session)
     ctx.__aexit__ = AsyncMock(return_value=False)
 
-    with patch("backend.routers.preferences.AsyncSessionLocal", return_value=ctx):
-        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
-            resp = await ac.post("/preferences/watchlist", json={"player_id": "player-1"})
+    app.dependency_overrides[get_current_user] = _mock_user
+    try:
+        with patch("backend.routers.preferences.AsyncSessionLocal", return_value=ctx):
+            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+                resp = await ac.post("/preferences/watchlist", json={"player_id": "player-1"})
+    finally:
+        app.dependency_overrides.pop(get_current_user, None)
 
     assert resp.status_code == 409
 
@@ -111,9 +136,13 @@ async def test_remove_from_watchlist():
     ctx.__aenter__ = AsyncMock(return_value=session)
     ctx.__aexit__ = AsyncMock(return_value=False)
 
-    with patch("backend.routers.preferences.AsyncSessionLocal", return_value=ctx):
-        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
-            resp = await ac.delete("/preferences/watchlist/player-1")
+    app.dependency_overrides[get_current_user] = _mock_user
+    try:
+        with patch("backend.routers.preferences.AsyncSessionLocal", return_value=ctx):
+            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+                resp = await ac.delete("/preferences/watchlist/player-1")
+    finally:
+        app.dependency_overrides.pop(get_current_user, None)
 
     assert resp.status_code == 204
 
@@ -131,9 +160,13 @@ async def test_remove_from_watchlist_not_found():
     ctx.__aenter__ = AsyncMock(return_value=session)
     ctx.__aexit__ = AsyncMock(return_value=False)
 
-    with patch("backend.routers.preferences.AsyncSessionLocal", return_value=ctx):
-        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
-            resp = await ac.delete("/preferences/watchlist/nonexistent")
+    app.dependency_overrides[get_current_user] = _mock_user
+    try:
+        with patch("backend.routers.preferences.AsyncSessionLocal", return_value=ctx):
+            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+                resp = await ac.delete("/preferences/watchlist/nonexistent")
+    finally:
+        app.dependency_overrides.pop(get_current_user, None)
 
     assert resp.status_code == 404
 
@@ -155,9 +188,13 @@ async def test_get_strategy():
     ctx.__aenter__ = AsyncMock(return_value=session)
     ctx.__aexit__ = AsyncMock(return_value=False)
 
-    with patch("backend.routers.preferences.AsyncSessionLocal", return_value=ctx):
-        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
-            resp = await ac.get("/preferences/strategy")
+    app.dependency_overrides[get_current_user] = _mock_user
+    try:
+        with patch("backend.routers.preferences.AsyncSessionLocal", return_value=ctx):
+            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+                resp = await ac.get("/preferences/strategy")
+    finally:
+        app.dependency_overrides.pop(get_current_user, None)
 
     assert resp.status_code == 200
     assert resp.json()["strategy"] == "hero_rb"
@@ -177,9 +214,13 @@ async def test_set_strategy():
     ctx.__aenter__ = AsyncMock(return_value=session)
     ctx.__aexit__ = AsyncMock(return_value=False)
 
-    with patch("backend.routers.preferences.AsyncSessionLocal", return_value=ctx):
-        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
-            resp = await ac.put("/preferences/strategy", json={"strategy": "zero_rb"})
+    app.dependency_overrides[get_current_user] = _mock_user
+    try:
+        with patch("backend.routers.preferences.AsyncSessionLocal", return_value=ctx):
+            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+                resp = await ac.put("/preferences/strategy", json={"strategy": "zero_rb"})
+    finally:
+        app.dependency_overrides.pop(get_current_user, None)
 
     assert resp.status_code == 200
     assert resp.json()["strategy"] == "zero_rb"
@@ -188,7 +229,11 @@ async def test_set_strategy():
 @pytest.mark.asyncio
 async def test_set_strategy_invalid():
     """PUT /preferences/strategy rejects invalid strategy."""
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
-        resp = await ac.put("/preferences/strategy", json={"strategy": "yolo"})
+    app.dependency_overrides[get_current_user] = _mock_user
+    try:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+            resp = await ac.put("/preferences/strategy", json={"strategy": "yolo"})
+    finally:
+        app.dependency_overrides.pop(get_current_user, None)
 
     assert resp.status_code == 400
