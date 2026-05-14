@@ -8,13 +8,21 @@ import { registerTokenGetter } from '../api/client'
  * Bearer tokens to every request automatically.
  */
 export default function AuthProvider({ children }) {
-  const { getToken, isLoaded } = useAuth()
+  const { getToken, isLoaded, isSignedIn } = useAuth()
 
   useEffect(() => {
     if (isLoaded) {
-      registerTokenGetter(() => getToken())
+      registerTokenGetter(async () => {
+        if (!isSignedIn) return null
+        const token = await getToken()
+        console.log(
+          'Token fetched:',
+          token ? token.substring(0, 20) + '...' : 'null'
+        )
+        return token
+      })
     }
-  }, [isLoaded, getToken])
+  }, [isLoaded, isSignedIn, getToken])
 
   return children
 }

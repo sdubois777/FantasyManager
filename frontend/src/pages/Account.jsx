@@ -40,11 +40,14 @@ function SignOutButton() {
 }
 
 export default function AccountPage() {
-  const { user: clerkUser } = useUser()
+  const { user: clerkUser, isLoaded } = useUser()
+  console.log('AccountPage rendering')
+  console.log('Clerk user loaded:', isLoaded, clerkUser?.id)
 
   const { data, isLoading, error } = useQuery({
     queryKey: ['account'],
     queryFn: fetchAccountData,
+    enabled: isLoaded && !!clerkUser,
   })
 
   if (isLoading) {
