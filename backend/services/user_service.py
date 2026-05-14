@@ -23,9 +23,8 @@ class UserService:
         """
         Get existing user or create new one.
         Returns (user, created) — created=True if new.
-        New users start on intro tier with 0 credits.
-        Signup bonus applied when payment confirmed
-        via Stripe webhook.
+        Intro users get signup bonus (25 credits) immediately.
+        Paid tier bonuses applied via Stripe webhook (Stage 26).
         """
         user = await self._repo.get_by_external_id(
             external_id
@@ -33,12 +32,16 @@ class UserService:
         if user:
             return user, False
 
+        initial_tier = "intro"
+        signup_bonus = TIER_LIMITS[initial_tier].get(
+            "credits_signup_bonus", 0
+        )
         user = await self._repo.create(
             external_id=external_id,
             email=email,
             display_name=display_name,
-            tier="intro",
-            credits_remaining=0,
+            tier=initial_tier,
+            credits_remaining=signup_bonus,
         )
         await self._repo.commit()
         return user, True

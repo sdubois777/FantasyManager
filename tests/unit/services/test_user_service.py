@@ -74,19 +74,37 @@ async def test_new_user_starts_on_intro_tier():
 
 
 @pytest.mark.asyncio
-async def test_new_user_starts_with_zero_credits():
+async def test_new_intro_user_gets_signup_bonus():
     repo = _make_repo()
     repo.get_by_external_id.return_value = None
-    new_user = _make_user(credits=0)
+    new_user = _make_user(credits=25)
     repo.create.return_value = new_user
 
     service = UserService(repo)
-    user, _ = await service.get_or_create(
+    user, created = await service.get_or_create(
         external_id="ext-new", email="new@test.com"
     )
 
+    assert created is True
     call_kwargs = repo.create.call_args[1]
-    assert call_kwargs["credits_remaining"] == 0
+    assert call_kwargs["credits_remaining"] == 25
+    assert call_kwargs["tier"] == "intro"
+
+
+@pytest.mark.asyncio
+async def test_existing_user_credits_unchanged_on_get():
+    repo = _make_repo()
+    existing = _make_user(credits=25)
+    repo.get_by_external_id.return_value = existing
+
+    service = UserService(repo)
+    user, created = await service.get_or_create(
+        external_id="ext-001", email="test@test.com"
+    )
+
+    assert created is False
+    assert user.credits_remaining == 25
+    repo.create.assert_not_awaited()
 
 
 @pytest.mark.asyncio
