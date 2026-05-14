@@ -38,7 +38,7 @@ async def test_get_current_user_id_dev_fallback():
         request.headers = {"X-User-Id": "test-user-42"}
 
         result = await get_current_user_id(request, credentials=None)
-        assert result == "test-user-42"
+        assert result["user_id"] == "test-user-42"
 
 
 @pytest.mark.asyncio
@@ -54,7 +54,7 @@ async def test_get_current_user_id_dev_default():
         request.headers = {}
 
         result = await get_current_user_id(request, credentials=None)
-        assert result == "dev-user-001"
+        assert result["user_id"] == "dev-user-001"
 
 
 @pytest.mark.asyncio

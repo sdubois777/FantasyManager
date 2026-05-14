@@ -96,9 +96,9 @@ async def _get_clerk_jwks() -> dict:
         return resp.json()
 
 
-async def _verify_clerk_jwt(token: str) -> str:
+async def _verify_clerk_jwt(token: str) -> dict:
     """
-    Verify a Clerk JWT token and return the user ID (sub claim).
+    Verify a Clerk JWT token and return decoded payload dict.
     Raises UnauthorizedError on invalid token.
     """
     global _jwks_cache
@@ -118,7 +118,7 @@ async def _verify_clerk_jwt(token: str) -> str:
         if not user_id:
             raise UnauthorizedError("Token missing sub claim")
 
-        return user_id
+        return payload
 
     except JWTError as e:
         _jwks_cache = None
@@ -132,19 +132,57 @@ async def _verify_clerk_jwt(token: str) -> str:
         raise UnauthorizedError("Authentication failed")
 
 
+# ── Clerk user email lookup ────────────────────────────────
+
+# Cache email lookups — one Clerk API call per user per server restart
+_email_cache: dict[str, str | None] = {}
+
+
+async def _fetch_clerk_user_email(user_id: str) -> str | None:
+    """Fetch user email from Clerk Backend API using the secret key."""
+    if user_id in _email_cache:
+        return _email_cache[user_id]
+
+    from backend.config import settings
+
+    secret = settings.clerk_secret_key
+    if not secret:
+        return None
+
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.get(
+                f"https://api.clerk.com/v1/users/{user_id}",
+                headers={"Authorization": f"Bearer {secret}"},
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            primary_id = data.get("primary_email_address_id")
+            for addr in data.get("email_addresses", []):
+                if addr.get("id") == primary_id:
+                    email = addr["email_address"]
+                    _email_cache[user_id] = email
+                    return email
+    except Exception as e:
+        logger.warning("Failed to fetch Clerk user email: %s", e)
+
+    _email_cache[user_id] = None
+    return None
+
+
 # ── Auth ─────────────────────────────────────────────────
 
 async def get_current_user_id(
     request: Request,
     credentials: Optional[HTTPAuthorizationCredentials] = Depends(_bearer),
-) -> str:
+) -> dict:
     """
     Extract and verify user identity from request.
 
     Production: verifies Clerk JWT from Authorization header.
     Development (no Clerk configured): uses X-User-Id header.
 
-    Returns the Clerk user ID (external_id in our DB).
+    Returns dict with 'user_id' and optional 'email'.
     """
     from backend.config import settings
 
@@ -154,34 +192,42 @@ async def get_current_user_id(
             raise UnauthorizedError("CLERK_SECRET_KEY not configured")
         user_id = request.headers.get("X-User-Id", "dev-user-001")
         logger.debug("Dev auth: user_id=%s", user_id)
-        return user_id
+        return {"user_id": user_id, "email": f"{user_id}@dev.local"}
 
     # Production path — verify Clerk JWT
     if not credentials:
         raise UnauthorizedError("Authorization header required")
 
-    return await _verify_clerk_jwt(credentials.credentials)
+    payload = await _verify_clerk_jwt(credentials.credentials)
+    user_id = payload["sub"]
+
+    # Clerk default JWT has no email — fetch from Clerk Backend API
+    email = payload.get("email") or payload.get("email_address")
+    if not email:
+        email = await _fetch_clerk_user_email(user_id)
+
+    return {"user_id": user_id, "email": email}
 
 
 async def get_current_user(
-    user_id: str = Depends(get_current_user_id),
+    auth: dict = Depends(get_current_user_id),
     db: AsyncSession = Depends(get_db),
 ):
     """
     Returns the User DB record for the current request.
     Creates the user record if this is their first request.
-
-    Stage 26 replaces the user_id source but this
-    function signature stays identical.
     """
     from backend.repositories.user_repo import UserRepository
     from backend.services.user_service import UserService
+
+    user_id = auth["user_id"]
+    email = auth.get("email") or f"{user_id}@placeholder.local"
 
     repo = UserRepository(db)
     service = UserService(repo)
     user, _ = await service.get_or_create(
         external_id=user_id,
-        email=f"{user_id}@dev.local",
+        email=email,
     )
     return user
 
