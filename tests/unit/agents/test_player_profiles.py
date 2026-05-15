@@ -2745,3 +2745,23 @@ def test_cross_team_fallback_works_with_matching_id():
     assert result is not None, "Cross-team fallback should work when ID matches"
     assert result["games"] == 17
     assert result["rush_yards"] == 1350
+
+
+def test_same_team_initial_mismatch_refuses():
+    """Isaiah Jacobs (GB) must NOT get Josh Jacobs' (GB) stats.
+
+    Path 2 same-team match should check first initial even with
+    a single result — I.Jacobs != J.Jacobs.
+    """
+    agent = PlayerProfilesAgent()
+    agent._warehouse = _make_warehouse(target_share={2025: pd.DataFrame([
+        _make_ts_row("00-0035700", "J.Jacobs", "GB", 17, 40, 350, 3,
+                     carries=250, rush_yards=1200, rush_tds=10, position="RB"),
+    ])})
+    # Isaiah Jacobs on GB has no gsis_id, initial "I" doesn't match "J"
+    result = agent._get_player_season_stats(
+        "Isaiah Jacobs", "GB", 2025, position="RB", nfl_player_id=None
+    )
+    assert result is None, (
+        "Isaiah Jacobs (I.) must not get Josh Jacobs (J.) stats even on same team"
+    )

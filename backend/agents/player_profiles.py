@@ -603,12 +603,27 @@ class PlayerProfilesAgent(BaseAgent):
         )
         rows = _pos_filter(ts_df[mask]).sort_values("games", ascending=False)
 
-        # Disambiguate same-last-name same-team same-position players by first initial
-        if len(rows) > 1:
+        # Always disambiguate by first initial — even with one match,
+        # a different initial means a different player (e.g. Isaiah Jacobs
+        # vs Josh Jacobs on GB).  Handles both abbreviated ("D.Samuel")
+        # and full name ("Deebo Samuel") formats.
+        if not rows.empty:
             first_initial = player_name.split()[0][0].upper()
-            initial_rows = rows[rows["player_name"].str.startswith(f"{first_initial}.")]
+            initial_rows = rows[
+                rows["player_name"].str[0].str.upper() == first_initial
+            ]
             if not initial_rows.empty:
                 rows = initial_rows
+            elif nfl_player_id and "player_id" in rows.columns:
+                # Initial mismatch — verify by ID before attributing
+                id_rows = rows[rows["player_id"] == nfl_player_id]
+                if not id_rows.empty:
+                    rows = id_rows
+                else:
+                    rows = rows.iloc[0:0]  # ID mismatch — wrong player
+            elif len(rows) == 1:
+                # Single match, wrong initial, no ID to verify — refuse
+                rows = rows.iloc[0:0]
 
         if not rows.empty:
             return _extract(rows.iloc[0])
