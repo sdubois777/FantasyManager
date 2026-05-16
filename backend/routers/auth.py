@@ -28,11 +28,33 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/auth", tags=["auth"])
 
 
+@router.get("/yahoo/connect-url", summary="Get Yahoo OAuth URL (authenticated)")
+async def yahoo_connect_url(user=Depends(get_current_user)):
+    """
+    Returns the Yahoo OAuth authorization URL as JSON.
+    Frontend fetches this with a Bearer token, then navigates
+    the browser to the returned URL. Separates auth from
+    navigation so the redirect doesn't need JWT headers.
+    """
+    if not settings.yahoo_client_id:
+        from backend.core.exceptions import AppError
+        raise AppError("YAHOO_CLIENT_ID not configured")
+
+    state = base64.urlsafe_b64encode(
+        json.dumps({"user_id": str(user.id)}).encode()
+    ).decode()
+
+    url = get_authorization_url(state=state)
+    logger.info("Yahoo OAuth URL generated for user %s", user.id)
+    return {"url": url}
+
+
 @router.get("/yahoo/connect", summary="Redirect to Yahoo OAuth (requires login)")
 async def yahoo_connect(user=Depends(get_current_user)):
     """
     Initiate Yahoo OAuth for current user.
     Encodes user_id in state parameter (CSRF protection).
+    Kept for direct-navigation fallback.
     """
     if not settings.yahoo_client_id:
         from backend.core.exceptions import AppError
