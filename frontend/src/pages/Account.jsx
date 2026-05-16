@@ -1,5 +1,6 @@
+import { useState } from 'react'
 import { useUser, useClerk } from '@clerk/clerk-react'
-import { useQuery } from '@tanstack/react-query'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link } from 'react-router-dom'
 import { apiClient } from '../api/client'
 
@@ -37,6 +38,81 @@ function SignOutButton() {
     >
       Sign out
     </button>
+  )
+}
+
+const SCORING_LABELS = { ppr: 'PPR', half_ppr: 'Half PPR', standard: 'Standard' }
+
+function LeagueCard({ league }) {
+  const queryClient = useQueryClient()
+  const [syncing, setSyncing] = useState(false)
+  const [removing, setRemoving] = useState(false)
+  const [error, setError] = useState('')
+
+  const handleSync = async () => {
+    setError('')
+    setSyncing(true)
+    try {
+      await apiClient.post(`/leagues/${league.id}/sync`)
+      queryClient.invalidateQueries({ queryKey: ['account'] })
+    } catch (err) {
+      setError(err.response?.data?.message || 'Sync failed')
+    } finally {
+      setSyncing(false)
+    }
+  }
+
+  const handleRemove = async () => {
+    if (!window.confirm(`Remove "${league.league_name || league.league_id}"? This cannot be undone.`)) return
+    setError('')
+    setRemoving(true)
+    try {
+      await apiClient.delete(`/leagues/${league.id}`)
+      queryClient.invalidateQueries({ queryKey: ['account'] })
+    } catch (err) {
+      setError(err.response?.data?.message || 'Remove failed')
+      setRemoving(false)
+    }
+  }
+
+  const scoringLabel = SCORING_LABELS[league.scoring] || league.scoring?.toUpperCase() || '—'
+
+  return (
+    <div className="bg-gray-800 rounded-lg p-4">
+      <div className="flex items-center justify-between">
+        <div>
+          <div className="font-medium">
+            {league.league_name || league.league_id}
+          </div>
+          <div className="text-sm text-gray-400">
+            {league.platform} &middot; {league.team_count}-team &middot;{' '}
+            {scoringLabel} &middot; {league.season_year}
+          </div>
+        </div>
+        <div className="flex items-center gap-3">
+          <div className="text-xs text-gray-500">
+            {league.last_synced
+              ? `Synced ${new Date(league.last_synced).toLocaleDateString()}`
+              : 'Not synced'}
+          </div>
+          <button
+            onClick={handleSync}
+            disabled={syncing || removing}
+            className="text-xs text-blue-400 hover:text-blue-300 disabled:opacity-50 transition-colors"
+          >
+            {syncing ? 'Syncing...' : 'Re-sync'}
+          </button>
+          <button
+            onClick={handleRemove}
+            disabled={syncing || removing}
+            className="text-xs text-red-400 hover:text-red-300 disabled:opacity-50 transition-colors"
+          >
+            {removing ? 'Removing...' : 'Remove'}
+          </button>
+        </div>
+      </div>
+      {error && <p className="text-red-400 text-xs mt-2">{error}</p>}
+    </div>
   )
 }
 
@@ -168,25 +244,7 @@ export default function AccountPage() {
           ) : (
             <div className="space-y-3">
               {leagues.map((league) => (
-                <div
-                  key={league.id}
-                  className="flex items-center justify-between bg-gray-800 rounded-lg p-4"
-                >
-                  <div>
-                    <div className="font-medium">
-                      {league.league_name || league.league_id}
-                    </div>
-                    <div className="text-sm text-gray-400">
-                      {league.platform} &middot; {league.team_count}-team &middot;{' '}
-                      {league.scoring.toUpperCase()} &middot; {league.season_year}
-                    </div>
-                  </div>
-                  <div className="text-xs text-gray-500">
-                    {league.last_synced
-                      ? `Synced ${new Date(league.last_synced).toLocaleDateString()}`
-                      : 'Not synced'}
-                  </div>
-                </div>
+                <LeagueCard key={league.id} league={league} />
               ))}
             </div>
           )}

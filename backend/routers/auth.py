@@ -22,6 +22,7 @@ from backend.core.exceptions import AppError
 from backend.integrations.yahoo_api import (
     exchange_code_for_tokens,
     get_authorization_url,
+    get_league_settings,
     get_user_leagues,
     refresh_access_token_for_user,
 )
@@ -61,6 +62,38 @@ async def get_yahoo_leagues(
 
     leagues = await get_user_leagues(access_token)
     return {"leagues": leagues}
+
+
+@router.get("/yahoo/league-settings", summary="Fetch settings for a Yahoo league")
+async def get_yahoo_league_settings(
+    league_key: str,
+    user=Depends(get_current_user),
+    db=Depends(get_db),
+):
+    """
+    Fetch full Yahoo league settings (scoring, draft type, etc.)
+    for a specific league_key. Used by frontend confirm screen.
+    """
+    repo = CredentialRepository(db)
+    tokens = await repo.get_yahoo_tokens(user.id)
+    if not tokens:
+        err = AppError("Yahoo not connected", {"action": "connect"})
+        err.status_code = 400
+        raise err
+
+    access_token, refresh_token, expires_at = tokens
+
+    # Auto-refresh if expired
+    if expires_at and datetime.now(timezone.utc) >= expires_at:
+        access_token, refresh_token, new_expiry = (
+            await refresh_access_token_for_user(refresh_token)
+        )
+        await repo.upsert_yahoo(
+            user.id, access_token, refresh_token, new_expiry,
+        )
+
+    league_settings = await get_league_settings(access_token, league_key)
+    return {"settings": league_settings}
 
 
 @router.get("/yahoo/connect-url", summary="Get Yahoo OAuth URL (authenticated)")

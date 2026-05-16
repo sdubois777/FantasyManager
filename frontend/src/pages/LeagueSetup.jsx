@@ -144,9 +144,11 @@ function YahooConnect({ onYahooLeagues, onBack }) {
   )
 }
 
-// Step 2 — Yahoo League Selection
+// Step 2 — Yahoo League Selection (fetches full settings on select)
 function YahooLeagueSelect({ leagues, onSelect, onBack }) {
   const [selected, setSelected] = useState(null)
+  const [loadingKey, setLoadingKey] = useState(null)
+  const [error, setError] = useState('')
 
   if (!leagues || leagues.length === 0) {
     return (
@@ -160,6 +162,35 @@ function YahooLeagueSelect({ leagues, onSelect, onBack }) {
     )
   }
 
+  const handleSelect = async (league) => {
+    setSelected(league)
+    setError('')
+    setLoadingKey(league.league_key)
+    try {
+      const resp = await apiClient.get(
+        `/auth/yahoo/league-settings?league_key=${encodeURIComponent(league.league_key)}`
+      )
+      const settings = resp.data.settings
+      // Merge fetched settings into league object
+      setSelected({
+        ...league,
+        scoring_type: settings.scoring_type,
+        draft_type: settings.draft_type,
+        num_teams: settings.num_teams,
+        name: settings.name || league.name,
+        auction_budget: settings.auction_budget,
+        playoff_start_week: settings.playoff_start_week,
+        uses_faab: settings.uses_faab,
+        _settings_loaded: true,
+      })
+    } catch {
+      setError('Could not fetch league settings. You can still continue with basic info.')
+      setSelected({ ...league, _settings_loaded: false })
+    } finally {
+      setLoadingKey(null)
+    }
+  }
+
   return (
     <div>
       <h2 className="text-2xl font-bold mb-2">Select Your League</h2>
@@ -169,14 +200,20 @@ function YahooLeagueSelect({ leagues, onSelect, onBack }) {
         {leagues.map((league) => (
           <button
             key={league.league_key}
-            onClick={() => setSelected(league)}
+            onClick={() => handleSelect(league)}
+            disabled={loadingKey !== null}
             className={`w-full text-left rounded-xl p-4 border transition-colors ${
               selected?.league_key === league.league_key
                 ? 'border-purple-500 bg-purple-900/30'
                 : 'border-gray-700 bg-gray-800 hover:border-gray-600'
-            }`}
+            } disabled:opacity-60`}
           >
-            <div className="font-semibold">{league.name}</div>
+            <div className="flex items-center justify-between">
+              <div className="font-semibold">{league.name}</div>
+              {loadingKey === league.league_key && (
+                <span className="text-xs text-gray-400">Loading...</span>
+              )}
+            </div>
             <div className="text-sm text-gray-400 mt-1">
               {league.num_teams} teams
               {league.scoring_type ? ` · ${league.scoring_type}` : ''}
@@ -188,9 +225,11 @@ function YahooLeagueSelect({ leagues, onSelect, onBack }) {
         ))}
       </div>
 
+      {error && <p className="text-yellow-400 text-sm mb-4">{error}</p>}
+
       <button
         onClick={() => onSelect(selected)}
-        disabled={!selected}
+        disabled={!selected || loadingKey !== null}
         className="bg-purple-600 hover:bg-purple-500 disabled:opacity-50 text-white font-medium px-6 py-3 rounded-lg transition-colors"
       >
         Continue
@@ -199,6 +238,10 @@ function YahooLeagueSelect({ leagues, onSelect, onBack }) {
     </div>
   )
 }
+
+// Friendly labels for scoring/draft types
+const SCORING_LABELS = { ppr: 'PPR', half_ppr: 'Half PPR', standard: 'Standard' }
+const DRAFT_LABELS = { auction: 'Auction', snake: 'Snake' }
 
 // Step 3 — Yahoo Confirm
 function YahooConfirmStep({ league, onImport, onBack }) {
@@ -220,10 +263,22 @@ function YahooConfirmStep({ league, onImport, onBack }) {
       })
       onImport(resp.data)
     } catch (err) {
-      setError(err.response?.data?.message || 'Failed to import league')
+      const resp = err.response
+      if (resp?.status === 403 && resp?.data?.error_code === 'league_limit_reached') {
+        const d = resp.data
+        setError(
+          `You've reached your league limit (${d.current_leagues} of ${d.max_leagues}). ` +
+          'Upgrade your plan to add more leagues.'
+        )
+      } else {
+        setError(resp?.data?.message || 'Failed to import league')
+      }
       setLoading(false)
     }
   }
+
+  const scoringLabel = SCORING_LABELS[league.scoring_type] || league.scoring_type || '—'
+  const draftLabel = DRAFT_LABELS[league.draft_type] || league.draft_type || '—'
 
   return (
     <div>
@@ -233,12 +288,30 @@ function YahooConfirmStep({ league, onImport, onBack }) {
       <div className="bg-gray-800 rounded-xl p-6 space-y-3 max-w-md mb-8">
         <SummaryRow label="League" value={league.name} />
         <SummaryRow label="Teams" value={league.num_teams} />
-        <SummaryRow label="Format" value={league.draft_type || '—'} />
-        <SummaryRow label="Scoring" value={league.scoring_type || '—'} />
+        <SummaryRow label="Format" value={draftLabel} />
+        <SummaryRow label="Scoring" value={scoringLabel} />
         <SummaryRow label="Season" value={league.season} />
+        {league.auction_budget != null && (
+          <SummaryRow label="Auction Budget" value={`$${league.auction_budget}`} />
+        )}
+        {league.playoff_start_week && (
+          <SummaryRow label="Playoffs Start" value={`Week ${league.playoff_start_week}`} />
+        )}
       </div>
 
-      {error && <p className="text-red-400 text-sm mb-4">{error}</p>}
+      {error && (
+        <div className="mb-4">
+          <p className="text-red-400 text-sm">{error}</p>
+          {error.includes('league limit') && (
+            <a
+              href="/pricing"
+              className="text-blue-400 hover:text-blue-300 text-sm underline mt-1 inline-block"
+            >
+              View upgrade options
+            </a>
+          )}
+        </div>
+      )}
 
       <div className="flex gap-4">
         <button
