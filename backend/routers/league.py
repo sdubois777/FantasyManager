@@ -5,20 +5,25 @@ Endpoints:
   GET /league/tendencies          — positional bias + multi-year trends + manager patterns
   GET /league/history/seasons     — list of seasons with pick counts
   GET /league/history/{season}    — full draft results for one season
+
+All endpoints require auth and scope data to user_id + user_league_id.
 """
 from __future__ import annotations
 
 import logging
+import uuid
 from typing import Optional
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 from sqlalchemy import select, func
+from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.database import AsyncSessionLocal
+from backend.core.dependencies import get_current_user, get_db
 from backend.engines.valuation import get_market_context
 from backend.models.league_auction_history import LeagueAuctionHistory
 from backend.models.player import Player
+from backend.models.user import User
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/league", tags=["league"])
@@ -94,82 +99,94 @@ class DraftPick(BaseModel):
 # ---------------------------------------------------------------------------
 
 @router.get("/tendencies", response_model=LeagueTendenciesResponse)
-async def get_league_tendencies():
+async def get_league_tendencies(
+    league_id: uuid.UUID = Query(..., description="user_leagues.id to scope data"),
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
     """Positional bias breakdown plus multi-year trends and manager patterns."""
-    async with AsyncSessionLocal() as session:
-        # Current bias analysis (from player.market_value_league)
-        result = await session.execute(
-            select(Player)
-            .where(Player.market_value_league.isnot(None))
-            .where(Player.position.in_(["QB", "RB", "WR", "TE"]))
-        )
-        players = result.scalars().all()
+    # User-scoped filter for all auction history queries
+    user_filter = [
+        LeagueAuctionHistory.user_id == user.id,
+        LeagueAuctionHistory.user_league_id == league_id,
+    ]
 
-        # Multi-year data from history table
-        seasons_result = await session.execute(
-            select(LeagueAuctionHistory.season_year)
-            .distinct()
-            .order_by(LeagueAuctionHistory.season_year)
-        )
-        seasons_available = [row[0] for row in seasons_result.all()]
+    # Current bias analysis (from player.market_value_league — global, not scoped)
+    result = await db.execute(
+        select(Player)
+        .where(Player.market_value_league.isnot(None))
+        .where(Player.position.in_(["QB", "RB", "WR", "TE"]))
+    )
+    players = result.scalars().all()
 
-        # Positional trends across years (only for meaningful prices)
-        trends_result = await session.execute(
-            select(
-                LeagueAuctionHistory.season_year,
-                LeagueAuctionHistory.position,
-                func.avg(LeagueAuctionHistory.price).label("avg_price"),
-                func.max(LeagueAuctionHistory.price).label("max_price"),
-                func.sum(LeagueAuctionHistory.price).label("total_spent"),
-                func.count().label("player_count"),
-            )
-            .where(
-                LeagueAuctionHistory.price > 1,
-                LeagueAuctionHistory.position.in_(["QB", "RB", "WR", "TE"]),
-            )
-            .group_by(LeagueAuctionHistory.season_year, LeagueAuctionHistory.position)
-            .order_by(LeagueAuctionHistory.season_year, LeagueAuctionHistory.position)
-        )
-        positional_trends = [
-            PositionTrend(
-                season=row.season_year,
-                position=row.position,
-                avg_price=round(float(row.avg_price), 1),
-                max_price=int(row.max_price),
-                total_spent=int(row.total_spent),
-                player_count=int(row.player_count),
-            )
-            for row in trends_result.all()
-        ]
+    # Multi-year data from history table — scoped to user + league
+    seasons_result = await db.execute(
+        select(LeagueAuctionHistory.season_year)
+        .where(*user_filter)
+        .distinct()
+        .order_by(LeagueAuctionHistory.season_year)
+    )
+    seasons_available = [row[0] for row in seasons_result.all()]
 
-        # Manager tendencies across all years
-        manager_result = await session.execute(
-            select(
-                LeagueAuctionHistory.manager_name,
-                LeagueAuctionHistory.position,
-                func.avg(LeagueAuctionHistory.price).label("avg_spend"),
-                func.sum(LeagueAuctionHistory.price).label("total_spend"),
-                func.count().label("picks"),
-            )
-            .where(
-                LeagueAuctionHistory.price > 3,
-                LeagueAuctionHistory.manager_name.isnot(None),
-                LeagueAuctionHistory.manager_name != "",
-                LeagueAuctionHistory.position.in_(["QB", "RB", "WR", "TE"]),
-            )
-            .group_by(LeagueAuctionHistory.manager_name, LeagueAuctionHistory.position)
-            .order_by(LeagueAuctionHistory.manager_name, func.avg(LeagueAuctionHistory.price).desc())
+    # Positional trends across years
+    trends_result = await db.execute(
+        select(
+            LeagueAuctionHistory.season_year,
+            LeagueAuctionHistory.position,
+            func.avg(LeagueAuctionHistory.price).label("avg_price"),
+            func.max(LeagueAuctionHistory.price).label("max_price"),
+            func.sum(LeagueAuctionHistory.price).label("total_spent"),
+            func.count().label("player_count"),
         )
-        manager_tendencies = [
-            ManagerTendency(
-                manager_name=row.manager_name,
-                position=row.position,
-                avg_spend=round(float(row.avg_spend), 1),
-                total_spend=int(row.total_spend),
-                picks=int(row.picks),
-            )
-            for row in manager_result.all()
-        ]
+        .where(
+            *user_filter,
+            LeagueAuctionHistory.price > 1,
+            LeagueAuctionHistory.position.in_(["QB", "RB", "WR", "TE"]),
+        )
+        .group_by(LeagueAuctionHistory.season_year, LeagueAuctionHistory.position)
+        .order_by(LeagueAuctionHistory.season_year, LeagueAuctionHistory.position)
+    )
+    positional_trends = [
+        PositionTrend(
+            season=row.season_year,
+            position=row.position,
+            avg_price=round(float(row.avg_price), 1),
+            max_price=int(row.max_price),
+            total_spent=int(row.total_spent),
+            player_count=int(row.player_count),
+        )
+        for row in trends_result.all()
+    ]
+
+    # Manager tendencies — scoped to user + league
+    manager_result = await db.execute(
+        select(
+            LeagueAuctionHistory.manager_name,
+            LeagueAuctionHistory.position,
+            func.avg(LeagueAuctionHistory.price).label("avg_spend"),
+            func.sum(LeagueAuctionHistory.price).label("total_spend"),
+            func.count().label("picks"),
+        )
+        .where(
+            *user_filter,
+            LeagueAuctionHistory.price > 3,
+            LeagueAuctionHistory.manager_name.isnot(None),
+            LeagueAuctionHistory.manager_name != "",
+            LeagueAuctionHistory.position.in_(["QB", "RB", "WR", "TE"]),
+        )
+        .group_by(LeagueAuctionHistory.manager_name, LeagueAuctionHistory.position)
+        .order_by(LeagueAuctionHistory.manager_name, func.avg(LeagueAuctionHistory.price).desc())
+    )
+    manager_tendencies = [
+        ManagerTendency(
+            manager_name=row.manager_name,
+            position=row.position,
+            avg_spend=round(float(row.avg_spend), 1),
+            total_spend=int(row.total_spend),
+            picks=int(row.picks),
+        )
+        for row in manager_result.all()
+    ]
 
     # Current season bias analysis
     positional_biases: list[PositionBias] = []
@@ -235,20 +252,27 @@ async def get_league_tendencies():
 
 
 @router.get("/history/seasons", response_model=list[SeasonSummary])
-async def get_history_seasons():
+async def get_history_seasons(
+    league_id: uuid.UUID = Query(..., description="user_leagues.id to scope data"),
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
     """List all seasons with pick counts and total spend."""
-    async with AsyncSessionLocal() as session:
-        result = await session.execute(
-            select(
-                LeagueAuctionHistory.season_year,
-                func.count().label("pick_count"),
-                func.sum(LeagueAuctionHistory.price).label("total_spent"),
-                LeagueAuctionHistory.source,
-            )
-            .group_by(LeagueAuctionHistory.season_year, LeagueAuctionHistory.source)
-            .order_by(LeagueAuctionHistory.season_year.desc())
+    result = await db.execute(
+        select(
+            LeagueAuctionHistory.season_year,
+            func.count().label("pick_count"),
+            func.sum(LeagueAuctionHistory.price).label("total_spent"),
+            LeagueAuctionHistory.source,
         )
-        rows = result.all()
+        .where(
+            LeagueAuctionHistory.user_id == user.id,
+            LeagueAuctionHistory.user_league_id == league_id,
+        )
+        .group_by(LeagueAuctionHistory.season_year, LeagueAuctionHistory.source)
+        .order_by(LeagueAuctionHistory.season_year.desc())
+    )
+    rows = result.all()
 
     return [
         SeasonSummary(
@@ -262,15 +286,23 @@ async def get_history_seasons():
 
 
 @router.get("/history/{season}", response_model=list[DraftPick])
-async def get_history_season(season: int):
+async def get_history_season(
+    season: int,
+    league_id: uuid.UUID = Query(..., description="user_leagues.id to scope data"),
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
     """Full draft results for one season."""
-    async with AsyncSessionLocal() as session:
-        result = await session.execute(
-            select(LeagueAuctionHistory)
-            .where(LeagueAuctionHistory.season_year == season)
-            .order_by(LeagueAuctionHistory.draft_pick_number.asc().nulls_last())
+    result = await db.execute(
+        select(LeagueAuctionHistory)
+        .where(
+            LeagueAuctionHistory.user_id == user.id,
+            LeagueAuctionHistory.user_league_id == league_id,
+            LeagueAuctionHistory.season_year == season,
         )
-        records = result.scalars().all()
+        .order_by(LeagueAuctionHistory.draft_pick_number.asc().nulls_last())
+    )
+    records = result.scalars().all()
 
     if not records:
         raise HTTPException(status_code=404, detail=f"No draft data for season {season}")

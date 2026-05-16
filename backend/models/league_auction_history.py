@@ -20,6 +20,8 @@ class LeagueAuctionHistory(Base):
         UniqueConstraint("season_year", "source", "yahoo_player_key", name="uq_auction_season_source_yahoo_key"),
         Index("ix_auction_history_season", "season_year"),
         Index("ix_auction_history_player_name_season", "player_name", "season_year"),
+        Index("ix_auction_history_user_id", "user_id"),
+        Index("ix_auction_history_user_league_id", "user_league_id"),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
@@ -29,6 +31,14 @@ class LeagueAuctionHistory(Base):
     team_key: Mapped[str | None] = mapped_column(String(50), nullable=True)
     source: Mapped[str] = mapped_column(String(50), nullable=False)  # "yahoo", "manual_csv", or "sync_{team_key}"
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+    # Row-level security — scope all data to user + league
+    user_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=True,
+    )
+    user_league_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("user_leagues.id", ondelete="SET NULL"), nullable=True,
+    )
 
     # Added for multi-year Yahoo sync
     league_key: Mapped[str | None] = mapped_column(String(50), nullable=True)
