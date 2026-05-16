@@ -197,7 +197,7 @@ if FRONTEND_DIST.exists():
         "admin", "assistant", "auth", "draft", "draftboard",
         "league", "leagues", "news", "pipeline", "players", "preferences",
         "teams", "health", "docs", "openapi.json", "redoc",
-        "ws/", "api/", "account", "webhooks",
+        "ws/", "api/", "webhooks",
     )
 
     @app.get("/{full_path:path}")
