@@ -1,10 +1,11 @@
+import { useState, useEffect } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { useNavigate } from 'react-router-dom'
 import { Clock, TrendingUp, TrendingDown, AlertTriangle, Star, BarChart3 } from 'lucide-react'
 import { DRAFT_DATE } from '../lib/theme'
 import { fetchPlayers } from '../api/players'
 import { fetchNews } from '../api/news'
-import { fetchLeagueTendencies } from '../api/league'
+import { fetchLeagueTendencies, fetchUserLeagues } from '../api/league'
 import { fetchPlayerSummary } from '../api/players'
 import { usePreferencesStore } from '../stores/preferences'
 import { useUIStore } from '../stores/ui'
@@ -28,6 +29,18 @@ export default function Dashboard() {
   const selectedPlayerId = useUIStore((s) => s.selectedPlayerId)
   const detailPanelOpen = useUIStore((s) => s.detailPanelOpen)
 
+  // League selector state
+  const [leagues, setLeagues] = useState([])
+  const [selectedLeagueId, setSelectedLeagueId] = useState(null)
+
+  useEffect(() => {
+    fetchUserLeagues().then((data) => {
+      setLeagues(data)
+      const active = data.find((l) => l.is_active) || data[0]
+      if (active) setSelectedLeagueId(active.id)
+    }).catch(() => {})
+  }, [])
+
   // Top value gaps (undervalued)
   const { data: valueData } = useQuery({
     queryKey: ['dashboard-values'],
@@ -46,10 +59,11 @@ export default function Dashboard() {
     queryFn: fetchPlayerSummary,
   })
 
-  // League tendencies
+  // League tendencies — scoped to selected league
   const { data: tendenciesData } = useQuery({
-    queryKey: ['dashboard-tendencies'],
-    queryFn: fetchLeagueTendencies,
+    queryKey: ['dashboard-tendencies', selectedLeagueId],
+    queryFn: () => fetchLeagueTendencies(selectedLeagueId),
+    enabled: !!selectedLeagueId,
   })
 
   // Watchlist players
@@ -80,6 +94,25 @@ export default function Dashboard() {
           {countdown.days}<span className="text-sm text-slate-500 ml-1">days</span>
         </div>
       </div>
+
+      {/* League selector */}
+      {leagues.length > 0 && (
+        <div className="flex items-center gap-3 mb-4">
+          <label className="text-sm text-slate-400">League:</label>
+          <select
+            value={selectedLeagueId || ''}
+            onChange={(e) => setSelectedLeagueId(e.target.value)}
+            className="bg-[#1c1f2e] border border-[#2d3148] rounded-lg px-3 py-1.5 text-sm text-slate-200 focus:outline-none focus:border-blue-500"
+          >
+            {leagues.map((l) => (
+              <option key={l.id} value={l.id}>
+                {l.league_name || l.league_id}
+                {!l.is_active ? ' (Finished)' : ''}
+              </option>
+            ))}
+          </select>
+        </div>
+      )}
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 mb-6">
         {/* Recent Alerts */}

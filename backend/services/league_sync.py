@@ -192,6 +192,8 @@ class LeagueSyncService:
             await self._db.execute(
                 pg_insert(LeagueAuctionHistory)
                 .values(
+                    user_id=self._user_id,
+                    user_league_id=user_league_id,
                     player_name=pick.player_name or "",
                     position=pick.position or "",
                     price=pick.auction_price or 0,
