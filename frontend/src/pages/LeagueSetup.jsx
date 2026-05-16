@@ -76,13 +76,10 @@ function ConnectStep({ platform, onConnected, onBack }) {
 }
 
 function YahooConnect({ onBack }) {
-  const handleConnect = async () => {
-    try {
-      const resp = await apiClient.get('/auth/yahoo/connect')
-      window.location.href = resp.data.auth_url
-    } catch {
-      // Error handled by interceptor
-    }
+  const handleConnect = () => {
+    // Direct browser navigation — backend returns a RedirectResponse to Yahoo OAuth.
+    // Cannot use fetch/axios because Yahoo's OAuth endpoint blocks cross-origin requests.
+    window.location.href = `${API_URL}/auth/yahoo/connect`
   }
 
   return (
