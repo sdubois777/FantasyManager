@@ -282,6 +282,81 @@ async def test_get_yahoo_leagues_auto_refreshes_expired_token():
 
 
 @pytest.mark.asyncio
+async def test_get_yahoo_league_settings_endpoint():
+    """GET /auth/yahoo/league-settings returns settings for a league_key."""
+    user = _make_user()
+    from backend.core.dependencies import get_current_user, get_db
+
+    mock_db = AsyncMock()
+    app.dependency_overrides[get_current_user] = lambda: user
+    app.dependency_overrides[get_db] = lambda: mock_db
+
+    future_expiry = datetime(2099, 1, 1, tzinfo=timezone.utc)
+    mock_settings = {
+        "name": "My League",
+        "num_teams": 10,
+        "draft_type": "auction",
+        "scoring_type": "ppr",
+        "auction_budget": 200,
+        "trade_deadline": "2026-11-15",
+        "waiver_type": "faab",
+        "playoff_start_week": 14,
+        "uses_faab": True,
+    }
+
+    with patch(
+        "backend.routers.auth.CredentialRepository"
+    ) as MockRepo, patch(
+        "backend.routers.auth.get_league_settings",
+        new_callable=AsyncMock,
+        return_value=mock_settings,
+    ) as mock_get:
+        mock_repo = AsyncMock()
+        mock_repo.get_yahoo_tokens.return_value = (
+            "access_tok", "refresh_tok", future_expiry
+        )
+        MockRepo.return_value = mock_repo
+
+        try:
+            async with AsyncClient(
+                transport=ASGITransport(app=app),
+                base_url="http://test",
+            ) as ac:
+                resp = await ac.get(
+                    "/auth/yahoo/league-settings?league_key=470.l.12345"
+                )
+            assert resp.status_code == 200
+            data = resp.json()
+            assert data["settings"]["scoring_type"] == "ppr"
+            assert data["settings"]["draft_type"] == "auction"
+            assert data["settings"]["num_teams"] == 10
+            mock_get.assert_awaited_once_with("access_tok", "470.l.12345")
+        finally:
+            app.dependency_overrides.clear()
+
+
+@pytest.mark.asyncio
+async def test_league_settings_requires_league_key():
+    """GET /auth/yahoo/league-settings without league_key returns 422."""
+    user = _make_user()
+    from backend.core.dependencies import get_current_user, get_db
+
+    mock_db = AsyncMock()
+    app.dependency_overrides[get_current_user] = lambda: user
+    app.dependency_overrides[get_db] = lambda: mock_db
+
+    try:
+        async with AsyncClient(
+            transport=ASGITransport(app=app),
+            base_url="http://test",
+        ) as ac:
+            resp = await ac.get("/auth/yahoo/league-settings")
+        assert resp.status_code == 422
+    finally:
+        app.dependency_overrides.clear()
+
+
+@pytest.mark.asyncio
 async def test_yahoo_disconnect_removes_credentials():
     user = _make_user()
     from backend.core.dependencies import get_current_user, get_db

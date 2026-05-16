@@ -170,6 +170,46 @@ async def test_get_league_settings_playoff_week():
     assert result["playoff_start_week"] == 14
 
 
+@pytest.mark.asyncio
+async def test_get_league_settings_returns_ppr_not_head():
+    """scoring_type from stat modifiers is 'ppr', not Yahoo's raw 'head'."""
+    mods = [{"stat": {"stat_id": "11", "value": "1.00"}}]
+    with patch(
+        "backend.integrations.yahoo_api._api_get_with_token",
+        new_callable=AsyncMock,
+        return_value=_mock_yahoo_response(
+            scoring_type="head", stat_mods=mods
+        ),
+    ):
+        result = await get_league_settings("tok", "470.l.12345")
+
+    # Confirm screen should show 'ppr', not the raw Yahoo 'head' value
+    assert result["scoring_type"] == "ppr"
+    assert result["scoring_type"] != "head"
+
+
+@pytest.mark.asyncio
+async def test_get_league_settings_auction_shows_budget():
+    """Auction draft includes budget; snake does not."""
+    with patch(
+        "backend.integrations.yahoo_api._api_get_with_token",
+        new_callable=AsyncMock,
+        return_value=_mock_yahoo_response(draft_type="auction"),
+    ):
+        auction = await get_league_settings("tok", "470.l.12345")
+
+    with patch(
+        "backend.integrations.yahoo_api._api_get_with_token",
+        new_callable=AsyncMock,
+        return_value=_mock_yahoo_response(draft_type="live"),
+    ):
+        snake = await get_league_settings("tok", "470.l.12345")
+
+    assert auction["auction_budget"] is not None
+    assert snake["auction_budget"] is None
+    assert snake["draft_type"] == "snake"
+
+
 def test_yahoo_league_key_construction():
     """yahoo_league_key builds correct key from league_id + season."""
     assert yahoo_league_key("12345", 2026) == "470.l.12345"
