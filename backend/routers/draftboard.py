@@ -121,6 +121,7 @@ async def get_draftboard(
                 selectinload(Player.dependencies),
                 selectinload(Player.injury_profile),
                 selectinload(Player.profile),
+                selectinload(Player.historic_prices),
             )
         )
 
@@ -141,6 +142,8 @@ async def get_draftboard(
     tiers: dict[str, list[DraftBoardPlayer]] = {}
     total = 0
 
+    prior_year = get_current_season() - 1
+
     for p in players:
         flags = []
         for dep in (p.dependencies or []):
@@ -149,6 +152,13 @@ async def get_draftboard(
                 trigger_player_name=dep.trigger_player_name,
                 confidence=dep.confidence,
             ))
+
+        # Look up prior season price from historic table
+        hist_price = None
+        for hp in (p.historic_prices or []):
+            if hp.season_year == prior_year:
+                hist_price = float(hp.price)
+                break
 
         dbp = DraftBoardPlayer(
             id=str(p.id),
@@ -160,8 +170,8 @@ async def get_draftboard(
             baseline_value=float(p.baseline_value) if p.baseline_value else None,
             market_value=float(p.market_value_fantasypros) if p.market_value_fantasypros else None,
             market_value_season=get_current_season() if p.market_value_fantasypros else None,
-            prior_season_price=float(p.market_value_league) if p.market_value_league else None,
-            prior_season_year=get_current_season() - 1 if p.market_value_league else None,
+            prior_season_price=hist_price,
+            prior_season_year=prior_year if hist_price else None,
             value_gap=float(p.value_gap) if p.value_gap else None,
             value_gap_signal=p.value_gap_signal,
             ppr_points=(

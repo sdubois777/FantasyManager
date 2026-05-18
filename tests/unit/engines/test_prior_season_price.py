@@ -1,5 +1,5 @@
 """
-Tests for prior season market value — rotation, seeding, API exposure.
+Tests for market_value_historic — snapshot, API exposure, valuation agent context.
 """
 from __future__ import annotations
 
@@ -8,17 +8,16 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from backend.engines.market_values import sync_market_values
+from backend.engines.market_values import sync_market_values, _snapshot_current_market_values
 
 
 # ---------------------------------------------------------------------------
-# Rotation — existing FP value moves to prior_season on refresh
+# Snapshot — preserves current FP values before overwrite
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
-async def test_rotation_on_refresh():
-    """When FP value changes, old value rotates to prior_season."""
-    # Create a fake player with existing market_value_fantasypros
+async def test_snapshot_runs_before_overwrite():
+    """sync_market_values calls _snapshot_current_market_values before scraping."""
     fake_player = MagicMock()
     fake_player.name = "Patrick Mahomes"
     fake_player.market_value = Decimal("35")
@@ -28,13 +27,13 @@ async def test_rotation_on_refresh():
     fake_player.market_value_confidence = "medium"
     fake_player.market_value_updated_at = None
 
-    # Mock session that returns our fake player
     mock_session = AsyncMock()
     mock_result = MagicMock()
     mock_result.scalars.return_value.all.return_value = [fake_player]
+    # execute returns different things for snapshot vs player load
+    mock_result.all.return_value = []  # snapshot query returns no rows
     mock_session.execute.return_value = mock_result
 
-    # Mock scraper returning new value
     scraped = [{"name": "Patrick Mahomes", "avg_value": 40.0, "min_value": 35, "max_value": 45}]
 
     with patch(
@@ -43,56 +42,93 @@ async def test_rotation_on_refresh():
     ), patch(
         "backend.engines.market_values._store_metadata",
         new_callable=AsyncMock,
-    ):
+    ), patch(
+        "backend.engines.market_values._snapshot_current_market_values",
+        new_callable=AsyncMock,
+        return_value=0,
+    ) as mock_snapshot:
         result = await sync_market_values(mock_session)
 
+    # Snapshot was called
+    mock_snapshot.assert_awaited_once_with(mock_session)
     assert result["matched"] == 1
-    # Old FP value should have rotated to prior_season
-    assert fake_player.market_value_prior_season == Decimal("35")
-    assert fake_player.market_value_prior_season_year == 2025  # year_used - 1
-    # New value should be written
-    assert fake_player.market_value_fantasypros == 40.0
 
 
 @pytest.mark.asyncio
-async def test_no_rotation_when_same_value():
-    """No rotation when refreshed value equals existing value."""
+async def test_snapshot_skipped_on_dry_run():
+    """Dry run does not snapshot."""
+    mock_session = AsyncMock()
+    mock_result = MagicMock()
+    mock_result.scalars.return_value.all.return_value = []
+    mock_result.all.return_value = []
+    mock_session.execute.return_value = mock_result
+
+    with patch(
+        "backend.engines.market_values._scrape_in_thread",
+        return_value=([], 2026, True),
+    ), patch(
+        "backend.engines.market_values._snapshot_current_market_values",
+        new_callable=AsyncMock,
+    ) as mock_snapshot:
+        await sync_market_values(mock_session, dry_run=True)
+
+    mock_snapshot.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_snapshot_is_idempotent():
+    """Running snapshot twice same year does not duplicate rows (ON CONFLICT DO NOTHING)."""
+    mock_session = AsyncMock()
+
+    # Simulate player rows
+    player_row = MagicMock()
+    player_row.id = "fake-uuid"
+    player_row.market_value_fantasypros = Decimal("40")
+
+    mock_result = MagicMock()
+    mock_result.all.return_value = [player_row]
+    mock_session.execute.return_value = mock_result
+
+    with patch("backend.engines.market_values.get_current_season", return_value=2026):
+        count = await _snapshot_current_market_values(mock_session)
+
+    assert count == 1
+    # execute called twice: SELECT + INSERT
+    assert mock_session.execute.call_count == 2
+    mock_session.flush.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_snapshot_returns_zero_when_no_players():
+    """Snapshot returns 0 when no players have FP values."""
+    mock_session = AsyncMock()
+    mock_result = MagicMock()
+    mock_result.all.return_value = []
+    mock_session.execute.return_value = mock_result
+
+    with patch("backend.engines.market_values.get_current_season", return_value=2026):
+        count = await _snapshot_current_market_values(mock_session)
+
+    assert count == 0
+    # Only SELECT, no INSERT
+    assert mock_session.execute.call_count == 1
+
+
+# ---------------------------------------------------------------------------
+# Rotation — existing FP value moves to prior_season on refresh
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_rotation_on_refresh():
+    """When FP value changes, old value rotates to prior_season on players table."""
     fake_player = MagicMock()
     fake_player.name = "Patrick Mahomes"
     fake_player.market_value = Decimal("35")
     fake_player.market_value_fantasypros = Decimal("35")
     fake_player.market_value_prior_season = None
     fake_player.market_value_prior_season_year = None
-
-    mock_session = AsyncMock()
-    mock_result = MagicMock()
-    mock_result.scalars.return_value.all.return_value = [fake_player]
-    mock_session.execute.return_value = mock_result
-
-    scraped = [{"name": "Patrick Mahomes", "avg_value": 35.0, "min_value": 30, "max_value": 40}]
-
-    with patch(
-        "backend.engines.market_values._scrape_in_thread",
-        return_value=(scraped, 2026, True),
-    ), patch(
-        "backend.engines.market_values._store_metadata",
-        new_callable=AsyncMock,
-    ):
-        await sync_market_values(mock_session)
-
-    # Should NOT have rotated since value didn't change
-    assert fake_player.market_value_prior_season is None
-
-
-@pytest.mark.asyncio
-async def test_no_rotation_when_no_prior_value():
-    """No rotation when player has no existing FP value."""
-    fake_player = MagicMock()
-    fake_player.name = "Patrick Mahomes"
-    fake_player.market_value = None
-    fake_player.market_value_fantasypros = None
-    fake_player.market_value_prior_season = None
-    fake_player.market_value_prior_season_year = None
+    fake_player.market_value_confidence = "medium"
+    fake_player.market_value_updated_at = None
 
     mock_session = AsyncMock()
     mock_result = MagicMock()
@@ -107,22 +143,33 @@ async def test_no_rotation_when_no_prior_value():
     ), patch(
         "backend.engines.market_values._store_metadata",
         new_callable=AsyncMock,
+    ), patch(
+        "backend.engines.market_values._snapshot_current_market_values",
+        new_callable=AsyncMock,
+        return_value=0,
     ):
-        await sync_market_values(mock_session)
+        result = await sync_market_values(mock_session)
 
-    # No prior value to rotate
-    assert fake_player.market_value_prior_season is None
+    assert result["matched"] == 1
+    assert fake_player.market_value_prior_season == Decimal("35")
+    assert fake_player.market_value_prior_season_year == 2025
+    assert fake_player.market_value_fantasypros == 40.0
 
 
 # ---------------------------------------------------------------------------
-# Valuation agent context includes prior_season_price
+# Valuation agent context includes prior_season_price from historic_prices
 # ---------------------------------------------------------------------------
 
 def test_valuation_agent_context_includes_prior_season():
-    """_build_player_context includes prior_season_price when set."""
+    """_build_player_context includes prior_season_price from historic_prices."""
     from backend.agents.valuation_agent import ValuationAgent
 
     agent = ValuationAgent.__new__(ValuationAgent)
+
+    # Mock historic price record
+    hist = MagicMock()
+    hist.season_year = 2025
+    hist.price = Decimal("42")
 
     player = MagicMock()
     player.name = "CeeDee Lamb"
@@ -139,14 +186,63 @@ def test_valuation_agent_context_includes_prior_season():
     player.ceiling_value = Decimal("60")
     player.floor_value = Decimal("35")
     player.market_value_fantasypros = Decimal("48")
-    player.market_value_prior_season = Decimal("42")
-    player.market_value_prior_season_year = 2025
+    player.historic_prices = [hist]
     player.profile = None
     player.injury_profile = None
     player.schedule = None
     player.dependencies = []
 
-    ctx = agent._build_player_context(player)
+    with patch("backend.agents.valuation_agent.get_current_season", return_value=2026):
+        ctx = agent._build_player_context(player)
 
     assert ctx["market_value_fantasypros"] == 48.0
     assert ctx["prior_season_price"] == 42.0
+
+
+def test_valuation_agent_context_no_prior_season_when_missing():
+    """_build_player_context omits prior_season_price when no historic record."""
+    from backend.agents.valuation_agent import ValuationAgent
+
+    agent = ValuationAgent.__new__(ValuationAgent)
+
+    player = MagicMock()
+    player.name = "Rookie Player"
+    player.position = "WR"
+    player.team_abbr = "NYG"
+    player.age = 22
+    player.tier = 4
+    player.is_rookie = True
+    player.recommended_bid_ceiling = Decimal("5")
+    player.baseline_value = Decimal("3")
+    player.market_value = Decimal("4")
+    player.value_gap = Decimal("1")
+    player.value_gap_signal = "aligned"
+    player.ceiling_value = Decimal("10")
+    player.floor_value = Decimal("1")
+    player.market_value_fantasypros = Decimal("4")
+    player.historic_prices = []  # No prior season data
+    player.profile = None
+    player.injury_profile = None
+    player.schedule = None
+    player.dependencies = []
+
+    with patch("backend.agents.valuation_agent.get_current_season", return_value=2026):
+        ctx = agent._build_player_context(player)
+
+    assert "prior_season_price" not in ctx
+
+
+def test_valuation_prompt_no_league_language():
+    """System prompt must not use 'your league' except in NEVER/forbidden instructions."""
+    from backend.agents.valuation_agent import SYSTEM_PROMPT
+
+    forbidden = ["your league paid", "your league values", "in your league"]
+    for line in SYSTEM_PROMPT.splitlines():
+        stripped = line.strip().lower()
+        # Skip lines that are instructions about what NOT to say
+        if "never" in stripped or "forbidden" in stripped or "correct" in stripped:
+            continue
+        for phrase in forbidden:
+            assert phrase not in stripped, (
+                f"Found forbidden phrase '{phrase}' in non-instruction line: {line.strip()}"
+            )

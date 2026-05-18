@@ -30,6 +30,7 @@ from backend.agents.base_agent import BaseAgent, parse_json_output, HAIKU, SONNE
 from backend.database import AsyncSessionLocal
 from backend.models.player import Player, PlayerProfile, PlayerInjuryProfile, PlayerSchedule
 from backend.models.dependency import PlayerDependency
+from backend.utils.seasons import get_current_season
 
 
 logger = logging.getLogger(__name__)
@@ -100,6 +101,7 @@ class ValuationAgent(BaseAgent):
                     selectinload(Player.injury_profile),
                     selectinload(Player.schedule),
                     selectinload(Player.dependencies),
+                    selectinload(Player.historic_prices),
                 )
                 .order_by(Player.tier.asc().nulls_last(), Player.recommended_bid_ceiling.desc())
             )
@@ -211,9 +213,12 @@ class ValuationAgent(BaseAgent):
         if p.market_value_fantasypros is not None:
             ctx["market_value_fantasypros"] = float(p.market_value_fantasypros)
 
-        # Prior season actual auction price
-        if p.market_value_prior_season is not None:
-            ctx["prior_season_price"] = float(p.market_value_prior_season)
+        # Prior season actual auction price (from historic archive)
+        prior_year = get_current_season() - 1
+        for hp in (p.historic_prices or []):
+            if hp.season_year == prior_year:
+                ctx["prior_season_price"] = float(hp.price)
+                break
 
         # Profile data
         if p.profile:

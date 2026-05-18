@@ -24,6 +24,7 @@ from backend.engines.valuation import get_market_context
 from backend.utils.seasons import get_current_season
 from backend.models.player import Player, PlayerProfile, PlayerInjuryProfile, PlayerSchedule
 from backend.models.dependency import PlayerDependency, BeatReporterSignal
+from backend.models.market_value_historic import MarketValueHistoric
 from backend.models.team_system import TeamSystem
 
 logger = logging.getLogger(__name__)
@@ -202,6 +203,15 @@ class PlayerSummaryResponse(BaseModel):
 # Helper
 # ---------------------------------------------------------------------------
 
+def _get_prior_season_price(player: Player) -> tuple[float | None, int | None]:
+    """Look up prior season price from historic_prices relationship."""
+    prior_year = get_current_season() - 1
+    for hp in (player.historic_prices or []):
+        if hp.season_year == prior_year:
+            return float(hp.price), prior_year
+    return None, None
+
+
 def _player_to_summary(player: Player) -> PlayerSummary:
     """Convert a Player ORM object to PlayerSummary response."""
     flags = []
@@ -218,6 +228,8 @@ def _player_to_summary(player: Player) -> PlayerSummary:
             reasoning=dep.reasoning,
         ))
 
+    prior_price, prior_year = _get_prior_season_price(player)
+
     return PlayerSummary(
         id=str(player.id),
         name=player.name,
@@ -231,8 +243,8 @@ def _player_to_summary(player: Player) -> PlayerSummary:
         floor_value=float(player.floor_value) if player.floor_value else None,
         market_value=float(player.market_value_fantasypros) if player.market_value_fantasypros else None,
         market_value_season=get_current_season() if player.market_value_fantasypros else None,
-        prior_season_price=float(player.market_value_league) if player.market_value_league else None,
-        prior_season_year=get_current_season() - 1 if player.market_value_league else None,
+        prior_season_price=prior_price,
+        prior_season_year=prior_year,
         value_gap=float(player.value_gap) if player.value_gap else None,
         value_gap_signal=player.value_gap_signal,
         situation_score=player.situation_score,
@@ -263,6 +275,7 @@ async def search_players(q: str = Query(..., min_length=2)):
                 selectinload(Player.dependencies),
                 selectinload(Player.injury_profile),
                 selectinload(Player.schedule),
+                selectinload(Player.historic_prices),
             )
             .order_by(Player.recommended_bid_ceiling.desc().nulls_last())
             .limit(20)
@@ -324,6 +337,7 @@ async def get_player(player_id: uuid.UUID):
                 selectinload(Player.schedule),
                 selectinload(Player.dependencies),
                 selectinload(Player.beat_signals),
+                selectinload(Player.historic_prices),
             )
         )
         player = result.scalar_one_or_none()
@@ -469,6 +483,7 @@ async def list_players(
             selectinload(Player.dependencies),
             selectinload(Player.injury_profile),
             selectinload(Player.schedule),
+            selectinload(Player.historic_prices),
         )
 
         # Filters

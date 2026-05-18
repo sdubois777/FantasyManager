@@ -16,10 +16,13 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 
 from sqlalchemy import select
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.integrations.nfl_data import normalize_player_name
+from backend.models.market_value_historic import MarketValueHistoric
 from backend.models.player import Player
+from backend.utils.seasons import get_current_season
 
 logger = logging.getLogger(__name__)
 
@@ -44,6 +47,45 @@ def _scrape_in_thread(scoring_format: str, teams: int) -> tuple[list[dict], int,
         loop.close()
 
 
+async def _snapshot_current_market_values(session: AsyncSession) -> int:
+    """
+    Before overwriting market_value_fantasypros, save current values to
+    market_value_historic. Uses ON CONFLICT DO NOTHING so existing
+    snapshots are never overwritten.
+    """
+    current_year = get_current_season()
+
+    result = await session.execute(
+        select(Player.id, Player.market_value_fantasypros)
+        .where(
+            Player.market_value_fantasypros.isnot(None),
+            Player.position.in_(["QB", "RB", "WR", "TE"]),
+        )
+    )
+    rows = result.all()
+
+    if not rows:
+        return 0
+
+    stmt = pg_insert(MarketValueHistoric).values([
+        {
+            "player_id": row.id,
+            "season_year": current_year,
+            "price": float(row.market_value_fantasypros),
+        }
+        for row in rows
+    ])
+    stmt = stmt.on_conflict_do_nothing()
+    await session.execute(stmt)
+    await session.flush()
+
+    logger.info(
+        "Snapshotted %d market values for season %d into historic",
+        len(rows), current_year,
+    )
+    return len(rows)
+
+
 async def sync_market_values(
     session: AsyncSession,
     scoring_format: str = "ppr",
@@ -66,6 +108,10 @@ async def sync_market_values(
     Returns:
         Summary dict with matched/unmatched counts, year info, and names.
     """
+    # Snapshot current values before overwriting
+    if not dry_run:
+        await _snapshot_current_market_values(session)
+
     logger.info("Scraping FantasyPros market values (format=%s, teams=%d)...", scoring_format, teams)
     try:
         loop = asyncio.get_running_loop()

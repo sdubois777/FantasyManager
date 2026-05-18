@@ -117,7 +117,7 @@ export default function PlayerDetailPanel({ playerId, onPlayerSelect }) {
 
               {player.prior_season_price != null && (
                 <div className="bg-[#1c1f2e] rounded p-2 mb-3 flex items-center justify-between">
-                  <span className="text-[10px] text-slate-500">{player.prior_season_year} Draft Price</span>
+                  <span className="text-[10px] text-slate-500">{player.prior_season_year} Avg Price</span>
                   <span className="text-sm font-mono text-slate-300">${player.prior_season_price.toFixed(0)}</span>
                 </div>
               )}
