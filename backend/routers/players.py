@@ -21,6 +21,7 @@ from sqlalchemy.orm import selectinload
 from backend.database import AsyncSessionLocal
 from backend.core.dependencies import get_current_user
 from backend.engines.valuation import get_market_context
+from backend.utils.seasons import get_current_season
 from backend.models.player import Player, PlayerProfile, PlayerInjuryProfile, PlayerSchedule
 from backend.models.dependency import PlayerDependency, BeatReporterSignal
 from backend.models.team_system import TeamSystem
@@ -61,7 +62,9 @@ class PlayerSummary(BaseModel):
     ceiling_value: Optional[float] = None
     floor_value: Optional[float] = None
     market_value: Optional[float] = None
-    market_value_league: Optional[float] = None
+    market_value_season: Optional[int] = None
+    prior_season_price: Optional[float] = None
+    prior_season_year: Optional[int] = None
     value_gap: Optional[float] = None
     value_gap_signal: Optional[str] = None
     situation_score: Optional[str] = None
@@ -226,8 +229,10 @@ def _player_to_summary(player: Player) -> PlayerSummary:
         baseline_value=float(player.baseline_value) if player.baseline_value else None,
         ceiling_value=float(player.ceiling_value) if player.ceiling_value else None,
         floor_value=float(player.floor_value) if player.floor_value else None,
-        market_value=float(player.market_value) if player.market_value else None,
-        market_value_league=float(player.market_value_league) if player.market_value_league else None,
+        market_value=float(player.market_value_fantasypros) if player.market_value_fantasypros else None,
+        market_value_season=get_current_season() if player.market_value_fantasypros else None,
+        prior_season_price=float(player.market_value_league) if player.market_value_league else None,
+        prior_season_year=get_current_season() - 1 if player.market_value_league else None,
         value_gap=float(player.value_gap) if player.value_gap else None,
         value_gap_signal=player.value_gap_signal,
         situation_score=player.situation_score,

@@ -40,15 +40,10 @@ async def main() -> None:
 
     from backend.utils.seasons import get_fantasypros_auction_year
 
-    year, is_current = get_fantasypros_auction_year()
+    year, _ = get_fantasypros_auction_year()
 
     print("\n=== Market Value Refresh ===")
-    print("  Checking FantasyPros data availability...")
-    if is_current:
-        print(f"  Month is July+ — using current season data ({year})")
-    else:
-        print(f"  Month is before July — current season data not yet available")
-        print(f"  Using {year} season data (fallback)")
+    print(f"  Fetching {year} season auction values from FantasyPros...")
 
     if args.dry_run:
         print("  Mode: DRY RUN (no DB writes)\n")
@@ -89,11 +84,7 @@ async def main() -> None:
         print(f"\n  Updated at: {result['updated_at']}")
 
     # Summary banner
-    season_label = "current" if is_current_result else "previous"
-    print(f"\n  Market value source: FantasyPros {year_used} PPR ({season_label} season)")
-    if not is_current_result:
-        next_year = (year_used or 0) + 1
-        print(f"  Note: refresh again in July for {next_year} season values")
+    print(f"\n  Market value source: FantasyPros {year_used} PPR")
 
     # Optionally re-run valuations
     if args.revalue and not args.dry_run and result["matched"] > 0:

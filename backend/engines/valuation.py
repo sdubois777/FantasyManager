@@ -276,7 +276,7 @@ def get_market_context(player) -> dict:
     """
     league = player.market_value_league
     fp = player.market_value_fantasypros or player.market_value
-    effective = league if (league is not None and league > 0) else fp
+    effective = fp if (fp is not None and fp > 0) else league
 
     bias = None
     bias_signal = None
@@ -332,12 +332,9 @@ def compute_value_gap_from_player(player) -> tuple[Optional[Decimal], Optional[s
     valuation agent. baseline_value (PAR math) is floored at $1 for many
     players, making it unreliable for gap detection.
 
-    Market source: market_value_league > market_value_fantasypros.
+    Market source: market_value_fantasypros (consensus ADP, shared across all users).
     """
-    market = (
-        getattr(player, "market_value_league", None)
-        or getattr(player, "market_value_fantasypros", None)
-    )
+    market = getattr(player, "market_value_fantasypros", None)
     if not market:
         return None, "no_market_data"
 

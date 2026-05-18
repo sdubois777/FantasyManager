@@ -56,10 +56,10 @@ def test_market_context_fp_only():
 
 
 def test_market_context_both_aligned():
-    """Both set, difference ≤ $5 → aligned."""
+    """Both set, difference ≤ $5 → aligned. Effective uses FP (consensus)."""
     p = _player(market_value_fantasypros=28, market_value_league=30)
     ctx = get_market_context(p)
-    assert ctx["effective_market_value"] == Decimal("30")
+    assert ctx["effective_market_value"] == Decimal("28")
     assert ctx["league_bias"] == Decimal("2.00")
     assert ctx["league_bias_signal"] == "league_aligned"
 
@@ -115,12 +115,11 @@ def test_ceiling_differs_with_league_vs_fp():
 # ===========================================================================
 
 def test_fp_unchanged_after_league_import():
-    """market_value (FP consensus) is never modified by league context."""
+    """market_value (FP consensus) is used as effective — league is secondary."""
     p = _player(market_value=30, market_value_fantasypros=30, market_value_league=15)
     ctx = get_market_context(p)
-    # effective uses league, but FP is still returned untouched
     assert ctx["market_value_fantasypros"] == Decimal("30")
-    assert ctx["effective_market_value"] == Decimal("15")
+    assert ctx["effective_market_value"] == Decimal("30")
 
 
 # ===========================================================================
@@ -128,19 +127,18 @@ def test_fp_unchanged_after_league_import():
 # ===========================================================================
 
 def test_valuation_pass_uses_effective_mv():
-    """When league price is available, ceiling computation uses it."""
+    """Effective market value uses FP consensus, not league price."""
     p = _player(market_value=40, market_value_fantasypros=40, market_value_league=20)
     ctx = get_market_context(p)
     effective = ctx["effective_market_value"]
-    # effective should be league price
-    assert effective == Decimal("20")
+    # effective should be FP consensus
+    assert effective == Decimal("40")
 
-    # Compute ceiling with effective (league) vs with FP
+    # Compute ceiling with effective (FP) — same as FP directly
     sv = Decimal("35")
     ceiling_effective = compute_bid_ceiling(sv, effective, tier=1, position="RB", risk_level="low")
     ceiling_fp = compute_bid_ceiling(sv, Decimal("40"), tier=1, position="RB", risk_level="low")
-    # They should differ because market values differ
-    assert ceiling_effective != ceiling_fp
+    assert ceiling_effective == ceiling_fp
 
 
 def test_valuation_pass_fallback_to_fp():

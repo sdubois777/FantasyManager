@@ -175,7 +175,7 @@ export default function Players() {
           <SortableHeader label="Ceiling" sortKey="bid_ceiling" currentSort={sort} currentOrder={order} onSort={handleSort} className="w-16 shrink-0" align="right" />
           <SortableHeader label="AI Ceil" sortKey="ai_ceiling" currentSort={sort} currentOrder={order} onSort={handleSort} className="w-16 shrink-0" align="right" />
           <SortableHeader label="System" sortKey="system_value" currentSort={sort} currentOrder={order} onSort={handleSort} className="w-16 shrink-0" align="right" />
-          <SortableHeader label="Market" sortKey="market_value" currentSort={sort} currentOrder={order} onSort={handleSort} className="w-16 shrink-0" align="right" />
+          <SortableHeader label="ADP" sortKey="market_value" currentSort={sort} currentOrder={order} onSort={handleSort} className="w-16 shrink-0" align="right" />
           <SortableHeader label="Gap" sortKey="value_gap" currentSort={sort} currentOrder={order} onSort={handleSort} className="w-24 shrink-0" />
           <span className="ml-auto text-[10px] uppercase tracking-wider text-slate-500">Flags</span>
         </div>
