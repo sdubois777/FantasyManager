@@ -2088,12 +2088,18 @@ async def test_sonnet_projection_stored_as_projected_ppr_season():
     player_result = MagicMock()
     player_result.scalar_one_or_none.return_value = mock_player
 
+    # Mock to return None for existing profile check (no prior profile)
+    no_profile_result = MagicMock()
+    no_profile_result.scalar_one_or_none.return_value = None
+
     call_count = 0
     async def mock_execute(stmt):
         nonlocal call_count
         call_count += 1
         if call_count <= 2:  # first two calls: team players + existing profiles
             return mock_result
+        if call_count == 3:  # existing profile upsert check
+            return no_profile_result
         return player_result  # subsequent: player lookup
 
     mock_session.execute = AsyncMock(side_effect=mock_execute)

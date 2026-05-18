@@ -2116,9 +2116,17 @@ async def _write_profiles(
                 clean_baseline = _compute_clean_baseline(seasons)
                 rookie_prof    = {}
 
-            # Always insert fresh (stale records for this team were deleted above)
-            record = PlayerProfile(player_id=player_id, season_year=analysis_year)
-            session.add(record)
+            # Upsert: use existing record if already written by another team batch
+            existing_record = (
+                await session.execute(
+                    select(PlayerProfile).where(PlayerProfile.player_id == player_id)
+                )
+            ).scalar_one_or_none()
+            if existing_record:
+                record = existing_record
+            else:
+                record = PlayerProfile(player_id=player_id, season_year=analysis_year)
+                session.add(record)
 
             # Veteran fields — from model output (rookies use defaults from rookie_prof)
             effective = rookie_prof if is_rookie else prof
