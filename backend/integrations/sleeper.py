@@ -363,6 +363,9 @@ def compute_sleeper_target_share(season: int) -> pd.DataFrame:
         "total_carries", "total_rush_yards", "total_rush_tds",
         "total_fantasy_points", "season", "ppr_per_game",
         "sleeper_id", "sportradar_id",
+        # Efficiency fields (pass through from raw Sleeper)
+        "rush_ypa", "rush_btkl", "rec_ypr", "off_snp",
+        "rec_air_yd", "rush_fd", "rec_fd", "pass_ypa",
     ]
     out_cols = [c for c in out_cols if c in df.columns]
     result = df[out_cols].copy()
