@@ -95,6 +95,8 @@ class YahooPlaywrightBridge:
 
         self._connected = True
         logger.info("Bridge connected to draft room: %s", draft_room_url)
+        logger.info("Bridge attached to URL: %s", self.page.url)
+        logger.info("Page title: %s", await self.page.title())
 
         # Health check loop runs independently — does not block event handling
         asyncio.create_task(self.health_check_loop())
@@ -126,11 +128,14 @@ class YahooPlaywrightBridge:
         Fires on every frame Yahoo receives — no polling required.
         """
         async def handle_ws(ws):
+            logger.info("WebSocket opened: %s", ws.url)
+
             async def handle_frame(frame):
                 try:
-                    logger.debug("WS frame received: %s", frame.payload[:120])
+                    logger.info("WS frame received (%d bytes): %s", len(frame.payload), frame.payload[:200])
                     data = self._parse_yahoo_frame(frame.payload)
                     if data:
+                        logger.info("Parsed draft event: %s", data.get("type"))
                         await self._dispatch_event(data)
                 except Exception as exc:
                     # Never crash on a bad frame — log and continue
@@ -182,6 +187,7 @@ class YahooPlaywrightBridge:
         """
         try:
             await page.evaluate(observer_script)
+            logger.info("MutationObserver injected successfully")
         except Exception as exc:
             logger.warning("MutationObserver injection failed: %s", exc)
 
