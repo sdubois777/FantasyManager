@@ -55,6 +55,7 @@ class DraftBoardPlayer(BaseModel):
     ai_bid_ceiling: Optional[int] = None
     pay_up_flag: bool = False
     nomination_target_flag: bool = False
+    value_assessment: Optional[str] = None
     flags: list[DraftBoardFlag] = []
     strategy_highlight: Optional[str] = None  # "primary" / "secondary" / "dimmed" / None
 
@@ -190,6 +191,7 @@ async def get_draftboard(
             ai_bid_ceiling=p.ai_bid_ceiling,
             pay_up_flag=p.pay_up_flag or False,
             nomination_target_flag=p.nomination_target_flag or False,
+            value_assessment=p.value_assessment,
             flags=flags,
             strategy_highlight=None,
         )

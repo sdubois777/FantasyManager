@@ -37,6 +37,7 @@ def mock_player_rb_tier1():
     p.value_gap_signal = "undervalued"
     p.breakout_flag = False
     p.is_rookie = False
+    p.value_assessment = None
     p.dependencies = []
     p.injury_profile = None
     return p
@@ -57,6 +58,7 @@ def mock_player_wr_tier2():
     p.value_gap_signal = "overvalued"
     p.breakout_flag = False
     p.is_rookie = False
+    p.value_assessment = None
     p.dependencies = []
     p.injury_profile = None
     return p
