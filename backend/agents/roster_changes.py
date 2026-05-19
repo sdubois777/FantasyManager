@@ -23,6 +23,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 from datetime import datetime, timezone
 import pandas as pd
 from sqlalchemy import select
@@ -39,6 +40,14 @@ logger = logging.getLogger(__name__)
 
 # Smart-skip: if the last analysis for a team is within this many days, skip re-analysis
 ROSTER_CHANGES_STALENESS_DAYS = 7
+
+# Suffix regex for cross-source name matching (Sleeper drops suffixes, nfl_data_py keeps them)
+_SUFFIX_RE = re.compile(r"\s+(III|II|IV|V|Jr\.?|Sr\.?)\s*$", re.IGNORECASE)
+
+
+def _norm_name(name: str) -> str:
+    """Strip suffixes for cross-source name comparison."""
+    return _SUFFIX_RE.sub("", name).strip().lower()
 
 # ---------------------------------------------------------------------------
 # System prompt — dynamic year, no hardcoded integers
@@ -279,7 +288,7 @@ class RosterChangesAgent(BaseAgent):
     async def _build_team_context(self, team_abbr: str) -> dict:
         """
         Pre-fetch and aggregate ALL data for one team's dependency analysis.
-        No API calls here — only nfl_data_py, OTC, and DB lookups.
+        Roster from warehouse (Sleeper-sourced), OTC for contract context only.
         Returns a compact summary dict ready to pass to the model.
         """
         team = team_abbr.upper()
@@ -333,11 +342,47 @@ class RosterChangesAgent(BaseAgent):
             return []
 
     async def _fetch_skill_roster(self, team: str) -> list[dict]:
-        try:
-            return overthecap.get_skill_roster_summary(team)
-        except Exception as exc:
-            logger.warning("Skill roster unavailable for %s: %s", team, exc)
+        """Current skill roster from warehouse (Sleeper-sourced)."""
+        rosters = self._warehouse.rosters
+        if rosters is None or (isinstance(rosters, pd.DataFrame) and rosters.empty):
             return []
+
+        team_col = next((c for c in ("team", "team_abbr") if c in rosters.columns), None)
+        name_col = next((c for c in ("full_name", "player_name") if c in rosters.columns), None)
+        if not team_col or not name_col:
+            return []
+
+        skill_pos = {"QB", "RB", "WR", "TE"}
+        mask = (
+            (rosters[team_col].str.upper() == team.upper())
+            & rosters["position"].isin(skill_pos)
+        )
+        team_df = rosters[mask]
+
+        result = []
+        for _, row in team_df.iterrows():
+            name = str(row.get(name_col, "")).strip()
+            pos = str(row.get("position", "")).strip()
+            if not name or pos not in skill_pos:
+                continue
+            entry: dict = {"name": name, "position": pos, "team": team.upper()}
+            # Include IDs from Sleeper for downstream matching
+            sid = row.get("player_id")  # Sleeper's own ID
+            if sid is not None and pd.notna(sid):
+                entry["sleeper_id"] = str(sid)
+            for id_col in ("sportradar_id", "gsis_id"):
+                v = row.get(id_col)
+                if v is not None and pd.notna(v):
+                    entry[id_col] = str(v)
+            age = row.get("age")
+            if age is not None and pd.notna(age):
+                entry["age"] = int(age)
+            yrs = row.get("years_exp")
+            if yrs is not None and pd.notna(yrs):
+                entry["years_exp"] = int(yrs)
+            result.append(entry)
+
+        return result
 
     async def _fetch_target_shares(self, roster: list[dict]) -> dict:
         """
@@ -921,6 +966,8 @@ class RosterChangesAgent(BaseAgent):
         team = team_abbr.upper()
         skill_pos = {"WR", "RB", "TE"}
         current_names = {p["name"] for p in roster if p.get("position") in skill_pos}
+        # Suffix-normalized set for cross-source comparison (Sleeper drops suffixes)
+        current_names_norm = {_norm_name(n) for n in current_names}
 
         prev_season = get_current_season() - 1
 
@@ -937,18 +984,23 @@ class RosterChangesAgent(BaseAgent):
         # Load target share for production filter from warehouse
         ts_df = self._warehouse.get_target_share(prev_season)
 
-        # Build production lookup: player_id -> (targets, carries)
+        # Build production lookups: by player_id and by name (covers gsis_id gaps)
         prod_by_id: dict[str, tuple[int, int]] = {}
-        if ts_df is not None and "player_id" in ts_df.columns:
+        prod_by_name: dict[str, tuple[int, int]] = {}
+        if ts_df is not None:
             ts_team = "recent_team" if "recent_team" in ts_df.columns else "team"
             team_mask = ts_df[ts_team].str.upper() == team if ts_team in ts_df.columns else True
             for _, r in ts_df[team_mask].iterrows():
-                pid = str(r.get("player_id", "")).strip()
                 tgts = int(r.get("total_targets", 0) or 0)
                 carries = int(r.get("total_carries", 0) or 0)
-                if pid:
+                pid = str(r.get("player_id", "")).strip()
+                if pid and pid != "None":
                     existing = prod_by_id.get(pid, (0, 0))
                     prod_by_id[pid] = (existing[0] + tgts, existing[1] + carries)
+                name = _norm_name(str(r.get("player_name", "")))
+                if name:
+                    existing = prod_by_name.get(name, (0, 0))
+                    prod_by_name[name] = (existing[0] + tgts, existing[1] + carries)
 
         # Min production thresholds — only flag WR1/RB1/TE1 departures
         MIN_TARGETS = 80   # ~5 targets/game — WR1/TE1 level
@@ -965,12 +1017,16 @@ class RosterChangesAgent(BaseAgent):
             departed_pos = str(row.get("position", "")).strip()
             if not departed_name or departed_pos not in skill_pos:
                 continue
-            if departed_name in current_names:
+            # Suffix-aware comparison: "Brian Thomas Jr." matches "Brian Thomas"
+            if departed_name in current_names or _norm_name(departed_name) in current_names_norm:
                 continue  # Still on the team
 
             # Production filter: skip depth/practice squad players
             pid = str(row.get("player_id", "")).strip()
             tgts, carries = prod_by_id.get(pid, (0, 0))
+            # Name fallback for players with no gsis_id in target_share
+            if tgts == 0 and carries == 0:
+                tgts, carries = prod_by_name.get(_norm_name(departed_name), (0, 0))
             if departed_pos in ("WR", "TE") and tgts < MIN_TARGETS:
                 continue
             if departed_pos == "RB" and carries < MIN_CARRIES:
@@ -1047,7 +1103,7 @@ class RosterChangesAgent(BaseAgent):
         team = team_abbr.upper()
         skill_pos = {"WR", "RB", "TE"}
 
-        # Current skill position players from OTC roster
+        # Current skill position players from Sleeper-sourced roster
         current_skill = [p for p in roster if p.get("position") in skill_pos]
         current_names = {p["name"] for p in current_skill}
 
@@ -1070,28 +1126,43 @@ class RosterChangesAgent(BaseAgent):
         # Players who were on THIS team last season
         prev_team_mask = prev_rosters[team_col].str.upper() == team
         prev_team_names = set(prev_rosters[prev_team_mask][name_col].dropna().unique())
+        # Suffix-normalized for cross-source comparison (Sleeper drops suffixes)
+        prev_team_names_norm = {_norm_name(n) for n in prev_team_names}
 
         # Arrivals = on current roster but NOT on this team last season
-        arrival_names = current_names - prev_team_names
+        # Suffix-aware: "Michael Pittman" matches "Michael Pittman Jr."
+        arrival_names = {
+            n for n in current_names
+            if n not in prev_team_names and _norm_name(n) not in prev_team_names_norm
+        }
         if not arrival_names:
             return []
 
         # Load target share for production filter from warehouse (ALL teams — arrival was elsewhere)
         ts_df = self._warehouse.get_target_share(prev_season)
 
-        # Build production lookup by player_id
+        # Build production lookups: by player_id (gsis_id), sleeper_id, and name
         prod_by_id: dict[str, tuple[int, int]] = {}
-        if ts_df is not None and "player_id" in ts_df.columns:
+        prod_by_name: dict[str, tuple[int, int]] = {}
+        if ts_df is not None:
             for _, r in ts_df.iterrows():
-                pid = str(r.get("player_id", "")).strip()
                 tgts = int(r.get("total_targets", 0) or 0)
                 carries = int(r.get("total_carries", 0) or 0)
-                if pid:
+                # Key by player_id (gsis_id)
+                pid = str(r.get("player_id", "")).strip()
+                if pid and pid != "None":
                     existing = prod_by_id.get(pid, (0, 0))
-                    prod_by_id[pid] = (
-                        max(existing[0], tgts),
-                        max(existing[1], carries),
-                    )
+                    prod_by_id[pid] = (max(existing[0], tgts), max(existing[1], carries))
+                # Also key by sleeper_id (Sleeper has better coverage than gsis_id)
+                sid = str(r.get("sleeper_id", "")).strip()
+                if sid and sid != "None":
+                    existing = prod_by_id.get(f"slp_{sid}", (0, 0))
+                    prod_by_id[f"slp_{sid}"] = (max(existing[0], tgts), max(existing[1], carries))
+                # Name fallback for players with no IDs
+                name = _norm_name(str(r.get("player_name", "")))
+                if name:
+                    existing = prod_by_name.get(name, (0, 0))
+                    prod_by_name[name] = (max(existing[0], tgts), max(existing[1], carries))
 
         MIN_TARGETS = 80   # ~5 targets/game — WR1/TE1 level
         MIN_CARRIES = 150  # ~9 carries/game — RB1 level
@@ -1109,6 +1180,13 @@ class RosterChangesAgent(BaseAgent):
             arrival_mask = prev_rosters[name_col] == arrival_name
             arrival_rows = prev_rosters[arrival_mask]
             if arrival_rows.empty:
+                # Suffix-aware fallback: "Michael Pittman" matches "Michael Pittman Jr."
+                norm = _norm_name(arrival_name)
+                arrival_mask = prev_rosters[name_col].apply(
+                    lambda x: _norm_name(str(x)) == norm
+                )
+                arrival_rows = prev_rosters[arrival_mask]
+            if arrival_rows.empty:
                 # Last-name fallback — only if unique player_id
                 last = arrival_name.split()[-1] if arrival_name else ""
                 if not last:
@@ -1121,13 +1199,22 @@ class RosterChangesAgent(BaseAgent):
                     if arrival_rows["player_id"].nunique() != 1:
                         continue  # Ambiguous — skip
 
-            if arrival_rows.empty:
-                continue
-
-            arrival_pid = str(
-                arrival_rows.iloc[0].get("player_id", "")
-            ).strip()
-            tgts, carries = prod_by_id.get(arrival_pid, (0, 0))
+            # Look up production: try player_id, then sleeper_id, then name
+            tgts, carries = 0, 0
+            if not arrival_rows.empty:
+                arrival_pid = str(arrival_rows.iloc[0].get("player_id", "")).strip()
+                tgts, carries = prod_by_id.get(arrival_pid, (0, 0))
+            # Sleeper ID fallback (covers Sleeper's 29% gsis_id gap)
+            if tgts == 0 and carries == 0:
+                arrival_entry = next(
+                    (p for p in current_skill if p["name"] == arrival_name), {}
+                )
+                sid = arrival_entry.get("sleeper_id", "")
+                if sid:
+                    tgts, carries = prod_by_id.get(f"slp_{sid}", (0, 0))
+            # Name fallback
+            if tgts == 0 and carries == 0:
+                tgts, carries = prod_by_name.get(_norm_name(arrival_name), (0, 0))
 
             # Production threshold — only flag significant arrivals
             if arrival_pos in ("WR", "TE") and tgts < MIN_TARGETS:
@@ -1142,8 +1229,14 @@ class RosterChangesAgent(BaseAgent):
 
             # Look up arrival's depth rank from depth chart
             arrival_depth_rank = None
-            if hasattr(self._warehouse, "get_player_depth_rank") and arrival_pid:
-                arrival_depth_rank = self._warehouse.get_player_depth_rank(arrival_pid)
+            arrival_entry = next(
+                (p for p in current_skill if p["name"] == arrival_name), {}
+            )
+            if hasattr(self._warehouse, "get_player_depth_rank"):
+                arrival_depth_rank = self._warehouse.get_player_depth_rank(
+                    sleeper_id=arrival_entry.get("sleeper_id", ""),
+                    name=arrival_name,
+                )
 
             # Generate displaced + contingent for same-position incumbents
             same_pos = [
@@ -1159,13 +1252,12 @@ class RosterChangesAgent(BaseAgent):
 
                 # Skip deep depth chart noise: don't flag rank 3+ incumbents
                 if hasattr(self._warehouse, "get_player_depth_rank"):
-                    inc_rows_prev = prev_rosters[prev_rosters[name_col] == inc_name]
-                    if not inc_rows_prev.empty and "player_id" in inc_rows_prev.columns:
-                        inc_gsis = str(inc_rows_prev.iloc[0].get("player_id", "")).strip()
-                        if inc_gsis:
-                            inc_rank = self._warehouse.get_player_depth_rank(inc_gsis)
-                            if inc_rank is not None and inc_rank >= 3:
-                                continue
+                    inc_rank = self._warehouse.get_player_depth_rank(
+                        sleeper_id=inc.get("sleeper_id", ""),
+                        name=inc_name,
+                    )
+                    if inc_rank is not None and inc_rank >= 3:
+                        continue
 
                 # Set confidence based on arrival depth rank
                 if arrival_depth_rank == 1:
@@ -1334,17 +1426,8 @@ class RosterChangesAgent(BaseAgent):
             except Exception as exc:
                 logger.warning("Departure handler failed for %s: %s", team_abbr, exc)
 
-            # Sync player team assignments from transactions
-            try:
-                synced = await self._sync_player_teams(
-                    context.get("transactions", []), team_abbr
-                )
-                if synced:
-                    logger.info(
-                        "%s: %d player team(s) synced", team_abbr, synced
-                    )
-            except Exception as exc:
-                logger.warning("Team sync failed for %s: %s", team_abbr, exc)
+            # Team assignment sync now handled by sync_rosters.py (Sleeper-based)
+            # OTC _sync_player_teams removed from critical path
 
             logger.info(
                 "%s: %d flags generated, %d written", team_abbr, len(flags), written
