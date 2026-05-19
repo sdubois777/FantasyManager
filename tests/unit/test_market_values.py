@@ -1,7 +1,7 @@
 """
 tests/unit/test_market_values.py
 
-Tests for market value year resolution, fallback logic, and sync engine.
+Tests for market value year resolution and sync engine.
 """
 from __future__ import annotations
 
@@ -17,35 +17,25 @@ from backend.utils.seasons import (
 
 
 # ---------------------------------------------------------------------------
-# get_fantasypros_auction_year()
+# get_fantasypros_auction_year() — always returns current season
 # ---------------------------------------------------------------------------
 
-def test_fantasypros_year_before_july_returns_current_season():
-    """In months 3-6: returns current_season, is_current=False (FP not ready)."""
+def test_fantasypros_year_march():
+    """March — current_season=2026, always is_current=True."""
     with patch("backend.utils.seasons.date") as mock_date:
         mock_date.today.return_value = date(2026, 3, 15)
         year, is_current = get_fantasypros_auction_year()
-        assert year == 2026  # current_season=2026 in March 2026
-        assert is_current is False
+        assert year == 2026
+        assert is_current is True
 
 
-def test_fantasypros_year_may_returns_current_season():
-    """May — current_season is 2026, FP data not yet refreshed (month < 7)."""
+def test_fantasypros_year_may():
+    """May — current_season=2026, always is_current=True."""
     with patch("backend.utils.seasons.date") as mock_date:
         mock_date.today.return_value = date(2026, 5, 6)
         year, is_current = get_fantasypros_auction_year()
         assert year == 2026
-        assert is_current is False
-
-
-def test_fantasypros_year_june_returns_current_season():
-    """June — current_season flips to 2026, but FP data not ready until July."""
-    with patch("backend.utils.seasons.date") as mock_date:
-        mock_date.today.return_value = date(2026, 6, 30)
-        year, is_current = get_fantasypros_auction_year()
-        # current_season in June = 2026, month < 7, so is_current=False
-        assert year == 2026
-        assert is_current is False
+        assert is_current is True
 
 
 def test_fantasypros_year_july_returns_current():
@@ -75,44 +65,27 @@ def test_fantasypros_year_december_returns_current():
         assert is_current is True
 
 
-# ---------------------------------------------------------------------------
-# get_best_available_auction_year()
-# ---------------------------------------------------------------------------
-
-@pytest.mark.asyncio
-async def test_fallback_when_current_year_insufficient():
-    """Fewer than 100 players returned → falls back to previous year."""
-    call_log = []
-
-    async def mock_scraper(fmt, yr):
-        call_log.append(yr)
-        # May 2026: current_season=2026, preferred=2026
-        if yr == 2026:
-            return [{"name": f"p{i}"} for i in range(50)]  # too few
-        else:
-            return [{"name": f"p{i}"} for i in range(200)]  # fallback (2025)
-
+def test_fantasypros_year_january():
+    """January — current_season=2025 (playoffs), still is_current=True."""
     with patch("backend.utils.seasons.date") as mock_date:
-        mock_date.today.return_value = date(2026, 5, 1)
-        values, year, is_current = await get_best_available_auction_year(
-            mock_scraper, format="ppr"
-        )
+        mock_date.today.return_value = date(2026, 1, 15)
+        year, is_current = get_fantasypros_auction_year()
+        assert year == 2025
+        assert is_current is True
 
-    assert len(values) == 200
-    assert is_current is False
-    # Should have tried preferred year (2026) first, then fallback (2025)
-    assert len(call_log) == 2
-    assert call_log == [2026, 2025]
 
+# ---------------------------------------------------------------------------
+# get_best_available_auction_year() — no fallback, always current season
+# ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
-async def test_no_fallback_when_current_year_sufficient():
-    """100+ players returned → uses preferred year directly."""
+async def test_best_available_returns_current_year():
+    """Returns current season year with is_current=True."""
     async def mock_scraper(fmt, yr):
         return [{"name": f"p{i}"} for i in range(200)]
 
     with patch("backend.utils.seasons.date") as mock_date:
-        mock_date.today.return_value = date(2026, 8, 1)
+        mock_date.today.return_value = date(2026, 5, 1)
         values, year, is_current = await get_best_available_auction_year(
             mock_scraper, format="ppr"
         )
@@ -123,23 +96,32 @@ async def test_no_fallback_when_current_year_sufficient():
 
 
 @pytest.mark.asyncio
-async def test_fallback_when_preferred_year_errors():
-    """If preferred year raises exception, falls back to previous."""
+async def test_best_available_low_count_still_returns():
+    """Even with fewer than 100 results, still returns current year (no fallback)."""
     async def mock_scraper(fmt, yr):
-        if yr == 2026:
-            raise RuntimeError("scrape failed")
-        return [{"name": f"p{i}"} for i in range(150)]
+        return [{"name": f"p{i}"} for i in range(50)]
 
     with patch("backend.utils.seasons.date") as mock_date:
-        # May 2026: current_season=2026, preferred=2026 → error → fallback=2025
         mock_date.today.return_value = date(2026, 5, 1)
         values, year, is_current = await get_best_available_auction_year(
             mock_scraper, format="ppr"
         )
 
-    assert len(values) == 150
-    assert year == 2025
-    assert is_current is False
+    assert len(values) == 50
+    assert year == 2026
+    assert is_current is True
+
+
+@pytest.mark.asyncio
+async def test_best_available_error_propagates():
+    """Scraper errors propagate (no silent fallback to wrong year)."""
+    async def mock_scraper(fmt, yr):
+        raise RuntimeError("scrape failed")
+
+    with patch("backend.utils.seasons.date") as mock_date:
+        mock_date.today.return_value = date(2026, 5, 1)
+        with pytest.raises(RuntimeError, match="scrape failed"):
+            await get_best_available_auction_year(mock_scraper, format="ppr")
 
 
 # ---------------------------------------------------------------------------
@@ -231,12 +213,12 @@ async def test_sync_market_values_returns_year_info():
 
     with patch("asyncio.get_running_loop") as mock_loop:
         mock_loop.return_value.run_in_executor = AsyncMock(
-            return_value=(fake_values, 2025, False)
+            return_value=(fake_values, 2026, True)
         )
 
         result = await sync_market_values(session, scoring_format="ppr")
 
-    assert result["year"] == 2025
-    assert result["is_current_season"] is False
+    assert result["year"] == 2026
+    assert result["is_current_season"] is True
     # Player won't match (empty DB) so it goes to unmatched
     assert result["unmatched"] == 1

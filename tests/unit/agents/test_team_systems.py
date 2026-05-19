@@ -570,3 +570,303 @@ async def test_qb_lookup_uses_depth_chart_first():
 
     result = await agent._get_qb_data("BUF", current)
     assert "Josh Allen" in result.get("starter_name", "")
+
+
+# ---------------------------------------------------------------------------
+# OLine draft context tests
+# ---------------------------------------------------------------------------
+
+
+def test_oline_draft_context_pit_has_iheanachor():
+    """PIT drafted Max Iheanachor OT in R1 #21 — should appear in context."""
+    agent = TeamSystemsAgent()
+    # Clear class-level cache so we get a fresh fetch
+    TeamSystemsAgent._draft_cache.clear()
+
+    from backend.utils.seasons import get_analysis_year
+    picks = agent._get_oline_draft_context("PIT", get_analysis_year())
+
+    assert len(picks) >= 1
+    names = {p["player"] for p in picks}
+    assert "Max Iheanachor" in names
+    r1_picks = [p for p in picks if p["round"] == 1]
+    assert len(r1_picks) >= 1
+    assert r1_picks[0]["position"] == "OT"
+
+
+def test_oline_draft_context_empty_for_no_picks():
+    """A team with no OLine picks returns an empty list."""
+    agent = TeamSystemsAgent()
+    TeamSystemsAgent._draft_cache.clear()
+
+    from backend.utils.seasons import get_analysis_year
+    # Use a team that didn't draft OLine — check dynamically
+    picks = agent._get_oline_draft_context("KC", get_analysis_year())
+
+    # KC (KAN in PFR) may or may not have OLine picks — this verifies the
+    # function returns a list (possibly empty) without errors
+    assert isinstance(picks, list)
+
+
+def test_draft_cache_populated_once():
+    """nfl_data_py is called once, not 32 times."""
+    TeamSystemsAgent._draft_cache.clear()
+    agent = TeamSystemsAgent()
+
+    with patch("nfl_data_py.import_draft_picks", return_value=pd.DataFrame({
+        "team": ["PIT", "NYG"],
+        "position": ["OT", "OG"],
+        "round": [1, 1],
+        "pick": [21, 10],
+        "pfr_player_name": ["Max Iheanachor", "Francis Mauigoa"],
+    })) as mock_import:
+        agent._get_oline_draft_context("PIT", 2026)
+        agent._get_oline_draft_context("NYG", 2026)
+        agent._get_oline_draft_context("KC", 2026)
+
+    # Only one call despite three teams
+    mock_import.assert_called_once_with([2026])
+    TeamSystemsAgent._draft_cache.clear()
+
+
+@pytest.mark.asyncio
+async def test_oline_context_in_team_context_dict():
+    """oline_draft_picks should appear in the oline sub-dict of team context."""
+    agent = TeamSystemsAgent()
+    TeamSystemsAgent._draft_cache.clear()
+
+    oline_stats = pd.DataFrame([
+        {"team": "PIT", "sack_rate": 0.072, "avg_time_to_throw": 2.65, "total_dropbacks": 550},
+    ])
+
+    from backend.utils.seasons import get_current_season
+    current = get_current_season()
+    agent._warehouse = _make_warehouse(
+        oline_stats={current: oline_stats},
+    )
+
+    # Mock the draft picks to avoid nfl_data_py call
+    with patch.object(agent, "_get_oline_draft_context", return_value=[
+        {"round": 1, "pick": 21, "player": "Max Iheanachor", "position": "OT"},
+        {"round": 3, "pick": 96, "player": "Gennings Dunker", "position": "OT"},
+    ]):
+        result = await agent._get_oline_data("PIT", current)
+
+    assert "oline_draft_picks" in result
+    assert len(result["oline_draft_picks"]) == 2
+    assert result["sack_rate"] == 0.072
+    assert result["oline_draft_picks"][0]["player"] == "Max Iheanachor"
+
+
+@pytest.mark.asyncio
+async def test_no_oline_picks_uses_sack_rate_only():
+    """When oline_draft_picks is empty, sack_rate is still the primary input."""
+    agent = TeamSystemsAgent()
+    TeamSystemsAgent._draft_cache.clear()
+
+    oline_stats = pd.DataFrame([
+        {"team": "KC", "sack_rate": 0.045, "avg_time_to_throw": 2.72, "total_dropbacks": 600},
+    ])
+
+    from backend.utils.seasons import get_current_season
+    current = get_current_season()
+    agent._warehouse = _make_warehouse(
+        oline_stats={current: oline_stats},
+    )
+
+    with patch.object(agent, "_get_oline_draft_context", return_value=[]):
+        result = await agent._get_oline_data("KC", current)
+
+    assert result["oline_draft_picks"] == []
+    assert result["sack_rate"] == 0.045
+
+
+@pytest.mark.asyncio
+async def test_oline_data_no_stats_still_has_draft_picks():
+    """Even without historical oline stats, draft picks should be returned."""
+    agent = TeamSystemsAgent()
+    TeamSystemsAgent._draft_cache.clear()
+
+    from backend.utils.seasons import get_current_season
+    current = get_current_season()
+    agent._warehouse = _make_warehouse(
+        oline_stats={current: pd.DataFrame()},
+    )
+
+    with patch.object(agent, "_get_oline_draft_context", return_value=[
+        {"round": 1, "pick": 9, "player": "Spencer Fano", "position": "OT"},
+    ]):
+        result = await agent._get_oline_data("CLE", current)
+
+    assert result["oline_draft_picks"][0]["player"] == "Spencer Fano"
+
+
+def test_pfr_team_mapping():
+    """Verify PFR team code mapping covers all non-standard abbreviations."""
+    from backend.agents.team_systems import _PFR_TEAM_MAP, _CANONICAL_TO_PFR
+
+    # Key divergences between PFR and standard codes
+    assert _PFR_TEAM_MAP["GNB"] == "GB"
+    assert _PFR_TEAM_MAP["KAN"] == "KC"
+    assert _PFR_TEAM_MAP["NWE"] == "NE"
+    assert _PFR_TEAM_MAP["TAM"] == "TB"
+    assert _CANONICAL_TO_PFR["GB"] == "GNB"
+    assert _CANONICAL_TO_PFR["KC"] == "KAN"
+
+
+# ---------------------------------------------------------------------------
+# QB mismatch re-run tests
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_mismatch_triggers_rerun():
+    """When model returns wrong QB, call_once() is called TWICE (original + re-run)."""
+    agent = TeamSystemsAgent()
+
+    # Context has Kyler Murray as the depth chart starter
+    context = {
+        "team": "MIN",
+        "qb_metrics": {"starter_name": "Kyler Murray", "years_exp": 6},
+        "oline": {},
+        "personnel": {},
+        "roster_summary": {},
+    }
+    # First call returns McCarthy (wrong QB)
+    first_response = _minimal_team_system(
+        "MIN", qb_name="J.J. McCarthy", qb_tier="average",
+        notes="McCarthy enters year 2 under center.",
+    )
+    # Re-run returns Murray (correct QB)
+    second_response = _minimal_team_system(
+        "MIN", qb_name="Kyler Murray", qb_tier="solid",
+        notes="Murray brings dual-threat ability to Minnesota.",
+    )
+
+    call_count = 0
+    async def _mock_call_once(**kwargs):
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            return json.dumps(first_response)
+        return json.dumps(second_response)
+
+    with patch.object(agent, "_build_team_context", new=AsyncMock(return_value=context)):
+        with patch.object(agent, "call_once", side_effect=_mock_call_once):
+            with patch("backend.agents.team_systems._upsert_team_system", new=AsyncMock()) as mock_upsert:
+                result = await agent.run_for_team("MIN")
+
+    # Two calls: original + re-run
+    assert call_count == 2
+    # Result should use the re-run's analysis
+    assert result["qb_name"] == "Kyler Murray"
+    assert result["qb_tier"] == "solid"
+    assert "Murray" in result["notes"]
+    # Verify upsert was called with correct data
+    written = mock_upsert.call_args[0][1]
+    assert written["qb_name"] == "Kyler Murray"
+
+
+@pytest.mark.asyncio
+async def test_no_mismatch_single_call():
+    """When model returns correct QB, call_once() is called exactly ONCE."""
+    agent = TeamSystemsAgent()
+
+    context = {
+        "team": "KC",
+        "qb_metrics": {"starter_name": "Patrick Mahomes", "years_exp": 9},
+        "oline": {},
+        "personnel": {},
+        "roster_summary": {},
+    }
+    response = _minimal_team_system(
+        "KC", qb_name="Patrick Mahomes", qb_tier="elite",
+    )
+
+    with patch.object(agent, "_build_team_context", new=AsyncMock(return_value=context)):
+        with patch.object(agent, "call_once", new=AsyncMock(return_value=json.dumps(response))) as mock_call:
+            with patch("backend.agents.team_systems._upsert_team_system", new=AsyncMock()):
+                result = await agent.run_for_team("KC")
+
+    mock_call.assert_called_once()
+    assert result["qb_name"] == "Patrick Mahomes"
+
+
+@pytest.mark.asyncio
+async def test_qb_name_pinned_after_rerun():
+    """Even if re-run returns a slightly different name format, depth chart name wins."""
+    agent = TeamSystemsAgent()
+
+    context = {
+        "team": "ARI",
+        "qb_metrics": {"starter_name": "Gardner Minshew", "years_exp": 6},
+        "oline": {},
+        "personnel": {},
+        "roster_summary": {},
+    }
+    # Model returns Carson Beck (wrong)
+    first_response = _minimal_team_system("ARI", qb_name="Carson Beck", qb_tier="average")
+    # Re-run returns "Gardner Minshew II" (close but not exact)
+    second_response = _minimal_team_system(
+        "ARI", qb_name="Gardner Minshew II", qb_tier="below_average",
+        notes="Minshew is a bridge starter in Arizona.",
+    )
+
+    call_count = 0
+    async def _mock_call_once(**kwargs):
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            return json.dumps(first_response)
+        return json.dumps(second_response)
+
+    with patch.object(agent, "_build_team_context", new=AsyncMock(return_value=context)):
+        with patch.object(agent, "call_once", side_effect=_mock_call_once):
+            with patch("backend.agents.team_systems._upsert_team_system", new=AsyncMock()):
+                result = await agent.run_for_team("ARI")
+
+    # Final name pinned to depth chart's exact name
+    assert result["qb_name"] == "Gardner Minshew"
+    # But analysis from re-run is used
+    assert result["qb_tier"] == "below_average"
+    assert "Minshew" in result["notes"]
+
+
+@pytest.mark.asyncio
+async def test_qb_override_in_rerun_context():
+    """Re-run context must include a qb_override instruction."""
+    agent = TeamSystemsAgent()
+
+    context = {
+        "team": "MIN",
+        "qb_metrics": {"starter_name": "Kyler Murray", "years_exp": 6},
+        "oline": {},
+        "personnel": {},
+        "roster_summary": {},
+    }
+    first_response = _minimal_team_system("MIN", qb_name="J.J. McCarthy")
+    second_response = _minimal_team_system("MIN", qb_name="Kyler Murray", qb_tier="solid")
+
+    call_contexts = []
+    call_count = 0
+    async def _mock_call_once(**kwargs):
+        nonlocal call_count
+        call_count += 1
+        # Capture the user= kwarg which is the JSON context
+        user_json = kwargs.get("user", "{}")
+        call_contexts.append(json.loads(user_json))
+        if call_count == 1:
+            return json.dumps(first_response)
+        return json.dumps(second_response)
+
+    with patch.object(agent, "_build_team_context", new=AsyncMock(return_value=context)):
+        with patch.object(agent, "call_once", side_effect=_mock_call_once):
+            with patch("backend.agents.team_systems._upsert_team_system", new=AsyncMock()):
+                await agent.run_for_team("MIN")
+
+    assert len(call_contexts) == 2
+    # First call should NOT have qb_override
+    assert "qb_override" not in call_contexts[0]
+    # Second call MUST have qb_override mentioning Murray
+    assert "qb_override" in call_contexts[1]
+    assert "Kyler Murray" in call_contexts[1]["qb_override"]

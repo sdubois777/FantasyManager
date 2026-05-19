@@ -97,34 +97,19 @@ def get_previous_season() -> int:
 
 def get_fantasypros_auction_year() -> tuple[int, bool]:
     """
-    Determine which year's FantasyPros auction data to pull,
-    with automatic fallback.
+    Determine which year's FantasyPros auction data to pull.
 
-    FantasyPros publishes current season auction values starting
-    around late June/early July when analysts have processed the
-    full offseason. Before that, current year data either doesn't
-    exist or is too sparse to be useful.
+    FantasyPros DraftWizard always returns current projections
+    regardless of the year URL parameter. The year is therefore
+    always get_current_season() and is_current_season is always True.
 
     Returns:
         (year, is_current_season)
-        is_current_season=False means we're using fallback data.
 
-    Examples (called in May 2026):  → (2025, False)
+    Examples (called in May 2026):    → (2026, True)
     Examples (called in August 2026): → (2026, True)
-
-    Note: get_current_season() already returns the most recently
-    completed season (e.g. 2025 in May 2026), so we return it
-    directly. The is_current_season flag indicates whether FP
-    has published fresh data for the upcoming draft season yet
-    (typically starting in July).
     """
-    today = date.today()
-    current_season = get_current_season()
-
-    if today.month >= 7:
-        return current_season, True
-    else:
-        return current_season, False
+    return get_current_season(), True
 
 
 async def get_best_available_auction_year(
@@ -132,8 +117,10 @@ async def get_best_available_auction_year(
     format: str = "ppr",
 ) -> tuple[list, int, bool]:
     """
-    Try preferred year first, fall back to previous year if the
-    preferred year returns no data or too few players.
+    Scrape FantasyPros DraftWizard auction values.
+
+    DraftWizard always returns current-season projections regardless
+    of the year URL parameter, so the year is always get_current_season().
 
     Args:
         scraper_fn: async function(format, year) → list of player values
@@ -144,34 +131,20 @@ async def get_best_available_auction_year(
 
     Minimum viable result: 100+ players.
     """
-    preferred_year, is_current = get_fantasypros_auction_year()
+    year, is_current = get_fantasypros_auction_year()
 
-    try:
-        values = await scraper_fn(format, preferred_year)
-        if len(values) >= 100:
-            logger.info(
-                "FantasyPros: using %d data (%d players)",
-                preferred_year, len(values),
-            )
-            return values, preferred_year, is_current
-        else:
-            logger.warning(
-                "FantasyPros: %d returned only %d players — falling back to %d",
-                preferred_year, len(values), preferred_year - 1,
-            )
-    except Exception as e:
-        logger.warning(
-            "FantasyPros: %d failed (%s) — falling back to %d",
-            preferred_year, e, preferred_year - 1,
+    values = await scraper_fn(format, year)
+    if len(values) >= 100:
+        logger.info(
+            "FantasyPros: fetched %d season data (%d players)",
+            year, len(values),
         )
-
-    fallback_year = preferred_year - 1
-    values = await scraper_fn(format, fallback_year)
-    logger.info(
-        "FantasyPros: using fallback %d data (%d players)",
-        fallback_year, len(values),
-    )
-    return values, fallback_year, False
+    else:
+        logger.warning(
+            "FantasyPros: only %d players returned for %d season",
+            len(values), year,
+        )
+    return values, year, is_current
 
 
 def get_player_seasons_for_baseline(

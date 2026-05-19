@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from typing import Optional
 
 from sqlalchemy import select
@@ -30,7 +31,8 @@ from backend.agents.base_agent import BaseAgent, parse_json_output, HAIKU, SONNE
 from backend.database import AsyncSessionLocal
 from backend.models.player import Player, PlayerProfile, PlayerInjuryProfile, PlayerSchedule
 from backend.models.dependency import PlayerDependency
-from backend.engines.valuation import get_market_context
+from backend.utils.seasons import get_current_season
+
 
 logger = logging.getLogger(__name__)
 
@@ -57,13 +59,12 @@ For each player, output a JSON object with these fields:
   "nomination_target_flag": boolean — true if this player is overvalued and should be nominated early to drain opponent budgets
 }
 
-You may also receive league auction history context:
-- market_value_league: what the user's actual opponents paid for this player last year
-- market_value_fantasypros: FantasyPros consensus ADP
-- league_bias_signal: "league_overpays" / "league_underpays" / "league_aligned" / null
-When league history is available, weight it MORE heavily than FantasyPros — it reflects
-what this specific league actually pays. A league that pays $4 for QBs when FP says $28
-means you can get QBs cheap. Exploit league biases in your recommendations.
+You may also receive market context:
+- market_value_fantasypros: consensus ADP price from FantasyPros
+- prior_season_price: what this player actually sold for in prior season auctions
+Use these as references for what the market typically pays for this player.
+When both are available, note any gap — a player whose ADP is $30 but sold for $45 last year
+likely faces aggressive bidding again.
 
 Rules:
 - ai_bid_ceiling should usually be within 15-20% of the math ceiling, but you CAN deviate more with reasoning
@@ -71,8 +72,9 @@ Rules:
 - pay_up_flag = true means: "If someone else bids near your ceiling, keep going — this player is special"
 - nomination_target_flag = true means: "Nominate this player early — opponents will overpay, draining their budget"
 - auction_note should reference the player's specific situation, not generic advice
-- When league_bias_signal = "league_underpays", mention the discount opportunity in auction_note
-- When league_bias_signal = "league_overpays", consider nomination_target_flag = true
+- Reference the prior season's consensus ADP to assess current value
+- NEVER say "your league paid" or "in your league" — this analysis is shared across all users
+- Say "consensus ADP was $X" or "the market typically prices this player at $X"
 - Value assessment considers: projection confidence, injury risk, schedule, dependency flags, positional scarcity
 - Max realistic bids: RB=$80, WR=$70, QB=$50, TE=$45. Never exceed these.
 
@@ -100,6 +102,7 @@ class ValuationAgent(BaseAgent):
                     selectinload(Player.injury_profile),
                     selectinload(Player.schedule),
                     selectinload(Player.dependencies),
+                    selectinload(Player.historic_prices),
                 )
                 .order_by(Player.tier.asc().nulls_last(), Player.recommended_bid_ceiling.desc())
             )
@@ -207,16 +210,16 @@ class ValuationAgent(BaseAgent):
         ctx["ceiling_value"] = float(p.ceiling_value) if p.ceiling_value else None
         ctx["floor_value"] = float(p.floor_value) if p.floor_value else None
 
-        # League auction context (what opponents actually paid last year)
-        mctx = get_market_context(p)
-        if mctx["market_value_league"] is not None:
-            ctx["market_value_league"] = float(mctx["market_value_league"])
-        if mctx["market_value_fantasypros"] is not None:
-            ctx["market_value_fantasypros"] = float(mctx["market_value_fantasypros"])
-        if mctx["league_bias"] is not None:
-            ctx["league_bias"] = float(mctx["league_bias"])
-        if mctx["league_bias_signal"] is not None:
-            ctx["league_bias_signal"] = mctx["league_bias_signal"]
+        # Consensus ADP (shared across all users — no league-specific data)
+        if p.market_value_fantasypros is not None:
+            ctx["market_value_fantasypros"] = float(p.market_value_fantasypros)
+
+        # Prior season actual auction price (from historic archive)
+        prior_year = get_current_season() - 1
+        for hp in (p.historic_prices or []):
+            if hp.season_year == prior_year:
+                ctx["prior_season_price"] = float(hp.price)
+                break
 
         # Profile data
         if p.profile:
@@ -343,7 +346,17 @@ class ValuationAgent(BaseAgent):
                 db_player.ai_confidence_floor = result.get("confidence_floor")
                 db_player.ai_confidence_ceiling = result.get("confidence_ceiling")
                 db_player.value_assessment = result.get("value_assessment")
-                db_player.auction_note = result.get("auction_note")
+                note = result.get("auction_note")
+                if note:
+                    # Sanitize: strip league-specific language the model
+                    # sometimes generates despite prompt instructions
+                    note = re.sub(
+                        r"(?i)\b(your|the|this) league (paid|spent|valued|priced)\b",
+                        "consensus ADP was",
+                        note,
+                    )
+                    note = re.sub(r"(?i)\bin your league\b", "at consensus", note)
+                db_player.auction_note = note
                 db_player.pay_up_flag = result.get("pay_up_flag", False)
                 db_player.nomination_target_flag = result.get("nomination_target_flag", False)
                 written += 1

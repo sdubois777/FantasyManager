@@ -16,6 +16,7 @@ import pytest
 
 from backend.agents.roster_changes import (
     RosterChangesAgent,
+    _norm_name,
     deduplicate_flags,
     enforce_flag_mutual_exclusivity,
     validate_flag,
@@ -77,8 +78,15 @@ class _MockWarehouse:
     def get_starter(self, team, position, season=None):
         return self._data.get("starters", {}).get((team, position))
 
-    def get_player_depth_rank(self, gsis_id, season=None):
-        return self._data.get("depth_ranks", {}).get(gsis_id)
+    def get_player_depth_rank(self, gsis_id="", season=None, *, sleeper_id="", name=""):
+        ranks = self._data.get("depth_ranks", {})
+        if sleeper_id and sleeper_id in ranks:
+            return ranks[sleeper_id]
+        if gsis_id and gsis_id in ranks:
+            return ranks[gsis_id]
+        if name and name in ranks:
+            return ranks[name]
+        return None
 
     def get_team_depth_context(self, team, season=None):
         return self._data.get("depth_context", {}).get(team, {})
@@ -934,8 +942,8 @@ async def test_sync_player_teams_skips_already_correct():
 
 
 @pytest.mark.asyncio
-async def test_sync_player_teams_called_in_run_for_team():
-    """_sync_player_teams must be called at the end of run_for_team."""
+async def test_sync_player_teams_not_called_in_run_for_team():
+    """_sync_player_teams removed from run_for_team — sync_rosters handles team assignments."""
     agent = RosterChangesAgent()
     context = {
         "team": "LAC",
@@ -948,9 +956,8 @@ async def test_sync_player_teams_called_in_run_for_team():
          patch.object(agent, "_sync_player_teams", new=AsyncMock(return_value=0)) as mock_sync:
         await agent.run_for_team("LAC")
 
-    mock_sync.assert_called_once_with(
-        [{"player": "Test", "type": "Signed"}], "LAC"
-    )
+    # Team sync now handled by sync_rosters.py (Sleeper-based), not roster_changes
+    mock_sync.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -1707,8 +1714,9 @@ async def test_displaced_skips_deep_depth_incumbents():
         prev_rosters=prev_rosters,
         target_share={prev: target_share},
         depth_ranks={
-            "00-0099902": 1,   # WR1
-            "00-0099903": 3,   # WR3 — should be skipped
+            # Keyed by name (depth chart lookup now uses sleeper_id → name fallback)
+            "Incumbent WR1": 1,   # WR1
+            "Deep Bench WR": 3,   # WR3 — should be skipped
         },
     )
 
@@ -1749,8 +1757,9 @@ async def test_displaced_confidence_from_depth_rank():
         prev_rosters=prev_rosters,
         target_share={prev: target_share},
         depth_ranks={
-            "00-0088801": 2,   # arrival is backup
-            "00-0088802": 1,   # incumbent is starter
+            # Keyed by name (depth chart lookup uses sleeper_id → name fallback)
+            "Backup Arrival": 2,   # arrival is backup
+            "Incumbent WR1": 1,   # incumbent is starter
         },
     )
 
@@ -1759,3 +1768,165 @@ async def test_displaced_confidence_from_depth_rank():
     displaced_flags = [f for f in flags if f["flag_type"] == "displaced"]
     assert len(displaced_flags) == 1
     assert displaced_flags[0]["confidence"] == "medium"
+
+
+# ===========================================================================
+# Sleeper-based roster wiring tests
+# ===========================================================================
+
+
+def test_norm_name_strips_suffixes():
+    """_norm_name strips Jr/Sr/II/III/IV/V suffixes for cross-source matching."""
+    assert _norm_name("Brian Thomas Jr.") == "brian thomas"
+    assert _norm_name("Michael Pittman Jr") == "michael pittman"
+    assert _norm_name("Marvin Harrison III") == "marvin harrison"
+    assert _norm_name("Allen Robinson II") == "allen robinson"
+    assert _norm_name("Ladd McConkey") == "ladd mcconkey"
+
+
+def test_fetch_skill_roster_uses_warehouse():
+    """_fetch_skill_roster reads from warehouse rosters (Sleeper), not OTC."""
+    agent = RosterChangesAgent()
+
+    # Sleeper-format DataFrame: full_name + team + position columns
+    sleeper_df = pd.DataFrame([
+        {"full_name": "Ladd McConkey", "position": "WR", "team": "LAC",
+         "player_id": "11111", "sportradar_id": "sr1", "age": 23, "years_exp": 2},
+        {"full_name": "Justin Herbert", "position": "QB", "team": "LAC",
+         "player_id": "22222", "sportradar_id": "sr2", "age": 28, "years_exp": 6},
+        {"full_name": "Josh Allen", "position": "QB", "team": "BUF",
+         "player_id": "33333", "sportradar_id": "sr3", "age": 30, "years_exp": 8},
+    ])
+
+    agent._warehouse = _make_warehouse(rosters=sleeper_df)
+
+    import asyncio
+    roster = asyncio.get_event_loop().run_until_complete(
+        agent._fetch_skill_roster("LAC")
+    )
+
+    names = {p["name"] for p in roster}
+    assert "Ladd McConkey" in names
+    assert "Justin Herbert" in names
+    assert "Josh Allen" not in names  # BUF, not LAC
+    # Verify IDs are carried through
+    mcconkey = next(p for p in roster if p["name"] == "Ladd McConkey")
+    assert mcconkey["sleeper_id"] == "11111"
+    assert mcconkey["sportradar_id"] == "sr1"
+
+
+@pytest.mark.asyncio
+async def test_departure_detects_allen_leaving_lac():
+    """Allen on LAC in prev_rosters but NOT in Sleeper current → departure detected."""
+    agent = RosterChangesAgent()
+    prev = get_current_season() - 1
+
+    # Current roster from Sleeper (Allen is NOT on LAC anymore)
+    current_roster = [
+        {"name": "Ladd McConkey", "position": "WR", "team": "LAC"},
+        {"name": "Quentin Johnston", "position": "WR", "team": "LAC"},
+    ]
+
+    # Previous roster from nfl_data_py (Allen WAS on LAC)
+    prev_rosters = pd.DataFrame([
+        {"player_name": "Keenan Allen", "position": "WR", "team": "LAC", "player_id": "00-0031381"},
+        {"player_name": "Ladd McConkey", "position": "WR", "team": "LAC", "player_id": "00-0039915"},
+        {"player_name": "Quentin Johnston", "position": "WR", "team": "LAC", "player_id": "00-0038123"},
+    ])
+
+    # Target share: Allen had 100+ targets (significant)
+    target_share = pd.DataFrame([
+        {"player_id": "00-0031381", "recent_team": "LAC", "total_targets": 120, "total_carries": 0},
+        {"player_id": "00-0039915", "recent_team": "LAC", "total_targets": 95, "total_carries": 0},
+    ])
+
+    agent._warehouse = _make_warehouse(
+        prev_rosters=prev_rosters,
+        target_share={prev: target_share},
+    )
+
+    flags = await agent._handle_departures("LAC", current_roster)
+
+    # Allen departed LAC → beneficiary flags for McConkey + Johnston
+    assert len(flags) >= 1
+    beneficiary_names = {f["player_name"] for f in flags}
+    assert "Ladd McConkey" in beneficiary_names
+    assert all(f["flag_type"] == "beneficiary" for f in flags)
+    assert all(f["trigger_player_name"] == "Keenan Allen" for f in flags)
+
+
+@pytest.mark.asyncio
+async def test_arrival_detects_pittman_to_pit():
+    """Pittman on PIT in Sleeper but NOT on PIT in prev_rosters → arrival detected."""
+    agent = RosterChangesAgent()
+    prev = get_current_season() - 1
+
+    # Current roster from Sleeper (Pittman arrived at PIT)
+    current_roster = [
+        {"name": "DK Metcalf", "position": "WR", "team": "PIT"},
+        {"name": "Michael Pittman", "position": "WR", "team": "PIT"},
+        {"name": "George Pickens", "position": "WR", "team": "PIT"},
+    ]
+
+    # Previous roster from nfl_data_py (Pittman was on IND, not PIT)
+    prev_rosters = pd.DataFrame([
+        {"player_name": "DK Metcalf", "position": "WR", "team": "SEA", "player_id": "00-0035228"},
+        {"player_name": "George Pickens", "position": "WR", "team": "PIT", "player_id": "00-0037803"},
+        {"player_name": "Michael Pittman", "position": "WR", "team": "IND", "player_id": "00-0036322"},
+    ])
+
+    # Target share: Pittman had 100+ targets (significant arrival)
+    target_share = pd.DataFrame([
+        {"player_id": "00-0036322", "recent_team": "IND", "total_targets": 110, "total_carries": 5},
+        {"player_id": "00-0035228", "recent_team": "SEA", "total_targets": 90, "total_carries": 2},
+    ])
+
+    agent._warehouse = _make_warehouse(
+        prev_rosters=prev_rosters,
+        target_share={prev: target_share},
+    )
+
+    flags = await agent._handle_arrivals("PIT", current_roster)
+
+    # Both Pittman (from IND) and Metcalf (from SEA) are arrivals
+    displaced = [f for f in flags if f["flag_type"] == "displaced"]
+    assert len(displaced) >= 1
+    # Pittman arriving should displace Pickens (and vice versa)
+    pittman_displaced = [f for f in displaced if f["trigger_player_name"] == "Michael Pittman"]
+    assert len(pittman_displaced) >= 1
+    pittman_victims = {f["player_name"] for f in pittman_displaced}
+    assert "George Pickens" in pittman_victims
+
+
+@pytest.mark.asyncio
+async def test_suffix_mismatch_does_not_cause_false_departure():
+    """'Brian Thomas Jr.' in prev_rosters should match 'Brian Thomas' in Sleeper."""
+    agent = RosterChangesAgent()
+    prev = get_current_season() - 1
+
+    # Current roster (Sleeper — no suffix)
+    current_roster = [
+        {"name": "Brian Thomas", "position": "WR", "team": "JAX"},
+        {"name": "Christian Kirk", "position": "WR", "team": "JAX"},
+    ]
+
+    # Previous roster (nfl_data_py — HAS suffix)
+    prev_rosters = pd.DataFrame([
+        {"player_name": "Brian Thomas Jr.", "position": "WR", "team": "JAX", "player_id": "00-0040123"},
+        {"player_name": "Christian Kirk", "position": "WR", "team": "JAX", "player_id": "00-0034345"},
+    ])
+
+    target_share = pd.DataFrame([
+        {"player_id": "00-0040123", "recent_team": "JAX", "total_targets": 130, "total_carries": 0},
+    ])
+
+    agent._warehouse = _make_warehouse(
+        prev_rosters=prev_rosters,
+        target_share={prev: target_share},
+    )
+
+    flags = await agent._handle_departures("JAX", current_roster)
+
+    # Brian Thomas should NOT be flagged as departed — suffix mismatch handled
+    departed_triggers = {f["trigger_player_name"] for f in flags}
+    assert "Brian Thomas Jr." not in departed_triggers

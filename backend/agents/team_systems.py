@@ -11,7 +11,7 @@ Architecture:
   - Never uses run_agent() (that is for live draft only)
 
 Key flags produced:
-  - rookie_qb_flag: true for any first-year starter
+  - rookie_qb_flag: true only for genuine first-time NFL starters (not veterans on new teams)
   - compound_risk_flag: rookie QB AND pass_protection_grade C or below
     → cascades as a severe penalty to all skill positions on that roster
 """
@@ -29,9 +29,22 @@ from backend.agents.base_agent import BaseAgent, parse_json_output, HAIKU
 from backend.database import AsyncSessionLocal
 from backend.integrations.nfl_data import normalize_player_name
 from backend.models.team_system import TeamSystem
-from backend.utils.seasons import get_current_season, get_analysis_seasons
+from backend.utils.seasons import get_current_season, get_analysis_seasons, get_analysis_year
 
 logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# OLine draft context — runtime injection only (no DB storage)
+# ---------------------------------------------------------------------------
+
+_OLINE_POSITIONS = frozenset({"T", "G", "C", "OT", "OG", "OL", "OC"})
+
+# nfl_data_py uses PFR team codes — map to our canonical abbreviations
+_PFR_TEAM_MAP: dict[str, str] = {
+    "GNB": "GB", "KAN": "KC", "LAR": "LA", "LVR": "LV",
+    "NOR": "NO", "NWE": "NE", "SFO": "SF", "TAM": "TB",
+}
+_CANONICAL_TO_PFR: dict[str, str] = {v: k for k, v in _PFR_TEAM_MAP.items()}
 
 # ---------------------------------------------------------------------------
 # All 32 NFL teams
@@ -79,10 +92,22 @@ Produce a JSON object matching this exact schema:
 }
 
 Rules:
-- rookie_qb_flag = true if this is the QB's first full season as a starter
-- compound_risk_flag = true ONLY when rookie_qb_flag is true AND pass_protection_grade is C or below
-- compound_risk_flag cascades severe penalties to all skill position players — flag conservatively
+- rookie_qb_flag = true ONLY if this QB has never been a full-season NFL starter before — meaning a true first or second-year player making their debut as a starter.
+  TRUE examples (actual rookies/first-time starters): Shedeur Sanders (CLE), Jaxson Dart (NYG), Cam Ward (TEN).
+  FALSE examples (veterans on new teams): Kyler Murray (6+ NFL seasons), Gardner Minshew (6+ seasons), Spencer Rattler (1+ seasons, NFL veteran), Bo Nix (played a full prior season as starter).
+  A QB who changes teams is NOT a rookie. A QB who missed time due to injury is NOT a rookie. rookie_qb_flag is about NFL experience level, not familiarity with a new team or system.
+- compound_risk_flag = true ONLY when rookie_qb_flag is true AND pass_protection_grade is C or below. This flag is reserved for genuine first-year starters behind bad OLines — a rare scenario. Flag conservatively.
 - The notes field must focus on fantasy implications, not general football analysis
+
+OLine grade adjustment rules (when oline_draft_picks is provided in oline data):
+- Round 1 OT pick (picks 1-32): pass_protection_grade improves 1-2 grades above historical sack rate baseline.
+  Example: 8% sack rate = C+ baseline, but R1 OT pick → B or B+.
+- Round 1 OG/C pick (picks 1-32): run_blocking_grade improves 1-2 grades. Modest pass_protection improvement too.
+- Round 2 OT/OG (picks 33-64): improve grades by 1 grade. Day 1 starter likely but not guaranteed.
+- Round 3+ OLine picks: modest improvement, depth/rotational. 0-1 grade improvement maximum.
+- Multiple OLine picks same year: stack improvements (additive). 2 OLinemen in R1-R2 = full grade adjustments.
+- No OLine picks + historical sack_rate > 7%: grade stays at or near historical level. Do not inflate without evidence.
+- When oline_draft_picks is empty []: base grade entirely on sack_rate and avg_time_to_throw.
 
 Output ONLY a valid JSON object. No explanation. No preamble. No markdown fences.
 Your entire response must be parseable by json.loads()."""
@@ -96,6 +121,52 @@ class TeamSystemsAgent(BaseAgent):
     AGENT_NAME       = "team_systems"
     AGENT_MODEL      = HAIKU
     AGENT_MAX_TOKENS = 500
+
+    # Class-level cache: fetched once, shared across all 32 teams
+    _draft_cache: dict[int, pd.DataFrame] = {}
+
+    # ------------------------------------------------------------------
+    # OLine draft context — fetched once per season, not per team
+    # ------------------------------------------------------------------
+
+    def _get_oline_draft_context(self, team: str, season: int) -> list[dict]:
+        """Return OLine draft picks for *team* in the given draft *season*.
+
+        Uses a class-level cache so nfl_data_py is called at most once
+        across all 32 teams.  Returns empty list on miss.
+        """
+        if season not in self.__class__._draft_cache:
+            try:
+                import nfl_data_py as nfl_data
+                draft = nfl_data.import_draft_picks([season])
+                self.__class__._draft_cache[season] = draft
+            except Exception as exc:
+                logger.warning("Draft picks %d unavailable: %s", season, exc)
+                self.__class__._draft_cache[season] = pd.DataFrame()
+
+        draft = self.__class__._draft_cache[season]
+        if draft.empty:
+            return []
+
+        # Map canonical team code to PFR code used by nfl_data_py
+        pfr_team = _CANONICAL_TO_PFR.get(team, team)
+
+        team_oline = draft[
+            (draft["team"] == pfr_team)
+            & (draft["position"].isin(_OLINE_POSITIONS))
+        ].sort_values("pick")
+
+        name_col = "pfr_player_name" if "pfr_player_name" in draft.columns else "player_name"
+
+        return [
+            {
+                "round": int(row["round"]),
+                "pick": int(row["pick"]),
+                "player": str(row.get(name_col, "")),
+                "position": str(row.get("position", "")),
+            }
+            for _, row in team_oline.iterrows()
+        ]
 
     # ------------------------------------------------------------------
     # Data pre-aggregation — all Python, zero API calls
@@ -138,13 +209,24 @@ class TeamSystemsAgent(BaseAgent):
         }
 
     async def _get_oline_data(self, team: str, season: int) -> dict:
+        analysis_year = get_analysis_year()
+        oline_picks = self._get_oline_draft_context(team, analysis_year)
+
         oline_stats = self._warehouse.get_oline_stats(season)
         if oline_stats.empty:
-            return {"team": team, "note": "No data — use model knowledge"}
+            return {
+                "team": team,
+                "oline_draft_picks": oline_picks,
+                "note": "No historical sack rate data — use model knowledge and oline_draft_picks.",
+            }
 
         team_row = oline_stats[oline_stats["team"] == team]
         if team_row.empty:
-            return {"team": team, "note": "No data — use model knowledge"}
+            return {
+                "team": team,
+                "oline_draft_picks": oline_picks,
+                "note": "No historical sack rate data — use model knowledge and oline_draft_picks.",
+            }
 
         row = team_row.iloc[0]
         sack_rate = row.get("sack_rate")
@@ -167,9 +249,17 @@ class TeamSystemsAgent(BaseAgent):
             "total_dropbacks": total_dropbacks,
             "sack_rate": sack_rate,
             "avg_time_to_throw": avg_ttt,
+            "oline_draft_picks": oline_picks,
             "note": (
-                "Use sack_rate and avg_time_to_throw as primary inputs for pass_protection_grade. "
-                "Lower sack_rate (<5%) and moderate time_to_throw (~2.6-2.8s) indicate good protection."
+                "Use sack_rate and avg_time_to_throw as primary inputs for historical "
+                "pass_protection_grade. "
+                "IMPORTANT: Also factor in oline_draft_picks — draft capital invested in OLine "
+                "is a strong forward-looking signal. "
+                "A Round 1 OT pick should improve pass_protection_grade by 1-2 letter grades "
+                "above the historical sack rate baseline. "
+                "A Round 1 OG/C pick improves run_blocking_grade similarly. "
+                "Multiple OLine picks = multiply the effect. "
+                "No OLine picks + high sack rate = grade stays at historical level."
             ),
         }
 
@@ -216,16 +306,34 @@ class TeamSystemsAgent(BaseAgent):
                     if starter_name is None:
                         starter_name = team_qbs.iloc[0]["player_name"]
 
+        # --- Sleeper years_exp for the identified QB ---
+        qb_years_exp = None
+        if starter_name:
+            sleeper_rosters = self._warehouse.rosters
+            if not sleeper_rosters.empty:
+                name_col_r = "full_name" if "full_name" in sleeper_rosters.columns else "player_name"
+                qb_match = sleeper_rosters[
+                    (sleeper_rosters[name_col_r] == starter_name)
+                    & (sleeper_rosters["position"] == "QB")
+                ]
+                if not qb_match.empty:
+                    yrs = qb_match.iloc[0].get("years_exp")
+                    if yrs is not None and pd.notna(yrs):
+                        qb_years_exp = int(yrs)
+
         # --- Source 2: QB stats from warehouse ---
         qb_stats = self._warehouse.get_qb_stats(season)
         if qb_stats.empty:
             if starter_name:
-                return {
+                result = {
                     "team": team, "season": season,
                     "starter_name": starter_name,
                     "source": "roster_only",
                     "note": f"{starter_name} identified from roster but no stats available — use model knowledge",
                 }
+                if qb_years_exp is not None:
+                    result["years_exp"] = qb_years_exp
+                return result
             return {"team": team, "note": "No QB data — use model knowledge"}
 
         # Find the QB's stats
@@ -251,12 +359,15 @@ class TeamSystemsAgent(BaseAgent):
                     )
 
             if starter_df.empty:
-                return {
+                result = {
                     "team": team, "season": season,
                     "starter_name": starter_name,
                     "source": "roster_only",
                     "note": f"{starter_name} identified from roster but no stats found — use model knowledge",
                 }
+                if qb_years_exp is not None:
+                    result["years_exp"] = qb_years_exp
+                return result
             row = starter_df.iloc[0]
         else:
             # --- Fallback: most passing yards on this team ---
@@ -277,7 +388,7 @@ class TeamSystemsAgent(BaseAgent):
         completions = _safe_int(row.get("completions", 0))
         games = _safe_int(row.get("games", 0))
 
-        return {
+        result = {
             "team": team,
             "season": season,
             "starter_name": starter_name,
@@ -292,6 +403,9 @@ class TeamSystemsAgent(BaseAgent):
             "rushing_tds": _safe_int(row.get("rushing_tds", 0)),
             "note": "Supplement with your knowledge of this QB's performance under pressure and CPOE.",
         }
+        if qb_years_exp is not None:
+            result["years_exp"] = qb_years_exp
+        return result
 
     async def _get_personnel_data(self, team: str, season: int) -> dict:
         ts_df = self._warehouse.get_target_share(season)
@@ -380,8 +494,10 @@ class TeamSystemsAgent(BaseAgent):
             # Enforce team_abbr from our canonical list
             data["team_abbr"] = team
 
-            # Enforce QB name from data, not model hallucination.
-            # The model may output a QB who is no longer on this team.
+            # Detect QB mismatch: if model analyzed a different QB than
+            # the Sleeper depth chart starter, the entire analysis (qb_tier,
+            # notes, system_grade) is calibrated for the wrong player.
+            # Re-run with an explicit QB correction so all fields are consistent.
             qb_data = context.get("qb_metrics", {})
             data_qb = qb_data.get("starter_name")
             model_qb = data.get("qb_name")
@@ -390,10 +506,42 @@ class TeamSystemsAgent(BaseAgent):
                 model_norm = normalize_player_name(model_qb)
                 if data_norm != model_norm:
                     logger.warning(
-                        "%s: model output qb_name=%r but data says %r — overriding",
+                        "%s: QB mismatch — model=%r, depth_chart=%r — re-running",
                         team, model_qb, data_qb,
                     )
+                    # Add explicit QB correction to context and re-run
+                    context["qb_override"] = (
+                        f"IMPORTANT: The current starting QB for {team} is "
+                        f"{data_qb} (from Sleeper depth chart, depth_chart_order=1). "
+                        f"You MUST generate ALL analysis — qb_name, qb_tier, notes, "
+                        f"system_grade — for {data_qb}, NOT {model_qb}. "
+                        f"Do not speculate about future QB changes."
+                    )
+                    raw2 = await self.call_once(
+                        system=SYSTEM_PROMPT,
+                        user=json.dumps(context, default=str),
+                        input_data=context,
+                        entity_id=team,
+                    )
+                    if raw2:
+                        data2 = parse_json_output(raw2)
+                        if isinstance(data2, dict):
+                            data = data2
+                            data["team_abbr"] = team
+                    # Final enforcement: even after re-run, pin the name
                     data["qb_name"] = data_qb
+
+            # Enforce rookie_qb_flag from Sleeper years_exp when available.
+            # Model may flag a veteran as rookie (e.g. predicting a different
+            # starter than depth chart shows).
+            qb_years = qb_data.get("years_exp")
+            if qb_years is not None and qb_years >= 3 and data.get("rookie_qb_flag"):
+                logger.info(
+                    "%s: overriding rookie_qb_flag to False — %s has %d years NFL exp",
+                    team, data.get("qb_name"), qb_years,
+                )
+                data["rookie_qb_flag"] = False
+                data["compound_risk_flag"] = False
 
             # Attach Python-computed numerics (NOT from model output)
             oline_data = context.get("oline", {})

@@ -13,6 +13,7 @@ from backend.database import Base
 if TYPE_CHECKING:
     from backend.models.dependency import PlayerDependency, BeatReporterSignal
     from backend.models.draft_state import OpponentProfile
+    from backend.models.market_value_historic import MarketValueHistoric
     from backend.models.season_roster import SeasonRoster
 
 
@@ -44,6 +45,8 @@ class Player(Base):
     market_value_sleeper: Mapped[Optional[Decimal]] = mapped_column(Numeric(5, 2))
     market_value_underdog: Mapped[Optional[Decimal]] = mapped_column(Numeric(5, 2))
     market_value_league: Mapped[Optional[Decimal]] = mapped_column(Numeric(5, 2))
+    market_value_prior_season: Mapped[Optional[Decimal]] = mapped_column(Numeric(8, 2))
+    market_value_prior_season_year: Mapped[Optional[int]] = mapped_column(Integer)
     market_value_confidence: Mapped[Optional[str]] = mapped_column(String(20))
     market_value_updated_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
 
@@ -122,6 +125,9 @@ class Player(Base):
     )
     season_roster: Mapped[Optional[SeasonRoster]] = relationship(
         "SeasonRoster", back_populates="player", uselist=False
+    )
+    historic_prices: Mapped[list[MarketValueHistoric]] = relationship(
+        "MarketValueHistoric", back_populates="player"
     )
 
 

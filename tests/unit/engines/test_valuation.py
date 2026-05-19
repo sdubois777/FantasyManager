@@ -32,17 +32,17 @@ from backend.engines.valuation import (
 # ===========================================================================
 
 def test_assign_tier_rb_elite_par_is_tier1():
-    """RB PAR ratio >= 2.3 → T1."""
+    """RB PAR ratio >= 1.9 → T1 (~8 RBs in 12-team league)."""
     assert assign_tier(3.0, "RB") == 1
-    assert assign_tier(2.3, "RB") == 1
-    assert assign_tier(2.29, "RB") == 2
+    assert assign_tier(1.9, "RB") == 1
+    assert assign_tier(1.89, "RB") == 2
 
 
 def test_assign_tier_wr_elite_par_is_tier1():
-    """WR PAR ratio >= 2.2 → T1 (top ~5 WRs)."""
+    """WR PAR ratio >= 2.0 → T1 (~10 WRs, Jefferson at 2.03 is T1)."""
     assert assign_tier(2.5, "WR") == 1
-    assert assign_tier(2.2, "WR") == 1
-    assert assign_tier(2.19, "WR") == 2
+    assert assign_tier(2.0, "WR") == 1
+    assert assign_tier(1.99, "WR") == 2
 
 
 def test_assign_tier_te_elite_par_is_tier1():
@@ -61,21 +61,21 @@ def test_assign_tier_qb_elite_par_is_tier1():
 
 
 def test_assign_tier_rb_strong_par_is_tier2():
-    """RB PAR ratio 1.8–2.29 → T2."""
-    assert assign_tier(2.2, "RB") == 2
-    assert assign_tier(1.8, "RB") == 2
+    """RB PAR ratio 1.5–1.89 → T2."""
+    assert assign_tier(1.89, "RB") == 2
+    assert assign_tier(1.5, "RB") == 2
 
 
 def test_assign_tier_wr_strong_par_is_tier2():
-    """WR PAR ratio 1.5–2.19 → T2."""
-    assert assign_tier(2.1, "WR") == 2
+    """WR PAR ratio 1.5–1.99 → T2."""
+    assert assign_tier(1.99, "WR") == 2
     assert assign_tier(1.5, "WR") == 2
 
 
 def test_assign_tier_rb_starter_par_is_tier3():
-    """RB PAR ratio 1.3–1.79 → T3."""
-    assert assign_tier(1.7, "RB") == 3
-    assert assign_tier(1.3, "RB") == 3
+    """RB PAR ratio 1.2–1.49 → T3."""
+    assert assign_tier(1.4, "RB") == 3
+    assert assign_tier(1.2, "RB") == 3
 
 
 def test_assign_tier_wr_starter_par_is_tier3():
@@ -98,8 +98,30 @@ def test_assign_tier_below_replacement_is_tier5():
 
 def test_assign_tier_unknown_position_uses_wr_defaults():
     """Unknown position falls back to WR thresholds."""
-    assert assign_tier(2.2, "K") == 1
+    assert assign_tier(2.0, "K") == 1
     assert assign_tier(1.5, "K") == 2
+
+
+def test_jefferson_is_tier1_at_2_03():
+    """Jefferson at PAR 2.03 must be WR T1 after recalibration."""
+    assert assign_tier(2.03, "WR") == 1
+
+
+def test_rb_cook_is_tier1_at_2_10():
+    """James Cook at PAR 2.10 must be RB T1 after recalibration."""
+    assert assign_tier(2.10, "RB") == 1
+
+
+def test_anchor_weights_are_system_dominant():
+    """Anchor weights: T1-T2 are system-dominant (<= 0.50), T4-T5 market-dominant."""
+    assert ANCHOR_WEIGHTS[1] == Decimal("0.30")
+    assert ANCHOR_WEIGHTS[2] == Decimal("0.45")
+    assert ANCHOR_WEIGHTS[3] == Decimal("0.55")
+    assert ANCHOR_WEIGHTS[4] == Decimal("0.70")
+    assert ANCHOR_WEIGHTS[5] == Decimal("0.80")
+    # T1-T2: system weight > market weight
+    assert ANCHOR_WEIGHTS[1] < Decimal("0.50")
+    assert ANCHOR_WEIGHTS[2] < Decimal("0.50")
 
 
 # ===========================================================================
@@ -132,25 +154,25 @@ def test_ppr_to_system_value_zero_total_par_returns_one_dollar():
 # ===========================================================================
 
 def test_tier1_bid_ceiling_uses_anchor_weight():
-    """Tier 1: blend = system × 0.15 + risk_adj_market × 0.85, then × scarcity."""
+    """Tier 1: blend = system × 0.70 + risk_adj_market × 0.30, then × scarcity."""
     sv = Decimal("40")
     mv = Decimal("50")
     # low risk = 0% discount → risk_adj_market = 50
-    # anchor = 0.85 → blend = 40×0.15 + 50×0.85 = 6 + 42.5 = 48.5
-    # scarcity for WR T1 = 1.20 → 48.5 × 1.20 = 58.20
+    # anchor = 0.30 → blend = 40×0.70 + 50×0.30 = 28 + 15 = 43
+    # scarcity for WR T1 = 1.20 → 43 × 1.20 = 51.60
     ceiling = compute_bid_ceiling(sv, mv, tier=1, position="WR", risk_level="low")
-    assert ceiling == Decimal("58.20")
+    assert ceiling == Decimal("51.60")
 
 
-def test_tier1_anchor_weight_is_0_85():
-    assert ANCHOR_WEIGHTS[1] == Decimal("0.85")
+def test_tier1_anchor_weight_is_system_dominant():
+    assert ANCHOR_WEIGHTS[1] == Decimal("0.30")
 
 
 def test_scarcity_modifier_applied_to_tier1_rb():
     """Tier 1 RB scarcity modifier = 1.35."""
     sv = Decimal("40")
     mv = Decimal("40")
-    # blend = 40×0.15 + 40×0.85 = 40, scarcity 1.35 → 40×1.35 = 54
+    # blend = 40×0.70 + 40×0.30 = 40, scarcity 1.35 → 40×1.35 = 54
     ceiling = compute_bid_ceiling(sv, mv, tier=1, position="RB")
     assert ceiling == Decimal("54.00")
 
@@ -168,43 +190,44 @@ def test_tier1_wr_scarcity_modifier_is_1_20():
 # ===========================================================================
 
 def test_tier2_bid_ceiling_uses_anchor_weight():
-    """Tier 2: anchor=0.65 → blend = system × 0.35 + market × 0.65."""
+    """Tier 2: anchor=0.45 → blend = system × 0.55 + market × 0.45."""
     sv = Decimal("20")
     mv = Decimal("30")
     # low risk → risk_adj_market = 30
-    # blend = 20×0.35 + 30×0.65 = 7 + 19.5 = 26.5
+    # blend = 20×0.55 + 30×0.45 = 11 + 13.5 = 24.5
     ceiling = compute_bid_ceiling(sv, mv, tier=2, position="WR")
-    assert ceiling == Decimal("26.50")
+    assert ceiling == Decimal("24.50")
 
 
 def test_tier3_bid_ceiling_uses_anchor_weight():
-    """Tier 3: anchor=0.40 → blend = system × 0.60 + market × 0.40."""
+    """Tier 3: anchor=0.55 → blend = system × 0.45 + market × 0.55."""
     sv = Decimal("10")
     mv = Decimal("15")
-    # blend = 10×0.60 + 15×0.40 = 6 + 6 = 12
+    # blend = 10×0.45 + 15×0.55 = 4.5 + 8.25 = 12.75
     ceiling = compute_bid_ceiling(sv, mv, tier=3, position="RB")
-    assert ceiling == Decimal("12.00")
+    assert ceiling == Decimal("12.75")
 
 
 # ===========================================================================
 # compute_bid_ceiling — Tier 4/5
 # ===========================================================================
 
-def test_tier4_bid_ceiling_uses_small_market_weight():
-    """Tier 4: anchor=0.15 → blend = system × 0.85 + market × 0.15."""
+def test_tier4_bid_ceiling_uses_market_dominant_weight():
+    """Tier 4: anchor=0.70 → blend = system × 0.30 + market × 0.70."""
     sv = Decimal("5")
     mv = Decimal("100")
-    # blend = 5×0.85 + 100×0.15 = 4.25 + 15 = 19.25
+    # blend = 5×0.30 + 100×0.70 = 1.5 + 70 = 71.50
     ceiling = compute_bid_ceiling(sv, mv, tier=4, position="RB")
-    assert ceiling == Decimal("19.25")
+    assert ceiling == Decimal("71.50")
 
 
-def test_tier5_bid_ceiling_ignores_market_value():
-    """Tier 5: anchor=0.00 → ceiling = system_value."""
+def test_tier5_bid_ceiling_uses_heavy_market_weight():
+    """Tier 5: anchor=0.80 → blend = system × 0.20 + market × 0.80."""
     sv = Decimal("3")
     mv = Decimal("50")
+    # blend = 3×0.20 + 50×0.80 = 0.6 + 40 = 40.60
     ceiling = compute_bid_ceiling(sv, mv, tier=5, position="WR")
-    assert ceiling == Decimal("3.00")
+    assert ceiling == Decimal("40.60")
 
 
 def test_tier5_bid_ceiling_uses_system_value_only():
@@ -222,10 +245,10 @@ def test_risk_discount_reduces_market_before_blend():
     """High risk (15% discount) reduces market_value before blending."""
     sv = Decimal("30")
     mv = Decimal("40")
-    # Tier 2 (anchor=0.65), high risk: risk_adjusted_market = 40 × (1 - 0.15) = 34
-    # blend = 30 × 0.35 + 34 × 0.65 = 10.5 + 22.1 = 32.6
+    # Tier 2 (anchor=0.45), high risk: risk_adjusted_market = 40 × (1 - 0.15) = 34
+    # blend = 30 × 0.55 + 34 × 0.45 = 16.5 + 15.3 = 31.80
     ceiling = compute_bid_ceiling(sv, mv, tier=2, position="WR", risk_level="high")
-    assert ceiling == Decimal("32.60")
+    assert ceiling == Decimal("31.80")
 
 
 def test_low_risk_no_market_discount():
@@ -1232,14 +1255,14 @@ def test_tighter_let_go_for_risky_players():
 
 
 def test_healthy_tier1_near_market():
-    """Healthy T1 RB: ceiling should be close to market (heavy anchor, no discount)."""
+    """Healthy T1 RB: system-dominant ceiling reflects system value more than market."""
     sv = Decimal("55")
     mv = Decimal("60")
     # low risk → risk_adj_market = 60
-    # T1 anchor=0.85: blend = 55 × 0.15 + 60 × 0.85 = 8.25 + 51 = 59.25
-    # scarcity RB = 1.35 → 59.25 × 1.35 = 79.9875
+    # T1 anchor=0.30: blend = 55 × 0.70 + 60 × 0.30 = 38.5 + 18 = 56.5
+    # scarcity RB = 1.35 → 56.5 × 1.35 = 76.275
     ceiling = compute_bid_ceiling(sv, mv, tier=1, position="RB", risk_level="low")
-    assert ceiling == Decimal("79.99")
+    assert ceiling == Decimal("76.28")
 
 
 def test_risk_level_not_risk_modifier_in_ceiling():
@@ -1256,10 +1279,10 @@ def test_amon_ra_ceiling_above_20():
     sv = Decimal("21")
     mv = Decimal("49")
     # high discount = 15%: risk_adj_market = 49 × 0.85 = 41.65
-    # T2 anchor=0.65: blend = 21 × 0.35 + 41.65 × 0.65 = 7.35 + 27.0725 = 34.4225
+    # T2 anchor=0.45: blend = 21 × 0.55 + 41.65 × 0.45 = 11.55 + 18.7425 = 30.2925
     ceiling = compute_bid_ceiling(sv, mv, tier=2, position="WR", risk_level="high")
-    assert ceiling > Decimal("30.00")
-    assert ceiling == Decimal("34.42")
+    assert ceiling > Decimal("20.00")
+    assert ceiling == Decimal("30.29")
 
 
 def test_cmc_ceiling_above_45():
@@ -1267,11 +1290,11 @@ def test_cmc_ceiling_above_45():
     sv = Decimal("55")
     mv = Decimal("60")
     # moderate discount = 8%: risk_adj_market = 60 × 0.92 = 55.2
-    # T1 anchor=0.85: blend = 55 × 0.15 + 55.2 × 0.85 = 8.25 + 46.92 = 55.17
-    # scarcity RB = 1.35 → 55.17 × 1.35 = 74.4795
+    # T1 anchor=0.30: blend = 55 × 0.70 + 55.2 × 0.30 = 38.5 + 16.56 = 55.06
+    # scarcity RB = 1.35 → 55.06 × 1.35 = 74.331
     ceiling = compute_bid_ceiling(sv, mv, tier=1, position="RB", risk_level="moderate")
     assert ceiling > Decimal("45.00")
-    assert ceiling == Decimal("74.48")
+    assert ceiling == Decimal("74.33")
 
 
 @pytest.mark.asyncio

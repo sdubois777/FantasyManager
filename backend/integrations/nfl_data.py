@@ -1133,6 +1133,7 @@ class NflDataWarehouse:
         # Supplementary data (player_profiles agent)
         self.ngs_receiving: dict[int, pd.DataFrame] = {}
         self.ngs_rushing: dict[int, pd.DataFrame] = {}
+        self.ngs_passing: dict[int, pd.DataFrame] = {}
         self.snap_pct: dict[int, pd.DataFrame] = {}
 
         # Depth chart data (current season)
@@ -1271,15 +1272,24 @@ class NflDataWarehouse:
     def _load_infrastructure(self) -> None:
         """Rosters + depth charts + injuries for current season.
 
-        Depth charts and injuries now come from Sleeper API (accurate, daily-updated).
-        Rosters still use nfl_data_py for weekly game-level roster data needed by
-        roster_changes agent for departure/arrival detection.
+        Current rosters from Sleeper API (accurate, daily-updated, ~3900 active skill players).
+        Previous rosters from nfl_data_py (2025 season baseline for departure/arrival detection).
+        Depth charts and injuries also from Sleeper.
         """
         try:
-            self.rosters = fetch_rosters(self.current_season)
-            logger.info("Rosters %d: %d rows", self.current_season, len(self.rosters))
+            from backend.integrations.sleeper import fetch_sleeper_players
+            self.rosters = fetch_sleeper_players()
+            # Add backward-compat alias: team_systems uses "player_name"
+            if "full_name" in self.rosters.columns and "player_name" not in self.rosters.columns:
+                self.rosters["player_name"] = self.rosters["full_name"]
+            logger.info("Rosters (Sleeper): %d active skill players", len(self.rosters))
         except Exception as e:
-            logger.warning("Rosters %d failed: %s", self.current_season, e)
+            logger.warning("Sleeper rosters failed, falling back to nfl_data_py: %s", e)
+            try:
+                self.rosters = fetch_rosters(self.current_season)
+                logger.info("Rosters fallback (nfl_data_py %d): %d rows", self.current_season, len(self.rosters))
+            except Exception as e2:
+                logger.warning("Rosters %d failed: %s", self.current_season, e2)
 
         try:
             self.seasonal_rosters = fetch_seasonal_rosters(self.current_season)
@@ -1377,6 +1387,16 @@ class NflDataWarehouse:
             except Exception as exc:
                 logger.warning("  %d ngs_rushing unavailable: %s", season, exc)
 
+            # NGS passing
+            try:
+                raw = fetch_ngs_data("passing", season)
+                self.ngs_passing[season] = PlayerProfilesAgent._aggregate_ngs(
+                    raw, ["completion_percentage_above_expectation", "avg_time_to_throw", "aggressiveness"]
+                )
+                logger.info("  %d ngs_passing: %d players", season, len(self.ngs_passing[season]))
+            except Exception as exc:
+                logger.warning("  %d ngs_passing unavailable: %s", season, exc)
+
         # Snap pct for current season
         try:
             self.snap_pct[self.current_season] = compute_snap_pct(self.current_season)
@@ -1417,6 +1437,9 @@ class NflDataWarehouse:
 
     def get_ngs_rushing(self, season: int) -> pd.DataFrame:
         return self.ngs_rushing.get(season, pd.DataFrame())
+
+    def get_ngs_passing(self, season: int) -> pd.DataFrame:
+        return self.ngs_passing.get(season, pd.DataFrame())
 
     def get_snap_pct(self, season: int) -> pd.DataFrame:
         return self.snap_pct.get(season, pd.DataFrame())
@@ -1459,22 +1482,43 @@ class NflDataWarehouse:
             "depth_rank": 1,
         }
 
-    def get_player_depth_rank(self, gsis_id: str, season: int | None = None) -> int | None:
+    def get_player_depth_rank(
+        self,
+        gsis_id: str = "",
+        season: int | None = None,
+        *,
+        sleeper_id: str = "",
+        name: str = "",
+    ) -> int | None:
         """
-        Return depth chart rank for a player by gsis_id.
+        Return depth chart rank for a player.
+        Tries sleeper_id first (best coverage), then gsis_id, then name.
         1=starter, 2=backup, etc. Returns None if not found.
         """
-        if not gsis_id:
-            return None
         s = season or self.current_season
         dc = self.depth_charts.get(s, pd.DataFrame())
-        if dc.empty or "gsis_id" not in dc.columns:
+        if dc.empty:
             return None
 
-        matches = dc[dc["gsis_id"] == gsis_id]
-        if matches.empty:
-            return None
-        return int(matches.iloc[0]["depth_rank"])
+        # Try sleeper_id first (Sleeper depth charts have 100% sleeper_id)
+        if sleeper_id and "sleeper_id" in dc.columns:
+            matches = dc[dc["sleeper_id"] == sleeper_id]
+            if not matches.empty:
+                return int(matches.iloc[0]["depth_rank"])
+
+        # Fall back to gsis_id
+        if gsis_id and "gsis_id" in dc.columns:
+            matches = dc[dc["gsis_id"] == gsis_id]
+            if not matches.empty:
+                return int(matches.iloc[0]["depth_rank"])
+
+        # Name fallback
+        if name and "full_name" in dc.columns:
+            matches = dc[dc["full_name"] == name]
+            if not matches.empty:
+                return int(matches.iloc[0]["depth_rank"])
+
+        return None
 
     def get_team_depth_context(self, team: str, season: int | None = None) -> dict[str, list[dict]]:
         """

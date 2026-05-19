@@ -56,10 +56,10 @@ def test_market_context_fp_only():
 
 
 def test_market_context_both_aligned():
-    """Both set, difference ≤ $5 → aligned."""
+    """Both set, difference ≤ $5 → aligned. Effective uses FP (consensus)."""
     p = _player(market_value_fantasypros=28, market_value_league=30)
     ctx = get_market_context(p)
-    assert ctx["effective_market_value"] == Decimal("30")
+    assert ctx["effective_market_value"] == Decimal("28")
     assert ctx["league_bias"] == Decimal("2.00")
     assert ctx["league_bias_signal"] == "league_aligned"
 
@@ -102,12 +102,12 @@ def test_ceiling_differs_with_league_vs_fp():
     ceiling_fp = compute_bid_ceiling(sv, fp_mv, tier=2, position="WR", risk_level="low")
     ceiling_league = compute_bid_ceiling(sv, league_mv, tier=2, position="WR", risk_level="low")
 
-    # T2 anchor=0.65: blend = sv * 0.35 + mv * 0.65
-    # With FP=40: 30*0.35 + 40*0.65 = 10.50 + 26.00 = 36.50
-    # With league=25: 30*0.35 + 25*0.65 = 10.50 + 16.25 = 26.75
+    # T2 anchor=0.45: blend = sv * 0.55 + mv * 0.45
+    # With FP=40: 30*0.55 + 40*0.45 = 16.50 + 18.00 = 34.50
+    # With league=25: 30*0.55 + 25*0.45 = 16.50 + 11.25 = 27.75
     assert ceiling_fp > ceiling_league
-    assert ceiling_fp == Decimal("36.50")
-    assert ceiling_league == Decimal("26.75")
+    assert ceiling_fp == Decimal("34.50")
+    assert ceiling_league == Decimal("27.75")
 
 
 # ===========================================================================
@@ -115,12 +115,11 @@ def test_ceiling_differs_with_league_vs_fp():
 # ===========================================================================
 
 def test_fp_unchanged_after_league_import():
-    """market_value (FP consensus) is never modified by league context."""
+    """market_value (FP consensus) is used as effective — league is secondary."""
     p = _player(market_value=30, market_value_fantasypros=30, market_value_league=15)
     ctx = get_market_context(p)
-    # effective uses league, but FP is still returned untouched
     assert ctx["market_value_fantasypros"] == Decimal("30")
-    assert ctx["effective_market_value"] == Decimal("15")
+    assert ctx["effective_market_value"] == Decimal("30")
 
 
 # ===========================================================================
@@ -128,19 +127,18 @@ def test_fp_unchanged_after_league_import():
 # ===========================================================================
 
 def test_valuation_pass_uses_effective_mv():
-    """When league price is available, ceiling computation uses it."""
+    """Effective market value uses FP consensus, not league price."""
     p = _player(market_value=40, market_value_fantasypros=40, market_value_league=20)
     ctx = get_market_context(p)
     effective = ctx["effective_market_value"]
-    # effective should be league price
-    assert effective == Decimal("20")
+    # effective should be FP consensus
+    assert effective == Decimal("40")
 
-    # Compute ceiling with effective (league) vs with FP
+    # Compute ceiling with effective (FP) — same as FP directly
     sv = Decimal("35")
     ceiling_effective = compute_bid_ceiling(sv, effective, tier=1, position="RB", risk_level="low")
     ceiling_fp = compute_bid_ceiling(sv, Decimal("40"), tier=1, position="RB", risk_level="low")
-    # They should differ because market values differ
-    assert ceiling_effective != ceiling_fp
+    assert ceiling_effective == ceiling_fp
 
 
 def test_valuation_pass_fallback_to_fp():

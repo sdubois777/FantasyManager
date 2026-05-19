@@ -16,10 +16,13 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 
 from sqlalchemy import select
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.integrations.nfl_data import normalize_player_name
+from backend.models.market_value_historic import MarketValueHistoric
 from backend.models.player import Player
+from backend.utils.seasons import get_current_season
 
 logger = logging.getLogger(__name__)
 
@@ -44,6 +47,45 @@ def _scrape_in_thread(scoring_format: str, teams: int) -> tuple[list[dict], int,
         loop.close()
 
 
+async def _snapshot_current_market_values(session: AsyncSession) -> int:
+    """
+    Before overwriting market_value_fantasypros, save current values to
+    market_value_historic. Uses ON CONFLICT DO NOTHING so existing
+    snapshots are never overwritten.
+    """
+    current_year = get_current_season()
+
+    result = await session.execute(
+        select(Player.id, Player.market_value_fantasypros)
+        .where(
+            Player.market_value_fantasypros.isnot(None),
+            Player.position.in_(["QB", "RB", "WR", "TE"]),
+        )
+    )
+    rows = result.all()
+
+    if not rows:
+        return 0
+
+    stmt = pg_insert(MarketValueHistoric).values([
+        {
+            "player_id": row.id,
+            "season_year": current_year,
+            "price": float(row.market_value_fantasypros),
+        }
+        for row in rows
+    ])
+    stmt = stmt.on_conflict_do_nothing()
+    await session.execute(stmt)
+    await session.flush()
+
+    logger.info(
+        "Snapshotted %d market values for season %d into historic",
+        len(rows), current_year,
+    )
+    return len(rows)
+
+
 async def sync_market_values(
     session: AsyncSession,
     scoring_format: str = "ppr",
@@ -66,6 +108,10 @@ async def sync_market_values(
     Returns:
         Summary dict with matched/unmatched counts, year info, and names.
     """
+    # Snapshot current values before overwriting
+    if not dry_run:
+        await _snapshot_current_market_values(session)
+
     logger.info("Scraping FantasyPros market values (format=%s, teams=%d)...", scoring_format, teams)
     try:
         loop = asyncio.get_running_loop()
@@ -137,6 +183,11 @@ async def sync_market_values(
             )
             continue
 
+        # Rotate current FP value → prior_season before overwriting
+        if player.market_value_fantasypros is not None and player.market_value_fantasypros != avg_value:
+            player.market_value_prior_season = player.market_value_fantasypros
+            player.market_value_prior_season_year = year_used - 1
+
         # Write market value fields
         player.market_value = avg_value
         player.market_value_fantasypros = avg_value
@@ -204,6 +255,58 @@ def _compute_confidence(data: dict) -> str:
     if spread_pct <= 0.6:
         return "medium"
     return "low"
+
+
+async def seed_prior_season_from_auction_history(
+    session: AsyncSession,
+    season_year: int | None = None,
+) -> dict:
+    """
+    Populate market_value_prior_season from league_auction_history.
+
+    Uses the most recent completed season's auction data (AVG price per player).
+    """
+    from sqlalchemy import text as sa_text
+    from backend.utils.seasons import get_previous_season
+
+    target_year = season_year or get_previous_season()
+
+    # Get average price per player_name from auction history for the target season
+    result = await session.execute(sa_text(
+        'SELECT player_name, AVG(price) AS avg_price '
+        'FROM league_auction_history '
+        'WHERE season_year = :yr AND price > 0 '
+        'GROUP BY player_name'
+    ), {'yr': target_year})
+    rows = result.all()
+
+    if not rows:
+        return {"updated": 0, "season_year": target_year, "note": "No auction history data"}
+
+    # Build normalized lookup
+    price_lookup: dict[str, float] = {}
+    for name, avg_price in rows:
+        key = normalize_player_name(name)
+        if key:
+            price_lookup[key] = float(avg_price)
+
+    # Load all players
+    players: list[Player] = (
+        await session.execute(select(Player))
+    ).scalars().all()
+
+    updated = 0
+    for p in players:
+        key = normalize_player_name(p.name)
+        if key and key in price_lookup:
+            p.market_value_prior_season = price_lookup[key]
+            p.market_value_prior_season_year = target_year
+            session.add(p)
+            updated += 1
+
+    await session.commit()
+    logger.info("Seeded prior season prices: %d players from %d auction history", updated, target_year)
+    return {"updated": updated, "season_year": target_year}
 
 
 async def _store_metadata(session: AsyncSession, data: dict) -> None:

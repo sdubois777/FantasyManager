@@ -18,6 +18,7 @@ from backend.core.dependencies import get_current_user
 from backend.database import AsyncSessionLocal
 from backend.models.player import Player, PlayerProfile
 from backend.models.dependency import PlayerDependency
+from backend.utils.seasons import get_current_season
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/draftboard", tags=["draftboard"])
@@ -42,7 +43,9 @@ class DraftBoardPlayer(BaseModel):
     recommended_bid_ceiling: Optional[float] = None
     baseline_value: Optional[float] = None
     market_value: Optional[float] = None
-    market_value_league: Optional[float] = None
+    market_value_season: Optional[int] = None
+    prior_season_price: Optional[float] = None
+    prior_season_year: Optional[int] = None
     value_gap: Optional[float] = None
     value_gap_signal: Optional[str] = None
     breakout_flag: bool = False
@@ -118,6 +121,7 @@ async def get_draftboard(
                 selectinload(Player.dependencies),
                 selectinload(Player.injury_profile),
                 selectinload(Player.profile),
+                selectinload(Player.historic_prices),
             )
         )
 
@@ -138,6 +142,8 @@ async def get_draftboard(
     tiers: dict[str, list[DraftBoardPlayer]] = {}
     total = 0
 
+    prior_year = get_current_season() - 1
+
     for p in players:
         flags = []
         for dep in (p.dependencies or []):
@@ -147,6 +153,13 @@ async def get_draftboard(
                 confidence=dep.confidence,
             ))
 
+        # Look up prior season price from historic table
+        hist_price = None
+        for hp in (p.historic_prices or []):
+            if hp.season_year == prior_year:
+                hist_price = float(hp.price)
+                break
+
         dbp = DraftBoardPlayer(
             id=str(p.id),
             name=p.name,
@@ -155,8 +168,10 @@ async def get_draftboard(
             tier=p.tier,
             recommended_bid_ceiling=float(p.recommended_bid_ceiling) if p.recommended_bid_ceiling else None,
             baseline_value=float(p.baseline_value) if p.baseline_value else None,
-            market_value=float(p.market_value) if p.market_value else None,
-            market_value_league=float(p.market_value_league) if p.market_value_league else None,
+            market_value=float(p.market_value_fantasypros) if p.market_value_fantasypros else None,
+            market_value_season=get_current_season() if p.market_value_fantasypros else None,
+            prior_season_price=hist_price,
+            prior_season_year=prior_year if hist_price else None,
             value_gap=float(p.value_gap) if p.value_gap else None,
             value_gap_signal=p.value_gap_signal,
             ppr_points=(

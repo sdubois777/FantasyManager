@@ -50,7 +50,7 @@ SKILL_POSITIONS = {"QB", "WR", "RB", "TE"}
 PROFILE_STALENESS_DAYS = 30
 
 # Increment whenever system prompts change to force regeneration of all profiles.
-PLAYER_PROFILES_PROMPT_VERSION = "v3"
+PLAYER_PROFILES_PROMPT_VERSION = "v4"
 
 
 # ---------------------------------------------------------------------------
@@ -63,6 +63,7 @@ def profile_needs_refresh(
     injury_updated_at: datetime | None = None,
     beat_signal_timestamps: list[datetime] | None = None,
     team_updated_at: datetime | None = None,
+    team_system_updated_at: datetime | None = None,
     stored_prompt_version: str | None = None,
 ) -> bool:
     """Check if a player's profile needs regeneration.
@@ -73,6 +74,7 @@ def profile_needs_refresh(
       - Dependency flags updated since last profile
       - Injury profile updated since last profile
       - Team changed since last profile (team_updated_at > profile.updated_at)
+      - Team system re-graded since last profile (OLine, QB, scheme changes)
       - New high-confidence beat signals since last profile
       - Prompt version changed (system prompt was updated)
     """
@@ -93,6 +95,9 @@ def profile_needs_refresh(
         return True
 
     if team_updated_at and team_updated_at > profile_updated_at:
+        return True
+
+    if team_system_updated_at and team_system_updated_at > profile_updated_at:
         return True
 
     for ts in (beat_signal_timestamps or []):
@@ -265,6 +270,18 @@ Additional NGS efficiency data in player seasons (when present):
   avg_yac_above_expectation: yards after catch above model expectation; positive = elite YAC.
   rush_yards_over_expected_per_att: rushing yards over expected; positive = above-avg vision/burst.
 Use these numeric signals to inform separation_score, yards_after_catch_score, and efficiency_signal.
+
+Additional Sleeper efficiency data in player seasons (when present):
+  RB: rush_ypa (yards per carry, league avg ~4.2, elite 5.0+),
+      rush_btkl (broken tackles, elite 20+/season),
+      rush_fd (rushing first downs).
+  WR/TE: rec_ypr (yards per reception, deep threat 14+, possession 10-),
+         catch_pct (catch percentage, elite 70%+, concerning under 55%),
+         rec_fd (receiving first downs).
+  QB: cpoe (completion % above expectation, elite +3.0, poor -3.0),
+      avg_time_to_throw (quick <2.7s, slow >3.2s).
+  All: snap_count (offensive snaps for season).
+Use these to assess whether production is efficiency-driven or volume-driven.
 
 For players where all seasons show games=0 (rookies or new acquisitions with no NFL history):
   - Still include them; classify by position, team system, and dependency_flags.
@@ -547,7 +564,19 @@ Rules:
   say exactly that. Only reference injuries explicitly listed in the provided injury risk profile.
   Never fabricate torn ACLs, hamstring tears, or other specific injuries not in the data.
 - Output ONLY valid JSON. No preamble, no explanation, no markdown fences.
-Your entire response must be parseable by json.loads()."""
+Your entire response must be parseable by json.loads().
+
+Additional efficiency data in player seasons (when present):
+  RB: rush_ypa (yards per carry, league avg ~4.2, elite 5.0+),
+      rush_btkl (broken tackles, elite 20+/season),
+      rush_fd (rushing first downs).
+  WR/TE: rec_ypr (yards per reception, deep threat 14+, possession 10-),
+         catch_pct (catch percentage, elite 70%+, concerning under 55%),
+         rec_fd (receiving first downs).
+  QB: cpoe (completion % above expectation, elite +3.0, poor -3.0),
+      avg_time_to_throw (quick <2.7s, slow >3.2s).
+  All: snap_count (offensive snaps for season).
+Use these to assess whether production is efficiency-driven or volume-driven."""
 
 
 # ---------------------------------------------------------------------------
@@ -660,35 +689,81 @@ class PlayerProfilesAgent(BaseAgent):
         return result
 
     def _is_backup_qb_season(self, team: str, season: int) -> bool:
-        """True if the team's backup QB started 4+ regular-season games in this season."""
-        weekly = self._warehouse.get_seasonal_stats(season)
-        if weekly is None:
-            return False
-        # Use REG season only — postseason/preseason weeks inflate QB game counts
-        w = weekly
-        if "season_type" in w.columns:
-            w = w[w["season_type"] == "REG"]
-        qbs = w[
-            (w["recent_team"] == team) & (w["position"] == "QB")
-        ]
-        if qbs.empty:
-            return False
-        # seasonal_stats is already aggregated — "games" column has per-player counts
-        name_col = "player_name" if "player_name" in qbs.columns else "player_display_name"
-        if "games" in qbs.columns:
-            qb_games = (
-                qbs.groupby(name_col)["games"]
-                .sum()
-                .sort_values(ascending=False)
+        """Returns True only if the team had a meaningful backup QB situation —
+        not garbage-time mop-up appearances.
+
+        Threshold: backup must have >= 30 pass attempts OR starter must have
+        played < 14 games.
+
+        This prevents false positives like a starter playing all 17 games
+        while a backup appears in a few garbage-time mop-up games.
+        """
+        try:
+            qb_stats = self._warehouse.get_qb_stats(season)
+            if qb_stats is None or qb_stats.empty:
+                return False
+
+            # Get all QBs for this team
+            team_col = next(
+                (c for c in ("recent_team", "team") if c in qb_stats.columns),
+                None,
             )
-        else:
-            # fallback for weekly-level data
-            qb_games = (
-                qbs.groupby(name_col)[qbs.columns[0]]
-                .count()
-                .sort_values(ascending=False)
+            if not team_col:
+                return False
+
+            team_qbs = qb_stats[qb_stats[team_col] == team]
+            if team_qbs.empty:
+                return False
+
+            # Find starter = QB with most attempts (fall back to passing_yards
+            # for Sleeper seasons where attempts is NA)
+            att_col = next(
+                (c for c in ("attempts", "pass_att")
+                 if c in team_qbs.columns and team_qbs[c].notna().any()),
+                None,
             )
-        return len(qb_games) >= 2 and int(qb_games.iloc[1]) >= 4
+            sort_col = att_col or (
+                "passing_yards" if "passing_yards" in team_qbs.columns else None
+            )
+            if not sort_col:
+                return False
+
+            team_qbs = team_qbs.sort_values(sort_col, ascending=False)
+            if len(team_qbs) < 2:
+                return False  # Only one QB
+
+            starter = team_qbs.iloc[0]
+            backup = team_qbs.iloc[1]
+
+            # Check games for starter
+            games_col = next(
+                (c for c in ("games", "gp") if c in team_qbs.columns),
+                None,
+            )
+            starter_games = (
+                float(starter.get(games_col, 17) or 17) if games_col else 17
+            )
+
+            # Determine if backup had meaningful playing time
+            if att_col:
+                backup_att = float(backup.get(att_col, 0) or 0)
+                meaningful_backup = backup_att >= 30
+            else:
+                # Sleeper fallback: use passing_yards as proxy
+                # 30 attempts × ~6.5 ypa ≈ 195 yards
+                backup_yds = float(backup.get("passing_yards", 0) or 0)
+                meaningful_backup = backup_yds >= 200
+
+            injured_starter = starter_games < 14
+
+            return meaningful_backup or injured_starter
+
+        except Exception as e:
+            logger.warning(
+                "_is_backup_qb_season failed for %s %d: %s",
+                team, season, e,
+            )
+            return False
 
     def _get_player_season_stats(
         self, player_name: str, team: str, season: int,
@@ -731,19 +806,32 @@ class PlayerProfilesAgent(BaseAgent):
                     return round(float(v), decimals) if v is not None and pd.notna(v) else None
                 except (TypeError, ValueError):
                     return None
+            targets = int(row.get("total_targets", 0) or 0)
+            receptions = int(row.get("total_receptions", 0) or 0)
             return {
                 "games":           games,
                 "recent_team":     str(row.get("recent_team", "") or ""),
                 "target_share":    _f("avg_target_share"),
                 "air_yards_share": _f("avg_air_yards_share"),
-                "targets":         int(row.get("total_targets",    0) or 0),
-                "receptions":      int(row.get("total_receptions", 0) or 0),
+                "targets":         targets,
+                "receptions":      receptions,
                 "rec_yards":       int(row.get("total_rec_yards",  0) or 0),
                 "rec_tds":         int(row.get("total_rec_tds",    0) or 0),
                 "carries":         int(row.get("total_carries",    0) or 0),
                 "rush_yards":      int(row.get("total_rush_yards", 0) or 0),
                 "rush_tds":        int(row.get("total_rush_tds",   0) or 0),
                 "ppr_per_game":    _f("ppr_per_game", 1),
+                # Efficiency fields
+                "rush_ypa":        _f("rush_ypa", 2),
+                "rush_btkl":       _f("rush_btkl", 0),
+                "rec_ypr":         _f("rec_ypr", 2),
+                "snap_count":      _f("off_snp", 0),
+                "rush_fd":         _f("rush_fd", 0),
+                "rec_fd":          _f("rec_fd", 0),
+                "catch_pct": (
+                    round(receptions / targets * 100, 1)
+                    if targets > 0 else None
+                ),
             }
 
         def _extract_combined(rows: pd.DataFrame) -> dict | None:
@@ -787,12 +875,13 @@ class PlayerProfilesAgent(BaseAgent):
                     pid, computed_ppr, fantasy_ppr,
                 )
 
+            total_targets = _int_sum("total_targets")
             return {
                 "games":           total_games,
                 "recent_team":     str(primary_team or ""),
                 "target_share":    _weighted_avg("avg_target_share"),
                 "air_yards_share": _weighted_avg("avg_air_yards_share"),
-                "targets":         _int_sum("total_targets"),
+                "targets":         total_targets,
                 "receptions":      receptions,
                 "rec_yards":       rec_yards,
                 "rec_tds":         rec_tds,
@@ -800,6 +889,17 @@ class PlayerProfilesAgent(BaseAgent):
                 "rush_yards":      rush_yards,
                 "rush_tds":        rush_tds,
                 "ppr_per_game":    _weighted_avg("ppr_per_game", 1),
+                # Efficiency fields
+                "rush_ypa":        _weighted_avg("rush_ypa", 2),
+                "rush_btkl":       _int_sum("rush_btkl") or None,
+                "rec_ypr":         _weighted_avg("rec_ypr", 2),
+                "snap_count":      _int_sum("off_snp") or None,
+                "rush_fd":         _int_sum("rush_fd") or None,
+                "rec_fd":          _int_sum("rec_fd") or None,
+                "catch_pct": (
+                    round(receptions / total_targets * 100, 1)
+                    if total_targets > 0 else None
+                ),
             }
 
         # --- Path 0a: sleeper_id match (best — 100% coverage from Sleeper) ---
@@ -1031,6 +1131,34 @@ class PlayerProfilesAgent(BaseAgent):
                     result[col] = round(float(v), 2)
             except (TypeError, ValueError):
                 pass
+        return result
+
+    def _get_ngs_passing_stats(self, player_name: str, team: str, season: int) -> dict:
+        """Return NGS passing metrics (CPOE, time to throw, aggressiveness)."""
+        ngs = self._warehouse.get_ngs_passing(season)
+        if ngs is None or ngs.empty:
+            return {}
+
+        last = player_name.split()[-1]
+        mask = ngs["player_display_name"].str.contains(last, case=False, na=False)
+        if "team_abbr" in ngs.columns:
+            mask = mask & (ngs["team_abbr"].str.upper() == team.upper())
+        rows = ngs[mask]
+        if rows.empty:
+            return {}
+
+        row = rows.iloc[0]
+        result = {}
+        for col in ("completion_percentage_above_expectation", "avg_time_to_throw", "aggressiveness"):
+            v = row.get(col)
+            try:
+                if v is not None and pd.notna(v):
+                    result[col] = round(float(v), 2)
+            except (TypeError, ValueError):
+                pass
+        # Rename CPOE to shorter key for prompt
+        if "completion_percentage_above_expectation" in result:
+            result["cpoe"] = result.pop("completion_percentage_above_expectation")
         return result
 
     # ------------------------------------------------------------------
@@ -1358,11 +1486,15 @@ class PlayerProfilesAgent(BaseAgent):
             )
 
             if pos == "QB":
-                # QB branch: use QB-specific passing stats
+                # QB branch: use QB-specific passing stats + NGS passing
                 for season in player_seasons:
                     stats = self._get_qb_season(pname, team, season, nfl_player_id=nfl_pid)
                     if stats:
+                        ngs = self._get_ngs_passing_stats(pname, team, season)
+                        if ngs:
+                            stats.update(ngs)
                         stats["year"] = season
+                        stats = {k: v for k, v in stats.items() if v is not None}
                         seasons_data.append(stats)
                     else:
                         seasons_data.append({"year": season, "games": 0, "note": "no data"})
@@ -1394,6 +1526,7 @@ class PlayerProfilesAgent(BaseAgent):
                             ngs = self._get_ngs_rushing_stats(pname, team, season)
                             if ngs:
                                 stats.update(ngs)
+                        stats = {k: v for k, v in stats.items() if v is not None}
                         seasons_data.append(stats)
                     else:
                         seasons_data.append({
@@ -1550,6 +1683,23 @@ class PlayerProfilesAgent(BaseAgent):
             for s in bs_result:
                 beat_times.setdefault(s.player_id, []).append(s.flagged_at)
 
+            # Team system updated_at — keyed by team_abbr
+            from backend.models.team_system import TeamSystem
+            from backend.utils.seasons import get_current_season
+            ts_updated: dict[str, datetime] = {}
+            team_abbrs = {p.team_abbr for p in players if p.team_abbr}
+            if team_abbrs:
+                ts_result = (
+                    await session.execute(
+                        select(TeamSystem).where(
+                            TeamSystem.team_abbr.in_(team_abbrs),
+                            TeamSystem.season_year == get_current_season(),
+                        )
+                    )
+                ).scalars().all()
+                for ts in ts_result:
+                    ts_updated[ts.team_abbr] = ts.updated_at
+
             stale: set[str] = set()
             for p in players:
                 prof = profiles.get(p.id)
@@ -1562,6 +1712,7 @@ class PlayerProfilesAgent(BaseAgent):
                     injury_updated_at=injuries[p.id].updated_at if p.id in injuries else None,
                     beat_signal_timestamps=beat_times.get(p.id, []),
                     team_updated_at=getattr(p, "team_updated_at", None),
+                    team_system_updated_at=ts_updated.get(p.team_abbr),
                     stored_prompt_version=stored_ver,
                 ):
                     stale.add(p.name)
@@ -2034,9 +2185,17 @@ async def _write_profiles(
                 clean_baseline = _compute_clean_baseline(seasons)
                 rookie_prof    = {}
 
-            # Always insert fresh (stale records for this team were deleted above)
-            record = PlayerProfile(player_id=player_id, season_year=analysis_year)
-            session.add(record)
+            # Upsert: use existing record if already written by another team batch
+            existing_record = (
+                await session.execute(
+                    select(PlayerProfile).where(PlayerProfile.player_id == player_id)
+                )
+            ).scalar_one_or_none()
+            if existing_record:
+                record = existing_record
+            else:
+                record = PlayerProfile(player_id=player_id, season_year=analysis_year)
+                session.add(record)
 
             # Veteran fields — from model output (rookies use defaults from rookie_prof)
             effective = rookie_prof if is_rookie else prof

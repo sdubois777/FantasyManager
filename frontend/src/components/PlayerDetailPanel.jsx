@@ -94,26 +94,11 @@ export default function PlayerDetailPanel({ playerId, onPlayerSelect }) {
                   <StatBox label="AI Ceiling" value={`$${player.ai_bid_ceiling}`} accent />
                 )}
                 <StatBox label="System" value={`$${player.baseline_value?.toFixed(0) || '--'}`} />
-                <StatBox label="Market (FP)" value={`$${player.market_value?.toFixed(0) || '--'}`} />
+                <StatBox
+                  label={`${player.market_value_season || ''} ADP`}
+                  value={`$${player.market_value?.toFixed(0) || '--'}`}
+                />
               </div>
-
-              {/* League price + bias */}
-              {player.market_value_league != null && (
-                <div className="flex items-center gap-2 mb-3">
-                  <StatBox label="League Price" value={`$${player.market_value_league.toFixed(0)}`} />
-                  {player.league_bias_signal && (
-                    <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-medium ${
-                      player.league_bias_signal === 'league_underpays' ? 'bg-emerald-500/15 text-emerald-400'
-                        : player.league_bias_signal === 'league_overpays' ? 'bg-red-500/15 text-red-400'
-                        : 'bg-slate-500/15 text-slate-400'
-                    }`}>
-                      {player.league_bias_signal === 'league_underpays' ? 'League Discount'
-                        : player.league_bias_signal === 'league_overpays' ? 'League Premium'
-                        : 'Aligned'}
-                    </span>
-                  )}
-                </div>
-              )}
 
               {/* AI confidence range */}
               {player.ai_confidence_floor != null && player.ai_confidence_ceiling != null && (
@@ -129,6 +114,13 @@ export default function PlayerDetailPanel({ playerId, onPlayerSelect }) {
                 <StatBox label="Ceiling" value={`$${player.ceiling_value?.toFixed(0) || '--'}`} />
                 <StatBox label="Floor" value={`$${player.floor_value?.toFixed(0) || '--'}`} />
               </div>
+
+              {player.prior_season_price != null && (
+                <div className="bg-[#1c1f2e] rounded p-2 mb-3 flex items-center justify-between">
+                  <span className="text-[10px] text-slate-500">{player.prior_season_year} Avg Price</span>
+                  <span className="text-sm font-mono text-slate-300">${player.prior_season_price.toFixed(0)}</span>
+                </div>
+              )}
 
               {/* AI Assessment + tactical badges */}
               {(player.value_assessment || player.pay_up_flag || player.nomination_target_flag) && (
