@@ -5,7 +5,6 @@ import { fetchDraftboard } from '../api/draftboard'
 import { usePreferencesStore } from '../stores/preferences'
 import { useUIStore } from '../stores/ui'
 import PositionBadge from '../components/shared/PositionBadge'
-import FlagBadge from '../components/shared/FlagBadge'
 import SortableHeader from '../components/shared/SortableHeader'
 import FilterBar, { FilterSelect } from '../components/shared/FilterBar'
 import PlayerDetailPanel from '../components/PlayerDetailPanel'
@@ -210,14 +209,14 @@ export default function DraftBoard() {
 
           {/* Flags */}
           <div className="flex gap-1 ml-auto flex-wrap justify-end">
-            {p.is_rookie && (
-              <span className="text-[10px] text-cyan-400 bg-cyan-500/15 px-1.5 py-0.5 rounded-full font-medium">
-                Rookie
-              </span>
-            )}
             {p.pay_up_flag && (
               <span className="text-[10px] text-emerald-400 bg-emerald-500/15 px-1.5 py-0.5 rounded-full font-medium">
                 PAY UP
+              </span>
+            )}
+            {p.breakout_flag && (
+              <span className="text-[10px] text-yellow-400 bg-yellow-500/15 px-1.5 py-0.5 rounded-full font-medium">
+                Breakout
               </span>
             )}
             {p.nomination_target_flag && (
@@ -225,21 +224,14 @@ export default function DraftBoard() {
                 NOMINATE
               </span>
             )}
-            {(p.flags || []).slice(0, 2).map((f, i) => (
-              <FlagBadge key={i} flagType={f.flag_type} compact />
-            ))}
-            {p.breakout_flag && (
-              <span className="text-[10px] text-yellow-400 bg-yellow-500/15 px-1.5 py-0.5 rounded-full">
-                Breakout
+            {p.is_rookie && (
+              <span className="text-[10px] text-cyan-400 bg-cyan-500/15 px-1.5 py-0.5 rounded-full font-medium">
+                Rookie
               </span>
             )}
-            {p.injury_risk_level && p.injury_risk_level !== 'low' && (
-              <span className={`text-[10px] px-1.5 py-0.5 rounded-full ${
-                p.injury_risk_level === 'high'
-                  ? 'text-red-400 bg-red-500/15'
-                  : 'text-amber-400 bg-amber-500/15'
-              }`}>
-                {p.injury_risk_level}
+            {p.value_assessment && ['avoid', 'strong_avoid'].includes(p.value_assessment) && (
+              <span className="text-[10px] text-red-400 bg-red-500/15 px-1.5 py-0.5 rounded-full font-medium">
+                Avoid
               </span>
             )}
           </div>
