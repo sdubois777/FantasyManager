@@ -184,11 +184,11 @@ def test_bid_ceiling_tier1_uses_anchor_weight():
 
 
 # ---------------------------------------------------------------------------
-# Test 7: test_bid_ceiling_tier4_ignores_anchor
+# Test 7: test_bid_ceiling_tier4_market_dominant
 # ---------------------------------------------------------------------------
 
 def test_bid_ceiling_tier4_ignores_anchor():
-    """Tier 4: anchor=0.15 (mostly system value), no scarcity modifier."""
+    """Tier 4: anchor=0.70 (market-dominant for depth players)."""
     ceiling = compute_bid_ceiling(
         system_value=Decimal("12"),
         market_value=Decimal("18"),
@@ -196,8 +196,8 @@ def test_bid_ceiling_tier4_ignores_anchor():
         position="WR",
         risk_level="low",
     )
-    # blend = 12 * 0.85 + 18 * 0.15 = 10.2 + 2.7 = 12.9
-    assert float(ceiling) == pytest.approx(12.9, abs=2)
+    # blend = 12 * 0.30 + 18 * 0.70 = 3.6 + 12.6 = 16.2
+    assert float(ceiling) == pytest.approx(16.2, abs=2)
 
 
 # ---------------------------------------------------------------------------

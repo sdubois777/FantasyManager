@@ -286,7 +286,7 @@ def test_slight_overpay_within_noise_is_neutral():
 
 
 def test_cheap_player_never_avoid():
-    """Player with league_price <= 8 gets neutral or buy, never avoid."""
+    """Player with league_price <= 12 gets neutral or buy, never avoid."""
     # slight_overpay on $5 player → neutral
     assert derive_system_signal("slight_overpay", False, -3.0, 2.0, 5.0) == "neutral"
     # avoid on $3 player → neutral
@@ -295,6 +295,10 @@ def test_cheap_player_never_avoid():
     assert derive_system_signal("good_value", False, 4.0, 10.0, 6.0) == "strong_buy"
     # fair_value on $2 player → neutral
     assert derive_system_signal("fair_value", False, 0.0, 2.0, 2.0) == "neutral"
+    # avoid on $10 player → neutral (raised from $8 to $12)
+    assert derive_system_signal("avoid", False, -10.0, 5.0, 10.0) == "neutral"
+    # slight_overpay on $12 player → neutral
+    assert derive_system_signal("slight_overpay", False, -5.0, 7.0, 12.0) == "neutral"
 
 
 def test_small_gap_not_avoid():
@@ -339,3 +343,60 @@ def test_btj_still_strong_avoid_after_fix():
         league_price=51.0,
     )
     assert signal == "strong_avoid"
+
+
+# ---------------------------------------------------------------------------
+# Projection floor tests
+# ---------------------------------------------------------------------------
+
+
+def test_low_projection_never_avoid():
+    """Players projected < 80 PPR should never get avoid — they're depth noise."""
+    # Avoid assessment, $20 price, big gap, but only 60 PPR projected → neutral
+    assert derive_system_signal(
+        "avoid", False, -15.0, 5.0, 20.0, projected_ppr=60.0,
+    ) == "neutral"
+    # slight_overpay, 50 PPR → neutral
+    assert derive_system_signal(
+        "slight_overpay", False, -10.0, 10.0, 20.0, projected_ppr=50.0,
+    ) == "neutral"
+    # good_value + low projection → buy if gap positive
+    assert derive_system_signal(
+        "good_value", False, 6.0, 26.0, 20.0, projected_ppr=70.0,
+    ) == "buy"
+    # good_value + low projection + small gap → neutral
+    assert derive_system_signal(
+        "good_value", False, 2.0, 22.0, 20.0, projected_ppr=70.0,
+    ) == "neutral"
+
+
+def test_high_projection_still_avoid():
+    """Players projected >= 80 PPR can still get avoid signal."""
+    assert derive_system_signal(
+        "avoid", False, -20.0, 10.0, 30.0, projected_ppr=120.0,
+    ) == "strong_avoid"
+    assert derive_system_signal(
+        "avoid", False, -10.0, 10.0, 20.0, projected_ppr=200.0,
+    ) == "avoid"
+
+
+def test_projection_floor_boundary():
+    """At exactly 80 PPR, avoid is still possible (floor is < 80)."""
+    assert derive_system_signal(
+        "avoid", False, -20.0, 10.0, 30.0, projected_ppr=80.0,
+    ) == "strong_avoid"
+
+
+def test_no_projection_data_still_allow_avoid():
+    """When projected_ppr is None, projection floor doesn't filter."""
+    assert derive_system_signal(
+        "avoid", False, -20.0, 10.0, 30.0, projected_ppr=None,
+    ) == "strong_avoid"
+
+
+def test_cheap_player_threshold_at_12():
+    """$12 players are protected, $13 players are not."""
+    # $12 → protected (neutral)
+    assert derive_system_signal("avoid", False, -10.0, 2.0, 12.0) == "neutral"
+    # $13 → NOT protected (avoid applies)
+    assert derive_system_signal("avoid", False, -10.0, 3.0, 13.0) == "avoid"

@@ -25,8 +25,8 @@ Formulas from docs/ARCHITECTURE.md — Two-Value Auction System:
 
   let_go_threshold = ceiling × LET_GO_MULTIPLIER[risk_level]
 
-Anchor weights (market weight per tier):
-  T1=0.85, T2=0.65, T3=0.40, T4=0.15, T5=0.00
+Anchor weights (market weight per tier — system-dominant):
+  T1=0.30, T2=0.45, T3=0.55, T4=0.70, T5=0.80
 Scarcity:       T1 RB=1.35, T1 WR=1.20, T1 QB/TE=1.10
 Risk discounts:  low=0%, moderate=8%, high=15%, volatile=22%
 Let-go:          low=1.20×, moderate=1.15×, high=1.10×, volatile=1.05×
@@ -123,9 +123,9 @@ DRAFTABLE_POSITIONS = frozenset({"QB", "RB", "WR", "TE"})
 # compresses QB/TE ranges relative to RB/WR.
 _PAR_RATIO_THRESHOLDS = {
     "QB": {"T1": Decimal("1.15"), "T2": Decimal("1.03"), "T3": Decimal("0.95")},
-    "RB": {"T1": Decimal("2.3"), "T2": Decimal("1.8"), "T3": Decimal("1.3")},
-    "WR": {"T1": Decimal("2.2"), "T2": Decimal("1.5"), "T3": Decimal("1.2")},
-    "TE": {"T1": Decimal("1.85"), "T2": Decimal("1.5"), "T3": Decimal("1.2")},
+    "RB": {"T1": Decimal("1.9"),  "T2": Decimal("1.5"),  "T3": Decimal("1.2")},
+    "WR": {"T1": Decimal("2.0"),  "T2": Decimal("1.5"),  "T3": Decimal("1.2")},
+    "TE": {"T1": Decimal("1.85"), "T2": Decimal("1.5"),  "T3": Decimal("1.2")},
 }
 
 _T4_FLOOR = Decimal("0.8")  # T4: >= 0.8x replacement, all positions
@@ -155,11 +155,11 @@ def assign_tier(par_ratio: float, position: str) -> int:
 # ---------------------------------------------------------------------------
 
 ANCHOR_WEIGHTS: dict[int, Decimal] = {
-    1: Decimal("0.85"),
-    2: Decimal("0.65"),
-    3: Decimal("0.40"),
-    4: Decimal("0.15"),
-    5: Decimal("0.00"),
+    1: Decimal("0.30"),
+    2: Decimal("0.45"),
+    3: Decimal("0.55"),
+    4: Decimal("0.70"),
+    5: Decimal("0.80"),
 }
 
 SCARCITY_MODIFIERS: dict[str, Decimal] = {

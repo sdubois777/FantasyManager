@@ -102,12 +102,12 @@ def test_ceiling_differs_with_league_vs_fp():
     ceiling_fp = compute_bid_ceiling(sv, fp_mv, tier=2, position="WR", risk_level="low")
     ceiling_league = compute_bid_ceiling(sv, league_mv, tier=2, position="WR", risk_level="low")
 
-    # T2 anchor=0.65: blend = sv * 0.35 + mv * 0.65
-    # With FP=40: 30*0.35 + 40*0.65 = 10.50 + 26.00 = 36.50
-    # With league=25: 30*0.35 + 25*0.65 = 10.50 + 16.25 = 26.75
+    # T2 anchor=0.45: blend = sv * 0.55 + mv * 0.45
+    # With FP=40: 30*0.55 + 40*0.45 = 16.50 + 18.00 = 34.50
+    # With league=25: 30*0.55 + 25*0.45 = 16.50 + 11.25 = 27.75
     assert ceiling_fp > ceiling_league
-    assert ceiling_fp == Decimal("36.50")
-    assert ceiling_league == Decimal("26.75")
+    assert ceiling_fp == Decimal("34.50")
+    assert ceiling_league == Decimal("27.75")
 
 
 # ===========================================================================

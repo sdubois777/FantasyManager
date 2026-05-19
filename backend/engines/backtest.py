@@ -41,25 +41,33 @@ def derive_system_signal(
     value_gap: float,
     ai_ceiling: float | None,
     league_price: float,
+    projected_ppr: float | None = None,
 ) -> str:
     """Derive backtest signal from value_assessment + pay_up_flag (primary)
     with value_gap as secondary confirmation.
 
     Key rules:
     1. pay_up_flag always wins → strong_buy
-    2. Cheap players (price <= $8) never avoid — downside is negligible
-    3. Small negative gaps (-8 to 0) are auction noise → neutral
-    4. Only flag avoid for meaningful gaps (< -8) with confirming assessment
+    2. Cheap players (price <= $12) never avoid — downside is negligible
+    3. Low-projection players (< 80 PPR) never avoid — depth noise
+    4. Small negative gaps (-8 to 0) are auction noise → neutral
+    5. Only flag avoid for meaningful gaps (< -8) with confirming assessment
     """
     # Pay up flag always wins
     if pay_up_flag:
         return "strong_buy"
 
-    # RULE 1: Cheap players ($1-8) should never be avoid regardless of
+    # RULE 1: Cheap players ($1-12) should never be avoid regardless of
     # slight_overpay tag.  Downside is negligible — treat as neutral.
-    if league_price <= 8:
+    if league_price <= 12:
         if value_assessment in _BUY_ASSESSMENTS:
             return "strong_buy"
+        return "neutral"
+
+    # RULE 1b: Low-projection players (< 80 PPR) are depth — avoid is noise.
+    if projected_ppr is not None and projected_ppr < 80:
+        if value_assessment in _BUY_ASSESSMENTS:
+            return "buy" if value_gap >= 5 else "neutral"
         return "neutral"
 
     # RULE 2: Small negative gaps (-8 to 0) are within auction noise —
@@ -317,6 +325,7 @@ async def run_backtest(
                 value_gap=value_gap,
                 ai_ceiling=ai_ceiling,
                 league_price=price,
+                projected_ppr=proj_ppr,
             )
 
             # Was system right? Injured players count — a buy signal on an injured
