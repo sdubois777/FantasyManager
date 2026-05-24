@@ -9,13 +9,13 @@ async function fetchAccountData() {
     apiClient.get('/account/me'),
     apiClient.get('/account/credits'),
     apiClient.get('/account/leagues'),
-    apiClient.get('/account/draft-token'),
+    apiClient.get('/account/draft-token').catch(() => ({ data: {} })),
   ])
   return {
     user: me.data,
     credits: credits.data,
     leagues: leagues.data,
-    draftToken: tokenResp.data.draft_token,
+    draftToken: tokenResp.data.draft_token || null,
   }
 }
 

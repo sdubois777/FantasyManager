@@ -31,11 +31,14 @@ def _make_user(uid=None, draft_token=None):
 async def test_draft_token_created_for_new_user():
     """GET /account/draft-token creates a token when user has none."""
     user = _make_user(draft_token=None)
+    # db.get() returns a separate db_user object that the endpoint mutates
+    db_user = _make_user(draft_token=None)
+    db_user.id = user.id
     from backend.core.dependencies import get_current_user, get_db
 
     mock_db = AsyncMock()
     mock_db.commit = AsyncMock()
-    mock_db.refresh = AsyncMock()
+    mock_db.get = AsyncMock(return_value=db_user)
     app.dependency_overrides[get_current_user] = lambda: user
     app.dependency_overrides[get_db] = lambda: mock_db
 
@@ -46,9 +49,9 @@ async def test_draft_token_created_for_new_user():
         ) as ac:
             resp = await ac.get("/account/draft-token")
         assert resp.status_code == 200
-        # Should have set draft_token on user
-        assert user.draft_token is not None
-        assert resp.json()["draft_token"] == user.draft_token
+        token = resp.json()["draft_token"]
+        assert token is not None
+        assert db_user.draft_token == token
         mock_db.commit.assert_called_once()
     finally:
         app.dependency_overrides.clear()
@@ -84,11 +87,13 @@ async def test_revoke_generates_new_token():
     """POST /account/draft-token/revoke generates a new token."""
     old_token = str(uuid.uuid4())
     user = _make_user(draft_token=old_token)
+    db_user = _make_user(draft_token=old_token)
+    db_user.id = user.id
     from backend.core.dependencies import get_current_user, get_db
 
     mock_db = AsyncMock()
     mock_db.commit = AsyncMock()
-    mock_db.refresh = AsyncMock()
+    mock_db.get = AsyncMock(return_value=db_user)
     app.dependency_overrides[get_current_user] = lambda: user
     app.dependency_overrides[get_db] = lambda: mock_db
 
@@ -101,7 +106,7 @@ async def test_revoke_generates_new_token():
         assert resp.status_code == 200
         new_token = resp.json()["draft_token"]
         assert new_token != old_token
-        assert user.draft_token == new_token
+        assert db_user.draft_token == new_token
         mock_db.commit.assert_called_once()
     finally:
         app.dependency_overrides.clear()

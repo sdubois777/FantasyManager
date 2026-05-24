@@ -1,6 +1,5 @@
 const CopyPlugin = require('copy-webpack-plugin')
 const path = require('path')
-
 module.exports = {
   entry: {
     background: './src/background/service_worker.js',
@@ -16,6 +15,7 @@ module.exports = {
     filename: '[name].js',
     clean: true,
   },
+  devtool: 'cheap-source-map',
   module: {
     rules: [{
       resourceQuery: /raw/,

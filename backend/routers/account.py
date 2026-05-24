@@ -179,9 +179,11 @@ async def get_draft_token(
     without a session.
     """
     if not user.draft_token:
-        user.draft_token = str(uuid_mod.uuid4())
+        from backend.models.user import User as UserModel
+        db_user = await db.get(UserModel, user.id)
+        db_user.draft_token = str(uuid_mod.uuid4())
         await db.commit()
-        await db.refresh(user)
+        return {"draft_token": db_user.draft_token}
     return {"draft_token": user.draft_token}
 
 
@@ -191,10 +193,11 @@ async def revoke_draft_token(
     db=Depends(get_db),
 ):
     """Regenerate token — invalidates the old one."""
-    user.draft_token = str(uuid_mod.uuid4())
+    from backend.models.user import User as UserModel
+    db_user = await db.get(UserModel, user.id)
+    db_user.draft_token = str(uuid_mod.uuid4())
     await db.commit()
-    await db.refresh(user)
-    return {"draft_token": user.draft_token}
+    return {"draft_token": db_user.draft_token}
 
 
 @router.delete("/leagues/{league_id}", status_code=204)
