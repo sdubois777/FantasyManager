@@ -40,17 +40,12 @@ class LeagueSyncService:
         Accepts UUID, reloads the ORM object using the service's
         own session to avoid detached/expired instance errors.
         """
-        from sqlalchemy import select
         from backend.integrations.yahoo_api import yahoo_league_key
 
         # Reload within THIS session — not the router's
-        result = await self._db.execute(
-            select(UserLeague).where(
-                UserLeague.id == user_league_id,
-                UserLeague.user_id == self._user_id,
-            )
+        user_league = await self._league_repo.get_user_league(
+            self._user_id, user_league_id
         )
-        user_league = result.scalar_one_or_none()
         if not user_league:
             from backend.core.exceptions import NotFoundError
             raise NotFoundError(
