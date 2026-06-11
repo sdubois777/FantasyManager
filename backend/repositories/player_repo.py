@@ -48,6 +48,15 @@ class PlayerRepository(BaseRepository[Player]):
 
     model = Player
 
+    async def list_with_league_market_values(self) -> list[Player]:
+        """Skill-position players that have a league market value set."""
+        result = await self._session.execute(
+            select(Player)
+            .where(Player.market_value_league.isnot(None))
+            .where(Player.position.in_(SKILL_POSITIONS))
+        )
+        return list(result.scalars().all())
+
     async def search_by_name(self, q: str, limit: int = 20) -> list[Player]:
         """Case-insensitive name search, best bid ceilings first."""
         result = await self._session.execute(
