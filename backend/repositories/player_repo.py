@@ -57,6 +57,26 @@ class PlayerRepository(BaseRepository[Player]):
         )
         return list(result.scalars().all())
 
+    async def count_by_team(self) -> dict[str, int]:
+        """Player counts keyed by team abbreviation."""
+        result = await self._session.execute(
+            select(Player.team_abbr, func.count(Player.id))
+            .where(Player.team_abbr.isnot(None))
+            .group_by(Player.team_abbr)
+        )
+        return dict(result.all())
+
+    async def list_skill_players_for_team(self, team_abbr: str) -> list[Player]:
+        """A team's skill-position players, best bid ceilings first."""
+        result = await self._session.execute(
+            select(Player)
+            .where(Player.team_abbr == team_abbr)
+            .where(Player.position.in_(SKILL_POSITIONS))
+            .options(selectinload(Player.dependencies))
+            .order_by(Player.recommended_bid_ceiling.desc().nulls_last())
+        )
+        return list(result.scalars().all())
+
     async def search_by_name(self, q: str, limit: int = 20) -> list[Player]:
         """Case-insensitive name search, best bid ceilings first."""
         result = await self._session.execute(

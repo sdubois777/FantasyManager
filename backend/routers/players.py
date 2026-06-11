@@ -15,14 +15,13 @@ from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, ConfigDict
-from sqlalchemy import select
 
 from backend.core.dependencies import get_current_user, get_db
 from backend.engines.valuation import get_market_context
 from backend.utils.seasons import get_current_season
 from backend.models.player import Player
-from backend.models.team_system import TeamSystem
 from backend.repositories.player_repo import PlayerRepository
+from backend.repositories.team_system_repo import TeamSystemRepository
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/players", tags=["players"])
@@ -310,13 +309,7 @@ async def get_player(player_id: uuid.UUID, db=Depends(get_db)) -> PlayerDetail:
     # Get team system context
     team_system = None
     if player.team_abbr:
-        ts_result = await db.execute(
-            select(TeamSystem)
-            .where(TeamSystem.team_abbr == player.team_abbr)
-            .order_by(TeamSystem.season_year.desc())
-            .limit(1)
-        )
-        ts = ts_result.scalar_one_or_none()
+        ts = await TeamSystemRepository(db).get_latest_for_team(player.team_abbr)
         if ts:
             team_system = TeamSystemSummary(
                 team_abbr=ts.team_abbr,
