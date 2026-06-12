@@ -1,5 +1,4 @@
 import browser from '../utils/browser.js'
-import { getApiBase } from '../utils/api.js'
 import { STORAGE_KEYS } from '../utils/constants.js'
 
 document.addEventListener('DOMContentLoaded', init)
@@ -7,7 +6,7 @@ document.addEventListener('DOMContentLoaded', init)
 async function init() {
   const { draft_token } = await browser.storage.local.get(STORAGE_KEYS.DRAFT_TOKEN)
   if (draft_token) {
-    showMainView(draft_token)
+    showMainView()
   } else {
     showTokenEntry()
   }
@@ -30,12 +29,12 @@ function showTokenEntry() {
     const token = document.getElementById('token-input').value.trim()
     if (!token) return
     await browser.storage.local.set({ [STORAGE_KEYS.DRAFT_TOKEN]: token })
-    showMainView(token)
+    showMainView()
   })
 }
 
 /* ── Main connected view ── */
-async function showMainView(token) {
+async function showMainView() {
   const platforms = await getPlatformStatus()
   const { capture_mode } = await browser.storage.local.get(STORAGE_KEYS.CAPTURE_MODE)
 
@@ -54,8 +53,6 @@ async function showMainView(token) {
       <div class="label">Platforms</div>
       ${platformRows(platforms)}
     </div>
-
-    <div id="draft-status"></div>
 
     <div class="debug">
       <div class="debug-row">
@@ -94,8 +91,6 @@ async function showMainView(token) {
     a.click()
     URL.revokeObjectURL(url)
   })
-
-  checkDraftStatus(token)
 }
 
 /* ── Platform status ── */
@@ -125,26 +120,4 @@ function platformRows(platforms) {
   `
     )
     .join('')
-}
-
-/* ── Draft status check ── */
-async function checkDraftStatus(token) {
-  try {
-    const resp = await fetch(`${getApiBase()}/draft/active`, {
-      headers: { 'X-Draft-Token': token },
-    })
-    if (resp.ok) {
-      const data = await resp.json()
-      if (data.active) {
-        document.getElementById('draft-status').innerHTML = `
-          <div class="draft-active">
-            <div class="pulse"></div>
-            Live Draft — ${data.platform || 'Unknown'}
-          </div>
-        `
-      }
-    }
-  } catch {
-    // Backend unreachable — ignore silently
-  }
 }
