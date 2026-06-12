@@ -29,7 +29,9 @@ export async function postDraftEvent(event) {
 }
 
 export function getApiBase() {
-  // In production extensions, check stored preference or default to production
-  // During development, default to localhost
-  return 'http://localhost:8000'
+  // Extension always talks to production.
+  // There is no "dev mode" for an extension
+  // running in a real browser against real
+  // Yahoo/ESPN pages.
+  return 'https://fantasymanager-production.up.railway.app'
 }
