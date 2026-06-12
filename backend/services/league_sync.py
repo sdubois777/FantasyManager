@@ -80,9 +80,24 @@ class LeagueSyncService:
             "seasons_imported": 0,
             "managers_found": 0,
             "free_agents_cached": 0,
+            "warnings": [],
         }
 
-        # 1. Import draft history — up to HISTORY_SEASONS
+        # 1. Import current rosters — required, fail hard.
+        # A league we cannot read rosters for is not synced in any sense.
+        rosters = await platform.get_rosters()
+        summary["managers_found"] = len(rosters)
+        user_league.manager_map = {
+            r.platform_team_id: r.manager_name
+            for r in rosters
+        }
+
+        # 2. Stamp last_synced NOW. Draft history is optional context —
+        # a new league with no draft yet must still read as synced.
+        user_league.last_synced = datetime.now(timezone.utc)
+        await self._db.commit()
+
+        # 3. Import draft history — up to HISTORY_SEASONS, best-effort
         picks_total = 0
         seasons_ok = 0
         for offset in range(HISTORY_SEASONS):
@@ -121,33 +136,22 @@ class LeagueSyncService:
                     "Could not import %s season %d: %s",
                     user_league.platform, season, exc,
                 )
+                summary["warnings"].append(
+                    f"No draft history for {season}"
+                )
                 # Rollback so the transaction isn't permanently aborted
                 await self._db.rollback()
 
         summary["picks_imported"] = picks_total
         summary["seasons_imported"] = seasons_ok
 
-        # 2. Import current rosters
-        try:
-            rosters = await platform.get_rosters()
-            summary["managers_found"] = len(rosters)
-
-            # Store manager map in user_league
-            user_league.manager_map = {
-                r.platform_team_id: r.manager_name
-                for r in rosters
-            }
-        except Exception as exc:
-            logger.warning("Could not import rosters: %s", exc)
-
-        user_league.last_synced = datetime.now(timezone.utc)
-
-        # 3. Cache free agents count
+        # 4. Cache free agents count — best-effort
         try:
             free_agents = await platform.get_free_agents()
             summary["free_agents_cached"] = len(free_agents)
         except Exception as exc:
             logger.warning("Could not cache free agents: %s", exc)
+            summary["warnings"].append("Free agent sync failed")
 
         await self._db.commit()
         return summary
@@ -159,6 +163,7 @@ class LeagueSyncService:
         try:
             from backend.integrations.yahoo_api import (
                 get_league_settings,
+                refresh_access_token_for_user,
                 yahoo_league_key,
             )
             from backend.repositories.credential_repo import CredentialRepository
@@ -175,7 +180,16 @@ class LeagueSyncService:
                 )
                 return
 
-            settings = await get_league_settings(tokens[0], key)
+            access_token, refresh_token, expires_at = tokens
+            if expires_at and datetime.now(timezone.utc) >= expires_at:
+                access_token, refresh_token, new_expiry = (
+                    await refresh_access_token_for_user(refresh_token)
+                )
+                await repo.upsert_yahoo(
+                    self._user_id, access_token, refresh_token, new_expiry,
+                )
+
+            settings = await get_league_settings(access_token, key)
             user_league.league_name = settings["name"]
             user_league.team_count = settings["num_teams"]
             user_league.draft_type = settings["draft_type"]
