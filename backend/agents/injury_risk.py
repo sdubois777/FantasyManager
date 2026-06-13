@@ -21,6 +21,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import uuid
 from decimal import Decimal
 
 import pandas as pd
@@ -35,7 +36,7 @@ from backend.utils.seasons import get_current_season, get_analysis_seasons, get_
 
 logger = logging.getLogger(__name__)
 
-SKILL_POSITIONS = {"WR", "RB", "TE"}
+SKILL_POSITIONS = {"QB", "WR", "RB", "TE"}
 
 # ---------------------------------------------------------------------------
 # System prompt
@@ -252,6 +253,117 @@ def compute_pattern_flags(
         "career_carries":        career_carries,
         "last_season_carries":   last_season_carries,
     }
+
+
+# ---------------------------------------------------------------------------
+# Games-based availability model — objective, derived from games played
+# ---------------------------------------------------------------------------
+
+FULL_SEASON_GAMES = 15      # games at/above this count as a "full" season
+MAX_NFL_GAMES = 17          # projection cap
+
+# avg_games → (availability_risk, base modifier on projected PPR)
+_DURABLE_MIN_GAMES = 15
+_MONITOR_MIN_GAMES = 13
+_DECLINING_EXTRA_MODIFIER = -0.05   # additional penalty when trend is declining
+_TREND_DELTA = 2                    # games swing that defines improving/declining
+_VOLATILE_RANGE = 6                 # max-min games spread that defines volatile
+
+
+def compute_availability_metrics(games_history: list[dict]) -> dict:
+    """Derive availability fields from a per-season games-played history.
+
+    games_history must be ordered oldest → most recent, each entry
+    {"season": int, "games": int, "full_season": bool}. Pure function —
+    no DB or warehouse access — so the thresholds are unit-testable.
+    """
+    full_season_absence = any(g["games"] <= 1 for g in games_history)
+
+    if len(games_history) < 2:
+        return {
+            "games_played_history": games_history,
+            "avg_games_per_season": None,
+            "projected_games": None,
+            "availability_risk": "unknown",
+            "availability_trend": None,
+            "availability_risk_modifier": 0.0,
+            "full_season_absence_flag": full_season_absence,
+        }
+
+    games = [g["games"] for g in games_history]
+    avg_games = sum(games) / len(games)
+
+    # Trend — compare most recent season against the average of the prior ones
+    recent = games[-1]
+    prior_avg = sum(games[:-1]) / len(games[:-1])
+    if recent >= prior_avg + _TREND_DELTA:
+        trend = "improving"
+    elif recent <= prior_avg - _TREND_DELTA:
+        trend = "declining"
+    elif max(games) - min(games) >= _VOLATILE_RANGE:
+        trend = "volatile"
+    else:
+        trend = "stable"
+
+    # Risk level + base modifier
+    if avg_games >= _DURABLE_MIN_GAMES:
+        risk, modifier = "durable", 0.0
+    elif avg_games >= _MONITOR_MIN_GAMES:
+        risk, modifier = "monitor", -0.05
+    else:
+        risk, modifier = "concern", -0.15
+
+    # Declining trend adds an extra penalty (floored at the concern modifier)
+    if trend == "declining" and modifier > -0.15:
+        modifier += _DECLINING_EXTRA_MODIFIER
+
+    # Project next season — weight recent seasons more heavily
+    if len(games) >= 3:
+        projected = round(games[-1] * 0.5 + games[-2] * 0.3 + games[-3] * 0.2)
+    else:
+        projected = round(avg_games)
+    projected = min(projected, MAX_NFL_GAMES)
+
+    return {
+        "games_played_history": games_history,
+        "avg_games_per_season": round(avg_games, 1),
+        "projected_games": projected,
+        "availability_risk": risk,
+        "availability_trend": trend,
+        "availability_risk_modifier": round(modifier, 2),
+        "full_season_absence_flag": full_season_absence,
+    }
+
+
+def build_player_availability(
+    player: Player,
+    warehouse,
+    analysis_seasons: list[int],
+) -> dict:
+    """Resolve a player's games-played history and compute availability.
+
+    Uses the shared ID-first resolver (sleeper_id → sportradar_id →
+    gsis_id → name+position) so the current season is never silently
+    dropped due to the abbreviated-name format in the current-season frame.
+    """
+    from backend.utils.player_matching import resolve_player_season_stats
+
+    games_history: list[dict] = []
+    for season in sorted(analysis_seasons):
+        stats = resolve_player_season_stats(player, season, warehouse)
+        if not stats:
+            continue
+        games = stats.get("games")
+        if games is None:
+            continue
+        games = int(games)
+        games_history.append({
+            "season": season,
+            "games": games,
+            "full_season": games >= FULL_SEASON_GAMES,
+        })
+
+    return compute_availability_metrics(games_history)
 
 
 # ---------------------------------------------------------------------------
@@ -509,7 +621,9 @@ class InjuryRiskAgent(BaseAgent):
                 logger.error("%s: unexpected output type: %s", team, type(profiles))
                 return 0
 
-            written = await _write_injury_profiles(profiles, context, team)
+            written = await _write_injury_profiles(
+                profiles, context, team, self._warehouse
+            )
             logger.info("%s: %d injury profiles written", team, written)
             return written
 
@@ -599,17 +713,35 @@ async def _bulk_resolve_player_ids(
 
 
 async def _write_injury_profiles(
-    profiles: list[dict], context: dict, team: str
+    profiles: list[dict], context: dict, team: str, warehouse=None
 ) -> int:
-    """Bulk upsert player_injury_profiles — one DB transaction per team."""
+    """Bulk upsert player_injury_profiles — one DB transaction per team.
+
+    In addition to the Sleeper-derived risk fields, computes the
+    games-based availability model for each player from warehouse stats
+    and writes it onto the same row. Availability is the authoritative
+    injury signal consumed by the profiles agent.
+    """
     if not profiles:
         return 0
 
     ctx_map: dict[str, dict] = {p["name"]: p for p in context.get("players", [])}
+    analysis_seasons = get_analysis_seasons(3)
 
     async with AsyncSessionLocal() as session:
         names_and_teams = [(p.get("player_name", ""), team) for p in profiles]
         id_map = await _bulk_resolve_player_ids(session, names_and_teams)
+
+        # Load Player ORM objects once so availability can resolve by ID.
+        # Only needed when a warehouse is available to compute availability.
+        player_objs: dict[str, Player] = {}
+        if warehouse is not None:
+            resolved_ids = [uuid.UUID(v) for v in id_map.values() if v]
+            if resolved_ids:
+                rows = (await session.execute(
+                    select(Player).where(Player.id.in_(resolved_ids))
+                )).scalars().all()
+                player_objs = {str(p.id): p for p in rows}
 
         written = 0
         for prof in profiles:
@@ -682,6 +814,20 @@ async def _write_injury_profiles(
             record.recovery_assessment         = prof.get("recovery_assessment")
             record.age_risk_multiplier         = _to_decimal(ctx_player.get("age_risk_mult"))
             record.risk_notes                  = prof.get("risk_notes")
+
+            # Games-based availability model — objective, from warehouse stats.
+            player_obj = player_objs.get(player_id)
+            if warehouse is not None and player_obj is not None:
+                avail = build_player_availability(
+                    player_obj, warehouse, analysis_seasons
+                )
+                record.games_played_history       = avail["games_played_history"]
+                record.avg_games_per_season        = _to_decimal(avail["avg_games_per_season"])
+                record.projected_games             = avail["projected_games"]
+                record.availability_risk           = avail["availability_risk"]
+                record.availability_trend          = avail["availability_trend"]
+                record.availability_risk_modifier  = _to_decimal(avail["availability_risk_modifier"])
+                record.full_season_absence_flag    = avail["full_season_absence_flag"]
 
             # Update players.risk_adjusted_value when baseline is available
             modifier = prof.get("risk_adjusted_value_modifier")

@@ -215,6 +215,16 @@ class PlayerInjuryProfile(Base):
     age_risk_multiplier: Mapped[Optional[Decimal]] = mapped_column(Numeric(3, 2))
     risk_notes: Mapped[Optional[str]] = mapped_column(Text)
 
+    # ── Games-based availability model (objective, derived from games played) ──
+    games_played_history: Mapped[Optional[list]] = mapped_column(JSONB, default=list)
+    # [{"season": 2023, "games": 16, "full_season": true}, ...]
+    avg_games_per_season: Mapped[Optional[Decimal]] = mapped_column(Numeric(4, 1))
+    projected_games: Mapped[Optional[int]] = mapped_column(Integer)
+    availability_risk: Mapped[Optional[str]] = mapped_column(String(20))    # durable/monitor/concern/unknown
+    availability_trend: Mapped[Optional[str]] = mapped_column(String(20))   # improving/declining/stable/volatile
+    availability_risk_modifier: Mapped[Optional[Decimal]] = mapped_column(Numeric(4, 2))
+    full_season_absence_flag: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default="false")
+
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()

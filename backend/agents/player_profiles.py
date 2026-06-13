@@ -35,6 +35,7 @@ from backend.agents.team_systems import NFL_TEAMS
 from backend.database import AsyncSessionLocal
 from backend.integrations.nfl_data import normalize_player_name, build_player_lookup
 from backend.models.player import Player, PlayerProfile, PlayerInjuryProfile, PlayerSchedule
+from backend.utils.player_matching import resolve_player_season_stats_by_fields
 from backend.models.dependency import PlayerDependency, BeatReporterSignal
 from backend.utils.seasons import (
     get_current_season,
@@ -50,7 +51,7 @@ SKILL_POSITIONS = {"QB", "WR", "RB", "TE"}
 PROFILE_STALENESS_DAYS = 30
 
 # Increment whenever system prompts change to force regeneration of all profiles.
-PLAYER_PROFILES_PROMPT_VERSION = "v4"
+PLAYER_PROFILES_PROMPT_VERSION = "v6"
 
 
 # ---------------------------------------------------------------------------
@@ -155,12 +156,13 @@ def needs_sonnet_reasoning(player: dict) -> bool:
     if player.get("contract_year"):
         return True
 
-    # --- Risk signals ---
-
+    # --- Availability signals ---
+    # Real availability risk or a near-full-season absence makes history
+    # an unreliable predictor → route to Sonnet.
     injury = player.get("injury_profile", {})
-    if injury.get("overall_risk_level") in ("high", "volatile"):
+    if injury.get("availability_risk") == "concern":
         return True
-    if injury.get("pattern_flags"):
+    if injury.get("full_season_absence"):
         return True
 
     # --- Career trajectory ---
@@ -334,7 +336,7 @@ DEPTH CHART POSITION: {depth_chart_order}
 DEPENDENCY FLAGS:
 {dependency_flags}
 
-INJURY RISK: {injury_risk_level}
+AVAILABILITY: {availability_risk}
 
 SCHEDULE:
 Early season (weeks 1-6): {early_schedule}
@@ -431,7 +433,7 @@ def _format_rookie_prompt(player: dict, team_context: dict) -> str:
         qb_tier=team_context.get("qb_tier", "unknown"),
         depth_chart_order=player.get("depth_chart_rank", "unknown"),
         dependency_flags=flags_text,
-        injury_risk_level=injury.get("overall_risk_level", "unknown"),
+        availability_risk=injury.get("availability_risk", "unknown"),
         early_schedule=schedule.get("early_window_grade", "unknown"),
         playoff_schedule=schedule.get("playoff_window_grade", "unknown"),
     )
@@ -498,7 +500,7 @@ You receive:
 - Historical stats (3 seasons of per-game data)
 - Team system context (OC scheme, QB tier, O-line grades, compound_risk_flag)
 - Dependency flags (displaced, beneficiary, committee, etc. with impact reasoning)
-- Injury risk profile (pattern flags, risk level, recovery assessment)
+- Availability profile (games played per season, projected games, availability risk)
 - Schedule grades (early/full/playoff windows)
 - Beat reporter signals (practice reports, depth chart changes)
 
@@ -556,13 +558,37 @@ Rules:
 - A beneficiary flag with departed_team trigger = MORE opportunity → project HIGHER than historical baseline.
 - A displaced flag with active_and_healthy trigger = LESS opportunity → project LOWER.
 - compound_risk_flag on team system = reduce all skill position projections by 10-15%.
-- Injury risk "high" or "volatile" → weight downside more heavily, widen upside-downside gap.
 - upside_ppr = realistic best-case 17-game total; downside_ppr = realistic worst-case.
 - Age curve peaks: QB 26-32, RB 24-26, WR 24-29, TE 26-29.
 - Contract year (contract_year=true) → slight upward trajectory bias.
-- Do NOT invent specific injury events. If the injury data shows "no significant history",
-  say exactly that. Only reference injuries explicitly listed in the provided injury risk profile.
-  Never fabricate torn ACLs, hamstring tears, or other specific injuries not in the data.
+
+AVAILABILITY — authoritative source:
+  You receive an availability dict: games played per season, projected_games,
+  availability_risk, availability_trend, full_season_absence, risk_modifier.
+  Use ONLY this dict for availability. Never use training knowledge of injuries.
+
+  FORBIDDEN — these words must NEVER appear in your output, regardless of what
+  you know: ACL, MCL, hamstring, shoulder, chronic, diagnosis, surgery,
+  condition, torn, fracture. Do not name injuries or body parts. Do not write
+  "injury-prone" or "has battled" unless availability_risk == "concern".
+
+  Apply by availability_risk:
+    "durable" (avg >= 15): one clause max, e.g. "durable, averaged N games".
+      No further availability discussion.
+    "monitor" (avg 13-14): "averaged N games — some missed time, worth
+      monitoring." Do NOT speculate on cause.
+    "concern" (avg < 13): "averaged N games — real availability risk; project
+      ~projected_games games." Do NOT speculate on cause.
+    "unknown" (<2 seasons): "limited history — no availability flag applied."
+
+  full_season_absence == true: "missed nearly a full season — factor into the
+    floor." Do NOT name the injury.
+
+  PROJECTION: project per-game production, then scale to projected_games, then
+  apply risk_modifier to the result. risk_modifier is already computed — apply
+  it directly; do not invent your own discount. A concern player projects LOWER
+  via fewer games × the modifier; widen the downside_ppr gap accordingly.
+
 - Output ONLY valid JSON. No preamble, no explanation, no markdown fences.
 Your entire response must be parseable by json.loads().
 
@@ -772,222 +798,22 @@ class PlayerProfilesAgent(BaseAgent):
         sleeper_id: str | None = None,
         sportradar_id: str | None = None,
     ) -> dict | None:
-        """Return compact season stats for one player from the cached target_share df.
+        """Return compact season stats for one player from the target_share df.
 
-        Position is REQUIRED to prevent cross-position name collisions
-        (e.g. "B.Taylor" WR on IND must NOT match "J.Taylor" RB on IND).
-
-        Match priority:
-          1. player_id column (gsis id) — 100% reliable, no name ambiguity
-          2. last-name + team + SAME POSITION — handles most veterans reliably
-          3. last-name + first-initial cross-team + SAME POSITION fallback —
-             ONLY when exactly ONE unique player_id at this position
+        Delegates to backend.utils.player_matching, which is shared with
+        the injury-risk availability model so both agents resolve players
+        the same way (ID-first, position-verified).
         """
-        ts_df = self._warehouse.get_target_share(season)
-        if ts_df is None:
-            return None
-
-        pos_upper = position.upper()
-        has_position_col = "position" in ts_df.columns
-
-        def _pos_filter(df: pd.DataFrame) -> pd.DataFrame:
-            """Filter to same position. Critical to prevent cross-position collisions."""
-            if has_position_col:
-                return df[df["position"].str.upper() == pos_upper]
-            return df
-
-        def _extract(row: pd.Series) -> dict | None:
-            games = int(row.get("games", 0) or 0)
-            if games == 0:
-                return None
-            def _f(col: str, decimals: int = 3):
-                v = row.get(col)
-                try:
-                    return round(float(v), decimals) if v is not None and pd.notna(v) else None
-                except (TypeError, ValueError):
-                    return None
-            targets = int(row.get("total_targets", 0) or 0)
-            receptions = int(row.get("total_receptions", 0) or 0)
-            return {
-                "games":           games,
-                "recent_team":     str(row.get("recent_team", "") or ""),
-                "target_share":    _f("avg_target_share"),
-                "air_yards_share": _f("avg_air_yards_share"),
-                "targets":         targets,
-                "receptions":      receptions,
-                "rec_yards":       int(row.get("total_rec_yards",  0) or 0),
-                "rec_tds":         int(row.get("total_rec_tds",    0) or 0),
-                "carries":         int(row.get("total_carries",    0) or 0),
-                "rush_yards":      int(row.get("total_rush_yards", 0) or 0),
-                "rush_tds":        int(row.get("total_rush_tds",   0) or 0),
-                "ppr_per_game":    _f("ppr_per_game", 1),
-                # Efficiency fields
-                "rush_ypa":        _f("rush_ypa", 2),
-                "rush_btkl":       _f("rush_btkl", 0),
-                "rec_ypr":         _f("rec_ypr", 2),
-                "snap_count":      _f("off_snp", 0),
-                "rush_fd":         _f("rush_fd", 0),
-                "rec_fd":          _f("rec_fd", 0),
-                "catch_pct": (
-                    round(receptions / targets * 100, 1)
-                    if targets > 0 else None
-                ),
-            }
-
-        def _extract_combined(rows: pd.DataFrame) -> dict | None:
-            """Aggregate stats across multi-team splits for the same player."""
-            def _int_sum(col: str) -> int:
-                return int(rows[col].fillna(0).sum()) if col in rows.columns else 0
-
-            total_games = _int_sum("games")
-            if total_games == 0:
-                return None
-
-            # Use the team with the most games as the primary team
-            primary_team = rows.loc[rows["games"].fillna(0).astype(int).idxmax(), "recent_team"]
-
-            # Games-weighted average for rate stats
-            game_weights = rows["games"].fillna(0).astype(float)
-            weight_sum = game_weights.sum()
-
-            def _weighted_avg(col: str, decimals: int = 3):
-                if col not in rows.columns:
-                    return None
-                vals = rows[col].apply(
-                    lambda v: float(v) if v is not None and pd.notna(v) else 0.0
-                )
-                avg = (vals * game_weights).sum() / weight_sum if weight_sum > 0 else 0.0
-                return round(avg, decimals) if avg else None
-
-            receptions = _int_sum("total_receptions")
-            rec_yards = _int_sum("total_rec_yards")
-            rec_tds = _int_sum("total_rec_tds")
-            rush_yards = _int_sum("total_rush_yards")
-            rush_tds = _int_sum("total_rush_tds")
-
-            # PPR cross-validation against source fantasy_points_ppr
-            computed_ppr = receptions * 1.0 + (rec_yards + rush_yards) * 0.1 + (rec_tds + rush_tds) * 6.0
-            fantasy_ppr = float(rows["total_fantasy_points"].fillna(0).sum()) if "total_fantasy_points" in rows.columns else 0.0
-            if fantasy_ppr > 0 and abs(computed_ppr - fantasy_ppr) / fantasy_ppr > 0.15:
-                pid = rows.iloc[0].get("player_id", "?")
-                logger.warning(
-                    "PPR divergence for player_id=%s: computed=%.1f vs source=%.1f",
-                    pid, computed_ppr, fantasy_ppr,
-                )
-
-            total_targets = _int_sum("total_targets")
-            return {
-                "games":           total_games,
-                "recent_team":     str(primary_team or ""),
-                "target_share":    _weighted_avg("avg_target_share"),
-                "air_yards_share": _weighted_avg("avg_air_yards_share"),
-                "targets":         total_targets,
-                "receptions":      receptions,
-                "rec_yards":       rec_yards,
-                "rec_tds":         rec_tds,
-                "carries":         _int_sum("total_carries"),
-                "rush_yards":      rush_yards,
-                "rush_tds":        rush_tds,
-                "ppr_per_game":    _weighted_avg("ppr_per_game", 1),
-                # Efficiency fields
-                "rush_ypa":        _weighted_avg("rush_ypa", 2),
-                "rush_btkl":       _int_sum("rush_btkl") or None,
-                "rec_ypr":         _weighted_avg("rec_ypr", 2),
-                "snap_count":      _int_sum("off_snp") or None,
-                "rush_fd":         _int_sum("rush_fd") or None,
-                "rec_fd":          _int_sum("rec_fd") or None,
-                "catch_pct": (
-                    round(receptions / total_targets * 100, 1)
-                    if total_targets > 0 else None
-                ),
-            }
-
-        # --- Path 0a: sleeper_id match (best — 100% coverage from Sleeper) ---
-        if sleeper_id and "sleeper_id" in ts_df.columns:
-            id_rows = ts_df[ts_df["sleeper_id"] == sleeper_id]
-            if not id_rows.empty:
-                if len(id_rows) == 1:
-                    return _extract(id_rows.iloc[0])
-                return _extract_combined(id_rows)
-
-        # --- Path 0b: sportradar_id match (98% coverage) ---
-        if sportradar_id and "sportradar_id" in ts_df.columns:
-            id_rows = ts_df[ts_df["sportradar_id"] == sportradar_id]
-            if not id_rows.empty:
-                if len(id_rows) == 1:
-                    return _extract(id_rows.iloc[0])
-                return _extract_combined(id_rows)
-
-        # --- Path 1: player_id match (gsis_id — 29% coverage) ---
-        if nfl_player_id and "player_id" in ts_df.columns:
-            id_rows = ts_df[ts_df["player_id"] == nfl_player_id]
-            if not id_rows.empty:
-                if len(id_rows) == 1:
-                    return _extract(id_rows.iloc[0])
-                # Multiple rows = multi-team season — aggregate across splits
-                return _extract_combined(id_rows)
-
-        # --- Path 2: last-name + team + SAME POSITION ---
-        last = player_name.split()[-1]
-        mask = (
-            ts_df["player_name"].str.contains(last, case=False, na=False) &
-            (ts_df["recent_team"] == team)
+        return resolve_player_season_stats_by_fields(
+            self._warehouse,
+            player_name=player_name,
+            team=team,
+            season=season,
+            position=position,
+            nfl_player_id=nfl_player_id,
+            sleeper_id=sleeper_id,
+            sportradar_id=sportradar_id,
         )
-        rows = _pos_filter(ts_df[mask]).sort_values("games", ascending=False)
-
-        # Always disambiguate by first initial — even with one match,
-        # a different initial means a different player (e.g. Isaiah Jacobs
-        # vs Josh Jacobs on GB).  Handles both abbreviated ("D.Samuel")
-        # and full name ("Deebo Samuel") formats.
-        if not rows.empty:
-            first_initial = player_name.split()[0][0].upper()
-            initial_rows = rows[
-                rows["player_name"].str[0].str.upper() == first_initial
-            ]
-            if not initial_rows.empty:
-                rows = initial_rows
-            elif nfl_player_id and "player_id" in rows.columns:
-                # Initial mismatch — verify by ID before attributing
-                id_rows = rows[rows["player_id"] == nfl_player_id]
-                if not id_rows.empty:
-                    rows = id_rows
-                else:
-                    rows = rows.iloc[0:0]  # ID mismatch — wrong player
-            elif len(rows) == 1:
-                # Single match, wrong initial, no ID to verify — refuse
-                rows = rows.iloc[0:0]
-
-        if not rows.empty:
-            return _extract(rows.iloc[0])
-
-        # --- Path 3: cross-team fallback (pre-trade history) + SAME POSITION ---
-        # Only use when the caller has a known nfl_player_id that matches
-        # the candidate's player_id. Without an ID to verify, cross-team
-        # fallback risks attributing stats from a different player who
-        # shares the same initial+last name (e.g. J'Mari Taylor ≠ Jonathan Taylor).
-        if not nfl_player_id:
-            return None  # No ID to verify — refuse cross-team attribution
-
-        first_initial = player_name.split()[0][0].upper()
-        all_last = _pos_filter(
-            ts_df[ts_df["player_name"].str.contains(last, case=False, na=False)]
-        )
-        initial_fallback = all_last[all_last["player_name"].str.startswith(f"{first_initial}.")]
-        candidates = initial_fallback if not initial_fallback.empty else all_last
-
-        if "player_id" in candidates.columns:
-            # Verify the candidate's player_id matches the caller's ID
-            id_match = candidates[candidates["player_id"] == nfl_player_id]
-            if not id_match.empty:
-                return _extract(id_match.sort_values("games", ascending=False).iloc[0])
-            # ID mismatch — different player with same name
-            return None
-        elif len(candidates["player_name"].unique()) != 1:
-            return None  # No player_id column but multiple name variants
-
-        if candidates.empty:
-            return None
-        return _extract(candidates.sort_values("games", ascending=False).iloc[0])
 
     def _get_qb_season(
         self, player_name: str, team: str, season: int,
@@ -1273,15 +1099,31 @@ class PlayerProfilesAgent(BaseAgent):
         return flags_by_player
 
     async def _get_team_injury_profiles(self, team: str) -> dict[str, dict]:
-        """Return {player_name: injury_profile_dict} for all players on team.
+        """Return {player_name: availability_dict} for all players on team.
 
-        One DB query per team — no N+1.
+        Availability is the only injury signal passed to the model —
+        objective games-played data, no diagnoses or Sleeper narrative.
+
+        LEFT JOIN so players with no injury-profile row still receive an
+        availability context ("unknown", no penalty). One query per team.
         """
+        unknown = {
+            "availability_risk": "unknown",
+            "availability_trend": None,
+            "projected_games": None,
+            "avg_games": None,
+            "games_history": [],
+            "full_season_absence": False,
+            "risk_modifier": 0.0,
+        }
         try:
             async with AsyncSessionLocal() as session:
                 result = await session.execute(
-                    select(PlayerInjuryProfile, Player.name)
-                    .join(Player, PlayerInjuryProfile.player_id == Player.id)
+                    select(Player.name, PlayerInjuryProfile)
+                    .outerjoin(
+                        PlayerInjuryProfile,
+                        PlayerInjuryProfile.player_id == Player.id,
+                    )
                     .where(Player.team_abbr == team)
                 )
                 rows = result.all()
@@ -1290,18 +1132,24 @@ class PlayerProfilesAgent(BaseAgent):
             return {}
 
         profiles: dict[str, dict] = {}
-        for ip, name in rows:
+        for name, ip in rows:
+            if ip is None:
+                profiles[name] = dict(unknown)
+                continue
             profiles[name] = {
-                "overall_risk_level": ip.overall_risk_level,
-                "risk_adjusted_value_modifier": float(ip.risk_adjusted_value_modifier or 0),
-                "pattern_flags": ip.pattern_flags or [],
-                "chronic_conditions": ip.chronic_conditions or [],
-                "workload_cliff_flag": ip.workload_cliff_flag,
-                "high_mileage_flag": ip.high_mileage_flag,
-                "post_acl_flag": ip.post_acl_flag,
-                "concussion_count": ip.concussion_count,
-                "recovery_assessment": ip.recovery_assessment,
-                "risk_notes": ip.risk_notes,
+                "availability_risk": ip.availability_risk or "unknown",
+                "availability_trend": ip.availability_trend,
+                "projected_games": ip.projected_games,
+                "avg_games": (
+                    float(ip.avg_games_per_season)
+                    if ip.avg_games_per_season is not None else None
+                ),
+                "games_history": ip.games_played_history or [],
+                "full_season_absence": ip.full_season_absence_flag,
+                "risk_modifier": (
+                    float(ip.availability_risk_modifier)
+                    if ip.availability_risk_modifier is not None else 0.0
+                ),
             }
         return profiles
 
