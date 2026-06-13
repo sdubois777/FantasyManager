@@ -1906,20 +1906,20 @@ def test_needs_sonnet_reasoning_contract_year():
     assert needs_sonnet_reasoning(player) is True
 
 
-def test_needs_sonnet_reasoning_high_injury():
-    """Players with high injury risk get Sonnet."""
+def test_needs_sonnet_reasoning_concern_availability():
+    """Players with concern-level availability get Sonnet."""
     player = {
         "name": "Saquon Barkley",
-        "injury_profile": {"overall_risk_level": "high"},
+        "injury_profile": {"availability_risk": "concern"},
     }
     assert needs_sonnet_reasoning(player) is True
 
 
-def test_needs_sonnet_reasoning_pattern_flags():
-    """Players with injury pattern flags get Sonnet."""
+def test_needs_sonnet_reasoning_full_season_absence():
+    """Players who missed a near-full season get Sonnet."""
     player = {
         "name": "Nick Chubb",
-        "injury_profile": {"pattern_flags": ["POST_ACL"]},
+        "injury_profile": {"full_season_absence": True},
     }
     assert needs_sonnet_reasoning(player) is True
 
@@ -2700,9 +2700,9 @@ def test_prompt_version_triggers_regeneration():
     )
 
 
-def test_prompt_version_constant_is_v4():
-    """Sanity: prompt version constant is v4 after efficiency fields update."""
-    assert PLAYER_PROFILES_PROMPT_VERSION == "v4"
+def test_prompt_version_constant_is_v6():
+    """Sanity: prompt version is v6 after the availability-model update."""
+    assert PLAYER_PROFILES_PROMPT_VERSION == "v6"
 
 
 # ---------------------------------------------------------------------------

@@ -51,7 +51,7 @@ SKILL_POSITIONS = {"QB", "WR", "RB", "TE"}
 PROFILE_STALENESS_DAYS = 30
 
 # Increment whenever system prompts change to force regeneration of all profiles.
-PLAYER_PROFILES_PROMPT_VERSION = "v4"
+PLAYER_PROFILES_PROMPT_VERSION = "v6"
 
 
 # ---------------------------------------------------------------------------
@@ -156,12 +156,13 @@ def needs_sonnet_reasoning(player: dict) -> bool:
     if player.get("contract_year"):
         return True
 
-    # --- Risk signals ---
-
+    # --- Availability signals ---
+    # Real availability risk or a near-full-season absence makes history
+    # an unreliable predictor → route to Sonnet.
     injury = player.get("injury_profile", {})
-    if injury.get("overall_risk_level") in ("high", "volatile"):
+    if injury.get("availability_risk") == "concern":
         return True
-    if injury.get("pattern_flags"):
+    if injury.get("full_season_absence"):
         return True
 
     # --- Career trajectory ---
@@ -335,7 +336,7 @@ DEPTH CHART POSITION: {depth_chart_order}
 DEPENDENCY FLAGS:
 {dependency_flags}
 
-INJURY RISK: {injury_risk_level}
+AVAILABILITY: {availability_risk}
 
 SCHEDULE:
 Early season (weeks 1-6): {early_schedule}
@@ -432,7 +433,7 @@ def _format_rookie_prompt(player: dict, team_context: dict) -> str:
         qb_tier=team_context.get("qb_tier", "unknown"),
         depth_chart_order=player.get("depth_chart_rank", "unknown"),
         dependency_flags=flags_text,
-        injury_risk_level=injury.get("overall_risk_level", "unknown"),
+        availability_risk=injury.get("availability_risk", "unknown"),
         early_schedule=schedule.get("early_window_grade", "unknown"),
         playoff_schedule=schedule.get("playoff_window_grade", "unknown"),
     )
@@ -499,7 +500,7 @@ You receive:
 - Historical stats (3 seasons of per-game data)
 - Team system context (OC scheme, QB tier, O-line grades, compound_risk_flag)
 - Dependency flags (displaced, beneficiary, committee, etc. with impact reasoning)
-- Injury risk profile (pattern flags, risk level, recovery assessment)
+- Availability profile (games played per season, projected games, availability risk)
 - Schedule grades (early/full/playoff windows)
 - Beat reporter signals (practice reports, depth chart changes)
 
@@ -557,13 +558,37 @@ Rules:
 - A beneficiary flag with departed_team trigger = MORE opportunity → project HIGHER than historical baseline.
 - A displaced flag with active_and_healthy trigger = LESS opportunity → project LOWER.
 - compound_risk_flag on team system = reduce all skill position projections by 10-15%.
-- Injury risk "high" or "volatile" → weight downside more heavily, widen upside-downside gap.
 - upside_ppr = realistic best-case 17-game total; downside_ppr = realistic worst-case.
 - Age curve peaks: QB 26-32, RB 24-26, WR 24-29, TE 26-29.
 - Contract year (contract_year=true) → slight upward trajectory bias.
-- Do NOT invent specific injury events. If the injury data shows "no significant history",
-  say exactly that. Only reference injuries explicitly listed in the provided injury risk profile.
-  Never fabricate torn ACLs, hamstring tears, or other specific injuries not in the data.
+
+AVAILABILITY — authoritative source:
+  You receive an availability dict: games played per season, projected_games,
+  availability_risk, availability_trend, full_season_absence, risk_modifier.
+  Use ONLY this dict for availability. Never use training knowledge of injuries.
+
+  FORBIDDEN — these words must NEVER appear in your output, regardless of what
+  you know: ACL, MCL, hamstring, shoulder, chronic, diagnosis, surgery,
+  condition, torn, fracture. Do not name injuries or body parts. Do not write
+  "injury-prone" or "has battled" unless availability_risk == "concern".
+
+  Apply by availability_risk:
+    "durable" (avg >= 15): one clause max, e.g. "durable, averaged N games".
+      No further availability discussion.
+    "monitor" (avg 13-14): "averaged N games — some missed time, worth
+      monitoring." Do NOT speculate on cause.
+    "concern" (avg < 13): "averaged N games — real availability risk; project
+      ~projected_games games." Do NOT speculate on cause.
+    "unknown" (<2 seasons): "limited history — no availability flag applied."
+
+  full_season_absence == true: "missed nearly a full season — factor into the
+    floor." Do NOT name the injury.
+
+  PROJECTION: project per-game production, then scale to projected_games, then
+  apply risk_modifier to the result. risk_modifier is already computed — apply
+  it directly; do not invent your own discount. A concern player projects LOWER
+  via fewer games × the modifier; widen the downside_ppr gap accordingly.
+
 - Output ONLY valid JSON. No preamble, no explanation, no markdown fences.
 Your entire response must be parseable by json.loads().
 
@@ -1074,15 +1099,31 @@ class PlayerProfilesAgent(BaseAgent):
         return flags_by_player
 
     async def _get_team_injury_profiles(self, team: str) -> dict[str, dict]:
-        """Return {player_name: injury_profile_dict} for all players on team.
+        """Return {player_name: availability_dict} for all players on team.
 
-        One DB query per team — no N+1.
+        Availability is the only injury signal passed to the model —
+        objective games-played data, no diagnoses or Sleeper narrative.
+
+        LEFT JOIN so players with no injury-profile row still receive an
+        availability context ("unknown", no penalty). One query per team.
         """
+        unknown = {
+            "availability_risk": "unknown",
+            "availability_trend": None,
+            "projected_games": None,
+            "avg_games": None,
+            "games_history": [],
+            "full_season_absence": False,
+            "risk_modifier": 0.0,
+        }
         try:
             async with AsyncSessionLocal() as session:
                 result = await session.execute(
-                    select(PlayerInjuryProfile, Player.name)
-                    .join(Player, PlayerInjuryProfile.player_id == Player.id)
+                    select(Player.name, PlayerInjuryProfile)
+                    .outerjoin(
+                        PlayerInjuryProfile,
+                        PlayerInjuryProfile.player_id == Player.id,
+                    )
                     .where(Player.team_abbr == team)
                 )
                 rows = result.all()
@@ -1091,18 +1132,24 @@ class PlayerProfilesAgent(BaseAgent):
             return {}
 
         profiles: dict[str, dict] = {}
-        for ip, name in rows:
+        for name, ip in rows:
+            if ip is None:
+                profiles[name] = dict(unknown)
+                continue
             profiles[name] = {
-                "overall_risk_level": ip.overall_risk_level,
-                "risk_adjusted_value_modifier": float(ip.risk_adjusted_value_modifier or 0),
-                "pattern_flags": ip.pattern_flags or [],
-                "chronic_conditions": ip.chronic_conditions or [],
-                "workload_cliff_flag": ip.workload_cliff_flag,
-                "high_mileage_flag": ip.high_mileage_flag,
-                "post_acl_flag": ip.post_acl_flag,
-                "concussion_count": ip.concussion_count,
-                "recovery_assessment": ip.recovery_assessment,
-                "risk_notes": ip.risk_notes,
+                "availability_risk": ip.availability_risk or "unknown",
+                "availability_trend": ip.availability_trend,
+                "projected_games": ip.projected_games,
+                "avg_games": (
+                    float(ip.avg_games_per_season)
+                    if ip.avg_games_per_season is not None else None
+                ),
+                "games_history": ip.games_played_history or [],
+                "full_season_absence": ip.full_season_absence_flag,
+                "risk_modifier": (
+                    float(ip.availability_risk_modifier)
+                    if ip.availability_risk_modifier is not None else 0.0
+                ),
             }
         return profiles
 
