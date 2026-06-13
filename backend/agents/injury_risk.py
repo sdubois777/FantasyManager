@@ -344,7 +344,7 @@ def build_player_availability(
 
     Uses the shared ID-first resolver (sleeper_id → sportradar_id →
     gsis_id → name+position) so the current season is never silently
-    dropped due to the abbreviated-name format in the 2025 frame.
+    dropped due to the abbreviated-name format in the current-season frame.
     """
     from backend.utils.player_matching import resolve_player_season_stats
 
