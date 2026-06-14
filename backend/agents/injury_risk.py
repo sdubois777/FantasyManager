@@ -262,10 +262,11 @@ def compute_pattern_flags(
 FULL_SEASON_GAMES = 15      # games at/above this count as a "full" season
 MAX_NFL_GAMES = 17          # projection cap
 
-# Availability measures career durability patterns, so it uses a longer
-# window than the 3-year projection baseline — a player with 2 lost
-# seasons in 5 years is a different risk than 2 in 3.
-AVAILABILITY_SEASONS = 5
+# Availability uses the same 3-year window as projection baselines.
+# A 5-year window was tested (June 2026) and rejected: the longer window
+# diluted recent injury signal (Burrow softened concern -> monitor),
+# regressing every backtest metric. See CLAUDE.md backlog.
+AVAILABILITY_SEASONS = 3
 
 # avg_games → (availability_risk, base modifier on projected PPR)
 _DURABLE_MIN_GAMES = 15
@@ -323,13 +324,7 @@ def compute_availability_metrics(games_history: list[dict]) -> dict:
         modifier += _DECLINING_EXTRA_MODIFIER
 
     # Project next season — weight recent seasons more heavily.
-    # Weights sum to 1.0 in each branch.
-    if len(games) >= 5:
-        projected = round(
-            games[-1] * 0.35 + games[-2] * 0.25 + games[-3] * 0.20
-            + games[-4] * 0.12 + games[-5] * 0.08
-        )
-    elif len(games) >= 3:
+    if len(games) >= 3:
         projected = round(games[-1] * 0.5 + games[-2] * 0.3 + games[-3] * 0.2)
     else:
         projected = round(avg_games)

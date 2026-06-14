@@ -14,9 +14,9 @@ from backend.agents.injury_risk import (
 )
 
 
-def test_availability_uses_5_year_window():
-    """Availability uses a longer window than the 3-year projection baseline."""
-    assert AVAILABILITY_SEASONS == 5
+def test_availability_uses_3_year_window():
+    """Availability uses the 3-year window (5-year was tested and rejected)."""
+    assert AVAILABILITY_SEASONS == 3
 
 
 def _history(*games_by_season):
@@ -91,35 +91,23 @@ def test_projected_games_capped_at_17():
     assert out["projected_games"] == 17
 
 
-def test_projected_games_5_season_weights():
-    """5-season projection uses [.35,.25,.20,.12,.08] (sums to 1.0), recency-weighted."""
-    # all 16 → weighted avg is exactly 16
-    out = compute_availability_metrics(
-        _history((2021, 16), (2022, 16), (2023, 16), (2024, 16), (2025, 16))
-    )
-    assert out["projected_games"] == 16
-    # recency matters: a strong recent season pulls the projection up vs the mean
-    out2 = compute_availability_metrics(
-        _history((2021, 8), (2022, 8), (2023, 8), (2024, 8), (2025, 17))
-    )
-    # 17*.35 + 8*.65 = 5.95 + 5.2 = 11.15 -> 11; simple mean would be 9.8 -> 10
-    assert out2["projected_games"] == 11
-
-
-def test_cmc_5year_concern_after_dedup():
-    """CMC [7,17,16,4,17] (avg 12.2) -> concern, the post-dedup expected result."""
-    out = compute_availability_metrics(
-        _history((2021, 7), (2022, 17), (2023, 16), (2024, 4), (2025, 17))
-    )
-    assert out["avg_games_per_season"] == 12.2
+def test_burrow_3year_concern():
+    """Burrow [10,17,8] (avg 11.7) -> concern over the 3-year window."""
+    out = compute_availability_metrics(_history((2023, 10), (2024, 17), (2025, 8)))
     assert out["availability_risk"] == "concern"
 
 
-def test_allen_5year_still_durable():
-    """Allen [17,16,17,16,16] (avg 16.4) -> durable."""
-    out = compute_availability_metrics(
-        _history((2021, 17), (2022, 16), (2023, 17), (2024, 16), (2025, 16))
-    )
+def test_cmc_3year_concern_after_dedup():
+    """CMC [16,4,17] (avg 12.3) -> concern; the dedup fix means no 34-game season."""
+    out = compute_availability_metrics(_history((2023, 16), (2024, 4), (2025, 17)))
+    assert out["avg_games_per_season"] == 12.3
+    assert out["availability_risk"] == "concern"
+
+
+def test_adams_3year_durable_after_dedup():
+    """Adams [17,14,14] (avg 15.0) -> durable; the dedup fix means no 28-game season."""
+    out = compute_availability_metrics(_history((2023, 17), (2024, 14), (2025, 14)))
+    assert all(g["games"] <= 17 for g in out["games_played_history"])
     assert out["availability_risk"] == "durable"
 
 

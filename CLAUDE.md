@@ -445,6 +445,14 @@ Lamar Jackson proj=368 vs actual=213 is the main non-injury QB miss.
 
 ## Known Issues / Backlog
 
+- 5-year availability window tested and rejected (June 2026 backtest). Longer
+  window dilutes recent injury signal — Burrow's concern flag softened to
+  monitor, increasing his miss. 3-year window outperforms on all metrics. Do
+  not revisit unless a recency-weighted hybrid is proposed (e.g. concern
+  requires recent season AND career pattern, not just avg).
+- Prospective validation (true out-of-sample): requires pipeline re-run with
+  season override capped at 2024. Deferred post-August draft. See seasons.py
+  for a FANTASY_SEASON_OVERRIDE design.
 - FULL_SEASON_ABSENCE detection not implemented in injury agent
 - QB projection bias: MAE=77.2, bias=+64.4 — mostly injury-driven misses
 - Pipeline admin freshness thresholds uniform 7d (should be per-agent)
