@@ -92,6 +92,67 @@ class PlayerRepository(BaseRepository[Player]):
         )
         return list(result.scalars().all())
 
+    async def find_by_name_fuzzy(self, name: str) -> Player | None:
+        """Resolve a (possibly inexact) display name to a single Player.
+
+        Draft-room DOM names aren't always canonical ("Sam LaPorta" vs
+        "Samuel LaPorta", "Brian Thomas" vs "Brian Thomas Jr."), so we try
+        progressively looser matches and stop at the first hit:
+          1. exact, case-insensitive
+          2. suffix-normalized equality (reuses roster_changes._norm_name,
+             which strips Jr/Sr/II/III/IV/V and lowercases)
+          3. first-initial + last name (handles Sam vs Samuel)
+          4. ILIKE-contains on the last name, best bid ceiling first
+        Returns None when nothing plausibly matches.
+        """
+        from backend.agents.roster_changes import _norm_name
+
+        raw = (name or "").strip()
+        if not raw:
+            return None
+        normalized = _norm_name(raw)
+
+        # 1. Exact (case-insensitive)
+        result = await self._session.execute(
+            select(Player)
+            .where(func.lower(Player.name) == raw.lower())
+            .order_by(Player.recommended_bid_ceiling.desc().nulls_last())
+            .limit(1)
+        )
+        exact = result.scalar_one_or_none()
+        if exact:
+            return exact
+
+        parts = normalized.split()
+        if not parts:
+            return None
+        first, last = parts[0], parts[-1]
+
+        # Narrow to candidates whose name contains the last name, best
+        # bid ceiling first so the contains-fallback prefers real players.
+        result = await self._session.execute(
+            select(Player)
+            .where(Player.name.ilike(f"%{last}%"))
+            .order_by(Player.recommended_bid_ceiling.desc().nulls_last())
+        )
+        candidates = list(result.scalars().all())
+        if not candidates:
+            return None
+
+        # 2. Suffix-normalized equality
+        for c in candidates:
+            if _norm_name(c.name) == normalized:
+                return c
+
+        # 3. First-initial + last name (Sam LaPorta -> Samuel LaPorta)
+        for c in candidates:
+            cn = _norm_name(c.name).split()
+            if len(cn) >= 2 and cn[-1] == last and cn[0][:1] == first[:1]:
+                return c
+
+        # 4. Best-ceiling contains-match fallback
+        return candidates[0]
+
     async def search_by_name(self, q: str, limit: int = 20) -> list[Player]:
         """Case-insensitive name search, best bid ceilings first."""
         result = await self._session.execute(

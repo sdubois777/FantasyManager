@@ -94,6 +94,17 @@ async def relay_draft_event(
     if not user:
         raise HTTPException(status_code=401, detail="Invalid draft token")
 
+    # Feed the live draft engine when one is running. on_nomination triggers
+    # the Sonnet recommendation and broadcasts it itself; on_pick_confirmed
+    # updates opponent/budget state. Both are no-ops until POST /draft/start.
+    if _engine is not None:
+        if event.type == "nomination":
+            await _trigger_nomination(event)
+        elif event.type == "draft_pick":
+            await _record_pick(event)
+
+    # Always relay the raw event so the UI updates (nomination card, bid,
+    # clock, team budgets, pick log) regardless of engine state.
     await ws_manager.broadcast({
         "type": event.type,
         "payload": event.payload,
@@ -101,6 +112,47 @@ async def relay_draft_event(
         "timestamp": datetime.now(timezone.utc).isoformat(),
     })
     return {"status": "relayed"}
+
+
+async def _resolve_player(player_name: str):
+    """Fuzzy-resolve a draft-room display name to a Player (or None)."""
+    if not player_name:
+        return None
+    from backend.database import AsyncSessionLocal
+    from backend.repositories.player_repo import PlayerRepository
+
+    async with AsyncSessionLocal() as session:
+        return await PlayerRepository(session).find_by_name_fuzzy(player_name)
+
+
+async def _trigger_nomination(event: "DraftEventPayload") -> None:
+    """Resolve the nominated player and run the engine's recommendation.
+
+    The engine looks players up by yahoo_player_id and broadcasts the
+    recommendation itself; an empty id falls back to its unknown-player pass.
+    """
+    player_name = event.payload.get("player_name", "")
+    player = await _resolve_player(player_name)
+    await _engine.on_nomination({
+        "type": "nomination",
+        "player_id": player.yahoo_player_id if player else "",
+        "player_name": player_name,
+    })
+
+
+async def _record_pick(event: "DraftEventPayload") -> None:
+    """Record a confirmed pick into engine state (updates opponent tracking)."""
+    payload = event.payload
+    player_name = payload.get("player_name", "")
+    player = await _resolve_player(player_name)
+    await _engine.on_pick_confirmed({
+        "type": "draft_pick",
+        "player_id": player.yahoo_player_id if player else "",
+        "team_id": payload.get("winner", ""),
+        "final_price": payload.get("final_price", 0) or 0,
+        "player_name": player_name,
+        "position": player.position if player else "",
+    })
 
 
 # ---------------------------------------------------------------------------

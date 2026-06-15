@@ -195,6 +195,175 @@ async def test_draft_event_relays_to_ws_manager():
 
 
 # ---------------------------------------------------------------------------
+# Live draft engine wiring (nomination -> recommendation)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_nomination_triggers_engine():
+    """A nomination event resolves the player and runs the engine."""
+    user = _make_user(draft_token="valid-token")
+    from backend.core.dependencies import get_db
+
+    mock_db = AsyncMock()
+    app.dependency_overrides[get_db] = lambda: mock_db
+
+    fake_player = MagicMock()
+    fake_player.yahoo_player_id = "nfl_123"
+    fake_player.position = "TE"
+    engine = AsyncMock()
+
+    with patch(
+        "backend.repositories.user_repo.UserRepository"
+    ) as MockRepo, patch(
+        "backend.routers.draft.ws_manager"
+    ) as mock_ws, patch(
+        "backend.routers.draft._engine", engine
+    ), patch(
+        "backend.routers.draft._resolve_player",
+        AsyncMock(return_value=fake_player),
+    ):
+        mock_repo = AsyncMock()
+        mock_repo.get_by_draft_token.return_value = user
+        MockRepo.return_value = mock_repo
+        mock_ws.broadcast = AsyncMock()
+
+        try:
+            async with AsyncClient(
+                transport=ASGITransport(app=app),
+                base_url="http://test",
+            ) as ac:
+                resp = await ac.post(
+                    "/draft/event",
+                    json={
+                        "type": "nomination",
+                        "platform": "yahoo",
+                        "payload": {
+                            "player_name": "Sam LaPorta",
+                            "opening_bid": 4,
+                        },
+                    },
+                    headers={"X-Draft-Token": "valid-token"},
+                )
+            assert resp.status_code == 200
+            engine.on_nomination.assert_awaited_once()
+            sent = engine.on_nomination.call_args[0][0]
+            assert sent["player_id"] == "nfl_123"
+            assert sent["player_name"] == "Sam LaPorta"
+            # Raw nomination still relayed to the UI
+            raw = mock_ws.broadcast.call_args[0][0]
+            assert raw["type"] == "nomination"
+        finally:
+            app.dependency_overrides.clear()
+
+
+@pytest.mark.asyncio
+async def test_bid_update_relayed_without_engine_call():
+    """bid_update relays to the UI but never invokes the engine handlers."""
+    user = _make_user(draft_token="valid-token")
+    from backend.core.dependencies import get_db
+
+    mock_db = AsyncMock()
+    app.dependency_overrides[get_db] = lambda: mock_db
+    engine = AsyncMock()
+
+    with patch(
+        "backend.repositories.user_repo.UserRepository"
+    ) as MockRepo, patch(
+        "backend.routers.draft.ws_manager"
+    ) as mock_ws, patch(
+        "backend.routers.draft._engine", engine
+    ):
+        mock_repo = AsyncMock()
+        mock_repo.get_by_draft_token.return_value = user
+        MockRepo.return_value = mock_repo
+        mock_ws.broadcast = AsyncMock()
+
+        try:
+            async with AsyncClient(
+                transport=ASGITransport(app=app),
+                base_url="http://test",
+            ) as ac:
+                resp = await ac.post(
+                    "/draft/event",
+                    json={
+                        "type": "bid_update",
+                        "platform": "yahoo",
+                        "payload": {"player_name": "Sam LaPorta", "current_bid": 6},
+                    },
+                    headers={"X-Draft-Token": "valid-token"},
+                )
+            assert resp.status_code == 200
+            engine.on_nomination.assert_not_awaited()
+            engine.on_pick_confirmed.assert_not_awaited()
+            raw = mock_ws.broadcast.call_args[0][0]
+            assert raw["type"] == "bid_update"
+            assert raw["payload"]["current_bid"] == 6
+        finally:
+            app.dependency_overrides.clear()
+
+
+@pytest.mark.asyncio
+async def test_draft_pick_recorded():
+    """draft_pick records the pick into engine state and relays raw."""
+    user = _make_user(draft_token="valid-token")
+    from backend.core.dependencies import get_db
+
+    mock_db = AsyncMock()
+    app.dependency_overrides[get_db] = lambda: mock_db
+
+    fake_player = MagicMock()
+    fake_player.yahoo_player_id = "nfl_9"
+    fake_player.position = "RB"
+    engine = AsyncMock()
+
+    with patch(
+        "backend.repositories.user_repo.UserRepository"
+    ) as MockRepo, patch(
+        "backend.routers.draft.ws_manager"
+    ) as mock_ws, patch(
+        "backend.routers.draft._engine", engine
+    ), patch(
+        "backend.routers.draft._resolve_player",
+        AsyncMock(return_value=fake_player),
+    ):
+        mock_repo = AsyncMock()
+        mock_repo.get_by_draft_token.return_value = user
+        MockRepo.return_value = mock_repo
+        mock_ws.broadcast = AsyncMock()
+
+        try:
+            async with AsyncClient(
+                transport=ASGITransport(app=app),
+                base_url="http://test",
+            ) as ac:
+                resp = await ac.post(
+                    "/draft/event",
+                    json={
+                        "type": "draft_pick",
+                        "platform": "yahoo",
+                        "payload": {
+                            "player_name": "Bijan Robinson",
+                            "final_price": 20,
+                            "winner": "Stephen",
+                            "teams_snapshot": {},
+                        },
+                    },
+                    headers={"X-Draft-Token": "valid-token"},
+                )
+            assert resp.status_code == 200
+            engine.on_pick_confirmed.assert_awaited_once()
+            sent = engine.on_pick_confirmed.call_args[0][0]
+            assert sent["player_id"] == "nfl_9"
+            assert sent["team_id"] == "Stephen"
+            assert sent["final_price"] == 20
+            raw = mock_ws.broadcast.call_args[0][0]
+            assert raw["type"] == "draft_pick"
+        finally:
+            app.dependency_overrides.clear()
+
+
+# ---------------------------------------------------------------------------
 # Passive sync
 # ---------------------------------------------------------------------------
 
