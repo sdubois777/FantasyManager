@@ -15,10 +15,15 @@ function getWsUrl() {
   return `${protocol}//${window.location.host}${WS_PATH}`
 }
 
+// The engine broadcasts a recommendation over the WS after a nomination, but
+// that push can be missed (Sonnet latency, a reconnect). Poll as a fallback.
+const REC_POLL_DELAYS = [2500, 5000, 8000]
+
 export default function useDraftSocket() {
   const wsRef = useRef(null)
   const reconnectTimer = useRef(null)
   const reconnectDelay = useRef(1000)
+  const recTimers = useRef([])
 
   const setRecommendation = useDraftStore((s) => s.setRecommendation)
   const setNomination = useDraftStore((s) => s.setNomination)
@@ -50,6 +55,37 @@ export default function useDraftSocket() {
     }
     pollLastRecommendation()
 
+    function clearRecTimers() {
+      recTimers.current.forEach(clearTimeout)
+      recTimers.current = []
+    }
+
+    // After a nomination, fetch the engine's recommendation a few times until
+    // it arrives — but stop once we have one, or once the nominee changes.
+    function scheduleRecommendationPolls(playerName) {
+      clearRecTimers()
+      for (const delay of REC_POLL_DELAYS) {
+        const timer = setTimeout(async () => {
+          const st = useDraftStore.getState()
+          if (st.recommendation) return
+          if (st.currentNomination?.playerName !== playerName) return
+          try {
+            const rec = await getRecommendation()
+            if (
+              rec?.type === 'recommendation' &&
+              !useDraftStore.getState().recommendation &&
+              useDraftStore.getState().currentNomination?.playerName === playerName
+            ) {
+              setRecommendation(rec)
+            }
+          } catch {
+            // engine not ready / network — a later poll may succeed
+          }
+        }, delay)
+        recTimers.current.push(timer)
+      }
+    }
+
     function connect() {
       const ws = new WebSocket(getWsUrl())
       wsRef.current = ws
@@ -75,7 +111,10 @@ export default function useDraftSocket() {
               break
             // Extension relay events (nested under data.payload)
             case 'nomination':
+              // setNomination clears the stale recommendation ("Analyzing...");
+              // poll until the engine's fresh recommendation lands.
               setNomination(data.payload)
+              scheduleRecommendationPolls(data.payload?.player_name)
               break
             case 'bid_update':
               updateBid(data.payload)
@@ -121,6 +160,7 @@ export default function useDraftSocket() {
     connect()
 
     return () => {
+      clearRecTimers()
       if (reconnectTimer.current) {
         clearTimeout(reconnectTimer.current)
         reconnectTimer.current = null
