@@ -62,5 +62,5 @@ htmlcov/
 backtest_results_*.csv
 backtest_results_2025.csv
 
-# League import CSVs — user data, never committed
+# League import CSVs - user data, never committed
 data/*.csv
