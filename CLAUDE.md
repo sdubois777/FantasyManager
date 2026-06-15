@@ -5,6 +5,29 @@ Read it fully before writing any code.
 
 ---
 
+## Development Workflow (enforced by CI)
+
+All changes must go through PRs. Direct pushes to `main` and `develop` are
+blocked by a branch-protection ruleset that requires the `backend`, `frontend`,
+and `extension` CI checks to pass (and the branch to be up to date).
+
+```
+git checkout develop
+git pull origin develop
+git checkout -b feature/your-change
+# ... make changes, commit ...
+git push origin feature/your-change
+gh pr create --base develop --fill
+# Wait for CI green, then:
+gh pr merge --squash --delete-branch
+
+# To release develop -> production (main):
+gh pr create --base main --head develop --title "Release"
+gh pr merge --squash
+```
+
+---
+
 ## What This Project Is
 
 Full-season fantasy football management platform powered by AI agents.

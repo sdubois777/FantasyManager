@@ -7,8 +7,9 @@ on:
     branches: [main, develop]
 
 jobs:
+  # Job ids (backend/frontend/extension) are the check-run names reported to
+  # GitHub and referenced by the branch-protection ruleset's required checks.
   backend:
-    name: Backend (pytest)
     runs-on: ubuntu-latest
     # Unit tests mock the database, Anthropic, nfl_data_py and Playwright
     # (see tests/conftest.py) — nothing connects to a real service. So no
@@ -48,7 +49,6 @@ jobs:
         run: uv run pytest tests/unit/ -x -q
 
   frontend:
-    name: Frontend (vitest + build)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6.0.3
@@ -75,7 +75,6 @@ jobs:
           VITE_CLERK_PUBLISHABLE_KEY: pk_test_placeholder
 
   extension:
-    name: Extension (node:test + build)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6.0.3
