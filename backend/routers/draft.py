@@ -30,6 +30,15 @@ from pydantic import BaseModel
 from backend.core.dependencies import get_db
 from backend.websocket.manager import ws_manager
 
+# The Playwright bridge is an optional, legacy server-side control path. The
+# browser extension now drives the draft room, so a missing Playwright install
+# must not break this module — guard the import.
+try:
+    from backend.integrations.yahoo_playwright import YahooPlaywrightBridge
+    PLAYWRIGHT_AVAILABLE = True
+except ImportError:
+    PLAYWRIGHT_AVAILABLE = False
+
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/draft", tags=["draft"])
 
@@ -193,7 +202,12 @@ async def connect_bridge(req: ConnectRequest):
     Must be called before any bid/nominate/pass actions.
     """
     global _bridge
-    from backend.integrations.yahoo_playwright import YahooPlaywrightBridge
+
+    if not PLAYWRIGHT_AVAILABLE:
+        raise HTTPException(
+            status_code=503,
+            detail="Playwright not available — use the DraftMind browser extension",
+        )
 
     if _bridge and getattr(_bridge, "_connected", False):
         return {"status": "already_connected", "url": _bridge._draft_room_url}
@@ -252,11 +266,14 @@ async def pass_nomination():
 @router.post("/start", summary="Initialize draft engine and state manager")
 async def start_draft(req: StartDraftRequest):
     """
-    Create DraftStateManager + LiveDraftEngine.
-    Optionally connect the Playwright bridge if draft_room_url is provided.
-    Registers the engine as an event callback on the bridge.
+    Create DraftStateManager + LiveDraftEngine and mark the engine ready.
+
+    No server-side browser is launched: the DraftMind browser extension drives
+    the Yahoo draft room and relays events via POST /draft/event. The legacy
+    Playwright bridge is intentionally not connected here (Yahoo's CSP blocks
+    it and Chromium need not be installed).
     """
-    global _bridge, _engine, _state
+    global _engine, _state
 
     from backend.database import AsyncSessionLocal as async_session
     from backend.engines.draft_state_manager import DraftStateManager
@@ -265,7 +282,14 @@ async def start_draft(req: StartDraftRequest):
     from backend.engines.live_draft import LiveDraftEngine
 
     if _engine is not None:
-        return {"status": "already_started", "your_team_id": req.your_team_id}
+        return {
+            "status": "ready",
+            "mode": "extension",
+            "message": (
+                "Draft engine already running. Make sure the DraftMind "
+                "extension is active on the Yahoo draft page."
+            ),
+        }
 
     # Load user's league settings if league_id provided
     user_league = None
@@ -310,29 +334,21 @@ async def start_draft(req: StartDraftRequest):
         ws_manager=ws_manager,
     )
 
-    # Connect bridge if URL provided
-    if req.draft_room_url:
-        from backend.integrations.yahoo_playwright import YahooPlaywrightBridge
-
-        _bridge = YahooPlaywrightBridge(ws_manager)
-        _bridge.register_event_callback(_engine.handle_event)
-        try:
-            await _bridge.connect(req.draft_room_url)
-        except RuntimeError as exc:
-            if "Chromium not installed" in str(exc):
-                raise HTTPException(status_code=503, detail=str(exc))
-            logger.error("Bridge connect failed during start: %s", exc)
-            # Engine is still usable without bridge (manual frame injection)
-        except Exception as exc:
-            logger.error("Bridge connect failed during start: %s", exc)
-            # Engine is still usable without bridge (manual frame injection)
-
-    # If bridge already existed (from /draft/connect), register callback
-    elif _bridge is not None:
+    # No Playwright: the browser extension handles the draft room and relays
+    # events via POST /draft/event. If a bridge was connected out-of-band via
+    # POST /draft/connect, keep it wired so its frames still reach the engine.
+    if _bridge is not None:
         _bridge.register_event_callback(_engine.handle_event)
 
-    logger.info("Draft engine started for team %s", req.your_team_id)
-    return {"status": "started", "your_team_id": req.your_team_id}
+    logger.info("Draft engine ready for team %s (extension mode)", req.your_team_id)
+    return {
+        "status": "ready",
+        "mode": "extension",
+        "message": (
+            "Draft engine ready. Make sure the DraftMind extension is "
+            "active on the Yahoo draft page."
+        ),
+    }
 
 
 @router.get("/state", summary="Current draft state snapshot")
