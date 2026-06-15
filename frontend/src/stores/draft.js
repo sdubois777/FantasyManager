@@ -32,6 +32,7 @@ export const useDraftStore = create((set, get) => ({
   // Draft state
   myBudget: 200,
   myRoster: [],
+  myTeamName: null, // your team's display name — used to detect picks you win
   rosterSlotsRemaining: 16,
   spendable: 200,
   positionalCounts: {},
@@ -48,7 +49,7 @@ export const useDraftStore = create((set, get) => ({
   // --- Actions ---
 
   startDraft: async (teamId, draftRoomUrl) => {
-    await apiStartDraft(teamId, draftRoomUrl)
+    const startResp = await apiStartDraft(teamId, draftRoomUrl)
 
     // Load initial state + available players in parallel
     const [state, board] = await Promise.all([
@@ -62,6 +63,9 @@ export const useDraftStore = create((set, get) => ({
 
     set({
       phase: 'live',
+      // Team name used to detect picks you win — prefer the backend echo,
+      // fall back to the id entered at setup.
+      myTeamName: startResp?.team_name || teamId || null,
       myBudget: state.your_remaining_budget,
       myRoster: state.your_roster || [],
       rosterSlotsRemaining: state.roster_slots_remaining,
@@ -70,6 +74,8 @@ export const useDraftStore = create((set, get) => ({
       availablePlayers: players,
     })
   },
+
+  setMyTeamName: (name) => set({ myTeamName: name }),
 
   setRecommendation: (rec) => {
     set({
@@ -137,13 +143,21 @@ export const useDraftStore = create((set, get) => ({
     const state = get()
     const newPicks = [...state.picks, pick]
 
-    // Remove drafted player from available list. Relayed picks from the
-    // extension carry only a name (no id), so match on id OR name.
+    const pickName = (pick.player_name || '').toLowerCase()
+
+    // Find the available entry (for position lookup) before removing it.
+    const fromAvailable = state.availablePlayers.find(
+      (p) => p.name?.toLowerCase() === pickName
+    )
+
+    // Remove ONLY the drafted player from the available list — never clear it.
+    // Relayed picks carry only a name (no id), so match on id OR name
+    // (case-insensitive, since DOM names may differ in case).
     const newAvailable = state.availablePlayers.filter(
       (p) =>
         p.yahoo_player_id !== pick.player_id &&
         p.id !== pick.player_id &&
-        p.name !== pick.player_name
+        p.name?.toLowerCase() !== pickName
     )
 
     // Clear current recommendation + bid + nomination after pick confirmed
@@ -156,18 +170,26 @@ export const useDraftStore = create((set, get) => ({
       ...(pick.teams_snapshot ? { teamsState: pick.teams_snapshot } : {}),
     }
 
-    // If it's our pick, add to roster
-    if (pick.is_yours) {
+    // Did we win this player? The relay carries `winner` (team display name);
+    // the engine path may set `is_yours`. Match winner against our team name.
+    const isYours =
+      pick.is_yours ||
+      (state.myTeamName &&
+        pick.winner &&
+        pick.winner.toLowerCase() === state.myTeamName.toLowerCase())
+
+    if (isYours) {
+      const price = pick.final_price || pick.price || 0
       updates.myRoster = [
         ...state.myRoster,
         {
           player_id: pick.player_id,
           player_name: pick.player_name,
-          position: pick.position,
-          price: pick.final_price || pick.price,
+          position: pick.position || fromAvailable?.position || null,
+          price,
         },
       ]
-      updates.myBudget = state.myBudget - (pick.final_price || pick.price || 0)
+      updates.myBudget = state.myBudget - price
       updates.rosterSlotsRemaining = state.rosterSlotsRemaining - 1
     }
 

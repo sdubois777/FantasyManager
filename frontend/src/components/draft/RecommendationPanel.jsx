@@ -29,11 +29,23 @@ function formatAction(action, ceiling) {
 
 export default function RecommendationPanel() {
   const rec = useDraftStore((s) => s.recommendation)
+  const currentNomination = useDraftStore((s) => s.currentNomination)
   const myBudget = useDraftStore((s) => s.myBudget)
   const spendable = useDraftStore((s) => s.spendable)
   const rosterSlotsRemaining = useDraftStore((s) => s.rosterSlotsRemaining)
 
   if (!rec) {
+    // A nominee is on the block but the engine hasn't returned yet.
+    if (currentNomination?.playerName) {
+      return (
+        <div className="h-full flex items-center justify-center text-slate-500">
+          <div className="text-center">
+            <p className="text-lg text-slate-300">Analyzing...</p>
+            <p className="text-sm mt-1">{currentNomination.playerName}</p>
+          </div>
+        </div>
+      )
+    }
     return (
       <div className="h-full flex items-center justify-center text-slate-500">
         <div className="text-center">

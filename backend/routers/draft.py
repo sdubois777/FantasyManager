@@ -345,6 +345,7 @@ async def start_draft(req: StartDraftRequest):
         return {
             "status": "ready",
             "mode": "extension",
+            "team_name": req.your_team_id,
             "message": (
                 "Draft engine already running. Make sure the DraftMind "
                 "extension is active on the Yahoo draft page."
@@ -363,6 +364,7 @@ async def start_draft(req: StartDraftRequest):
     return {
         "status": "ready",
         "mode": "extension",
+        "team_name": req.your_team_id,
         "message": (
             "Draft engine ready. Make sure the DraftMind extension is "
             "active on the Yahoo draft page."

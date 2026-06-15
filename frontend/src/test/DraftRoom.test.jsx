@@ -35,13 +35,15 @@ vi.mock('../api/draft', () => ({
   getOpponentBudgets: vi.fn().mockResolvedValue({ opponents: {} }),
 }))
 
-// Mock WebSocket
+// Mock WebSocket — captures instances so tests can drive onmessage.
 class MockWebSocket {
+  static instances = []
   constructor() {
     this.onopen = null
     this.onmessage = null
     this.onclose = null
     this.onerror = null
+    MockWebSocket.instances.push(this)
     setTimeout(() => this.onopen?.(), 0)
   }
   close() {}
@@ -61,6 +63,7 @@ function resetStore() {
     teamsState: {},
     myBudget: 200,
     myRoster: [],
+    myTeamName: null,
     rosterSlotsRemaining: 16,
     spendable: 200,
     positionalCounts: {},
@@ -77,6 +80,7 @@ let DraftSetup, RecommendationPanel, MyRoster, AvailablePlayers, OpponentTracker
 
 beforeEach(async () => {
   resetStore()
+  MockWebSocket.instances = []
   // Dynamic imports
   DraftSetup = (await import('../components/draft/DraftSetup')).default
   RecommendationPanel = (await import('../components/draft/RecommendationPanel')).default
@@ -511,6 +515,169 @@ describe('DraftRoom', () => {
         'Jonathan Taylor'
       )
     })
+  })
+
+  it('bid_update updates currentBid in the store', () => {
+    useDraftStore.setState({
+      phase: 'live',
+      currentNomination: {
+        playerName: 'Jonathan Taylor',
+        posTeam: 'IND – RB',
+        currentBid: 1,
+        clock: '0:30',
+        secondsRemaining: 30,
+      },
+    })
+
+    act(() => {
+      useDraftStore.getState().updateBid({
+        player_name: 'Jonathan Taylor',
+        current_bid: 45,
+        clock: '0:15',
+      })
+    })
+
+    const s = useDraftStore.getState()
+    expect(s.currentNomination.currentBid).toBe(45)
+    expect(s.currentNomination.secondsRemaining).toBe(15)
+    expect(s.currentBid.current_bid).toBe(45)
+  })
+
+  it('draft_pick does not clear the available list, only removes the pick', () => {
+    useDraftStore.setState({
+      phase: 'live',
+      availablePlayers: [
+        { id: 'p1', name: 'Jonathan Taylor', position: 'RB', yahoo_player_id: 'y1' },
+        { id: 'p2', name: 'Travis Kelce', position: 'TE', yahoo_player_id: 'y3' },
+      ],
+    })
+
+    act(() => {
+      // Case differs from the stored name — must still match and remove.
+      useDraftStore.getState().recordPick({
+        player_name: 'jonathan taylor',
+        final_price: 52,
+        winner: 'Team 3',
+      })
+    })
+
+    const s = useDraftStore.getState()
+    expect(s.availablePlayers).toHaveLength(1)
+    expect(s.availablePlayers[0].name).toBe('Travis Kelce')
+  })
+
+  it('draft_pick adds to roster when the winner matches your team', () => {
+    useDraftStore.setState({
+      phase: 'live',
+      myTeamName: 'Stephen',
+      myBudget: 200,
+      rosterSlotsRemaining: 16,
+      availablePlayers: [
+        { id: 'p1', name: 'Jonathan Taylor', position: 'RB', yahoo_player_id: 'y1' },
+      ],
+    })
+
+    act(() => {
+      useDraftStore.getState().recordPick({
+        player_name: 'Jonathan Taylor',
+        final_price: 45,
+        winner: 'Stephen',
+      })
+    })
+
+    const s = useDraftStore.getState()
+    expect(s.myRoster).toHaveLength(1)
+    expect(s.myRoster[0].player_name).toBe('Jonathan Taylor')
+    expect(s.myRoster[0].price).toBe(45)
+    expect(s.myRoster[0].position).toBe('RB') // looked up from available
+    expect(s.myBudget).toBe(155)
+    expect(s.rosterSlotsRemaining).toBe(15)
+  })
+
+  it('draft_pick does NOT add to roster when another team wins', () => {
+    useDraftStore.setState({
+      phase: 'live',
+      myTeamName: 'Stephen',
+      myRoster: [],
+      availablePlayers: [
+        { id: 'p1', name: 'Jonathan Taylor', position: 'RB', yahoo_player_id: 'y1' },
+      ],
+    })
+
+    act(() => {
+      useDraftStore.getState().recordPick({
+        player_name: 'Jonathan Taylor',
+        final_price: 45,
+        winner: 'Team 7',
+      })
+    })
+
+    expect(useDraftStore.getState().myRoster).toHaveLength(0)
+  })
+
+  it('a nomination clears the recommendation and polls for a fresh one', async () => {
+    vi.useFakeTimers()
+    try {
+      const { getRecommendation } = await import('../api/draft')
+      const rec = {
+        type: 'recommendation',
+        player_name: 'Sam LaPorta',
+        action: 'buy',
+        bid_ceiling: 18,
+        confidence: 'high',
+        reasoning: 'value',
+        system_value: 15,
+        market_value: 12,
+        active_flags: [],
+        opponent_alerts: [],
+        block_value: 0,
+        budget_allows_block: false,
+      }
+      getRecommendation.mockResolvedValue(rec)
+
+      useDraftStore.setState({ phase: 'live' })
+      render(
+        <MemoryRouter>
+          <DraftRoom />
+        </MemoryRouter>
+      )
+      // Flush mount effects (on-mount poll + ws onopen timer)
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(1)
+      })
+
+      const ws = MockWebSocket.instances.at(-1)
+      expect(ws).toBeTruthy()
+
+      // Fire a nomination over the socket
+      act(() => {
+        ws.onmessage({
+          data: JSON.stringify({
+            type: 'nomination',
+            payload: {
+              player_name: 'Sam LaPorta',
+              pos_team: 'DET – TE',
+              opening_bid: 1,
+              clock: '0:30',
+            },
+          }),
+        })
+      })
+
+      // Recommendation cleared immediately; nominee shown
+      expect(useDraftStore.getState().recommendation).toBeNull()
+      expect(useDraftStore.getState().currentNomination.playerName).toBe('Sam LaPorta')
+
+      // The 2.5s fallback poll fetches and applies the fresh recommendation
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(2600)
+      })
+
+      expect(getRecommendation).toHaveBeenCalled()
+      expect(useDraftStore.getState().recommendation?.player_name).toBe('Sam LaPorta')
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it('opponent tracker shows combo alerts', () => {
