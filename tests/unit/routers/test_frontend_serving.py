@@ -4,9 +4,18 @@ from __future__ import annotations
 import pytest
 from httpx import ASGITransport, AsyncClient
 
-from backend.main import app
+from backend.main import app, FRONTEND_DIST
+
+# These two cases assert the built SPA is served. The backend CI job does not
+# build the frontend (that is the frontend job), so skip them when the artifact
+# is absent rather than asserting against a build that isn't there.
+needs_frontend_build = pytest.mark.skipif(
+    not (FRONTEND_DIST / "index.html").exists(),
+    reason="frontend/dist/index.html not built",
+)
 
 
+@needs_frontend_build
 @pytest.mark.asyncio
 async def test_frontend_served_at_root():
     """GET / returns HTML not JSON when frontend/dist exists."""
@@ -28,6 +37,7 @@ async def test_api_routes_not_intercepted():
         assert data["status"] == "ok"
 
 
+@needs_frontend_build
 @pytest.mark.asyncio
 async def test_unknown_path_serves_frontend():
     """Any unknown non-API path serves index.html for React Router."""
