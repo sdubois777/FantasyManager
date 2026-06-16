@@ -89,6 +89,34 @@ class DraftStateManager:
         self.opponent_budgets: dict[str, int] = {}
         self.your_budget: int = league_config.auction_budget
 
+        # Your most recent bid, captured from the extension's `my_bid` relay
+        # ({player_id, amount}). Used to recover a sale whose winner the DOM
+        # poller couldn't attribute (winner='unknown'). None until you bid.
+        self.last_my_bid: dict | None = None
+
+    def record_my_bid(self, player_id: str, amount: int) -> None:
+        """Remember your latest bid so an unattributed sale can be recovered."""
+        self.last_my_bid = {"player_id": player_id or "", "amount": amount}
+
+    def is_my_winning_bid(self, player_id: str, final_price: int) -> bool:
+        """True if your last recorded bid won this sale.
+
+        The DOM poller attributes a sale by budget/slot delta, which fails when
+        the room's team panel hasn't updated yet (winner='unknown'). In that
+        case, if your last bid matches the final price — and the player id too,
+        when both are known — the player is yours. Matches by price alone only
+        when the sold player's id couldn't be resolved.
+        """
+        bid = self.last_my_bid
+        if not bid:
+            return False
+        if bid.get("amount") != final_price:
+            return False
+        bid_pid = bid.get("player_id") or ""
+        if bid_pid and player_id and bid_pid != player_id:
+            return False
+        return True
+
     def record_pick(self, pick: DraftPick) -> None:
         """Called after every draft_pick event from the bridge."""
         self.picks.append(pick)
