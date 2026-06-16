@@ -5,6 +5,7 @@ import {
   getAvailablePlayers,
   endDraft as apiEndDraft,
 } from '../api/draft'
+import { normalizeName } from '../utils/names'
 
 /** Total seconds remaining from a "M:SS" clock string ("0:19" -> 19). */
 export function parseClockSeconds(clock) {
@@ -184,7 +185,9 @@ export const useDraftStore = create((set, get) => ({
 
   recordPick: (pick) => {
     const state = get()
-    const pickName = (pick.player_name || '').toLowerCase()
+    // Normalized key so punctuation/casing differences between the DOM poller
+    // and the draftboard ("Amon-Ra St. Brown" vs "Amon Ra St Brown") still match.
+    const pickName = normalizeName(pick.player_name)
 
     // DEDUP (time-bounded): a duplicate delivery of the same pick (e.g. a
     // double-mounted socket in dev, or a relay retry) arrives within a moment,
@@ -196,7 +199,7 @@ export const useDraftStore = create((set, get) => ({
       pickName &&
       state.picks.some(
         (p) =>
-          p.player_name?.toLowerCase() === pickName &&
+          normalizeName(p.player_name) === pickName &&
           now - (p.timestamp || 0) < TWO_SECONDS
       )
     ) {
@@ -210,7 +213,7 @@ export const useDraftStore = create((set, get) => ({
       pick.is_yours ||
       (state.myTeamName &&
         pick.winner &&
-        pick.winner.toLowerCase() === state.myTeamName.toLowerCase())
+        normalizeName(pick.winner) === normalizeName(state.myTeamName))
 
     console.debug(
       'DraftMind: recordPick',
@@ -227,7 +230,7 @@ export const useDraftStore = create((set, get) => ({
 
     // Find the available entry (for position lookup) before removing it.
     const fromAvailable = state.availablePlayers.find(
-      (p) => p.name?.toLowerCase() === pickName
+      (p) => normalizeName(p.name) === pickName
     )
 
     // Remove ONLY the drafted player from the available list — never clear it.
@@ -240,7 +243,7 @@ export const useDraftStore = create((set, get) => ({
       const idMatch =
         pick.player_id != null &&
         (p.yahoo_player_id === pick.player_id || p.id === pick.player_id)
-      const nameMatch = pickName !== '' && p.name?.toLowerCase() === pickName
+      const nameMatch = pickName !== '' && normalizeName(p.name) === pickName
       return !(idMatch || nameMatch)
     })
 

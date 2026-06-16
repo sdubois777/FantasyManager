@@ -5,6 +5,7 @@ import { fetchDraftboard } from '../api/draftboard'
 import ErrorBoundary from '../components/ErrorBoundary'
 import DraftSetup from '../components/draft/DraftSetup'
 import RecommendationPanel from '../components/draft/RecommendationPanel'
+import SuggestedTargets from '../components/draft/SuggestedTargets'
 import NominationPanel from '../components/draft/NominationPanel'
 import AvailablePlayers from '../components/draft/AvailablePlayers'
 import TeamRosterPanel from '../components/draft/TeamRosterPanel'
@@ -91,17 +92,22 @@ export default function DraftRoom() {
 
       {/* 3-column layout — fills the viewport, only inner lists scroll */}
       <div className="flex-1 grid grid-cols-[30%_40%_30%] min-h-0">
-        {/* LEFT: Recommendation */}
-        <div className="border-r border-[#2d3148] min-h-0 overflow-hidden">
-          <ErrorBoundary
-            fallback={
-              <div className="h-full flex items-center justify-center p-4 text-red-400 text-sm">
-                Recommendation error
-              </div>
-            }
-          >
-            <RecommendationPanel />
-          </ErrorBoundary>
+        {/* LEFT: compact Recommendation card over Suggested Targets (scrolls) */}
+        <div className="border-r border-[#2d3148] min-h-0 flex flex-col overflow-hidden">
+          <div className="shrink-0 border-b border-[#2d3148]">
+            <ErrorBoundary
+              fallback={
+                <div className="flex items-center justify-center p-4 text-red-400 text-sm">
+                  Recommendation error
+                </div>
+              }
+            >
+              <RecommendationPanel />
+            </ErrorBoundary>
+          </div>
+          <div className="flex-1 min-h-0 overflow-hidden">
+            <SuggestedTargets />
+          </div>
         </div>
 
         {/* CENTER: Nomination (fixed) over Available players (scrolls) */}

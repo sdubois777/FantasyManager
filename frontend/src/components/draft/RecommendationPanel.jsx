@@ -37,20 +37,16 @@ export default function RecommendationPanel() {
     // A nominee is on the block but the engine hasn't returned yet.
     if (currentNomination?.playerName) {
       return (
-        <div className="h-full flex items-center justify-center text-slate-500">
-          <div className="text-center">
-            <p className="text-lg text-slate-300">Analyzing...</p>
-            <p className="text-sm mt-1">{currentNomination.playerName}</p>
-          </div>
+        <div className="p-4 text-slate-500">
+          <p className="text-base text-slate-300">Analyzing...</p>
+          <p className="text-sm mt-0.5">{currentNomination.playerName}</p>
         </div>
       )
     }
     return (
-      <div className="h-full flex items-center justify-center text-slate-500">
-        <div className="text-center">
-          <p className="text-lg">Waiting for nomination...</p>
-          <p className="text-sm mt-1">AI recommendation will appear here</p>
-        </div>
+      <div className="p-4 text-slate-500">
+        <p className="text-base">Waiting for nomination...</p>
+        <p className="text-sm mt-0.5">AI recommendation will appear here</p>
       </div>
     )
   }
@@ -64,85 +60,60 @@ export default function RecommendationPanel() {
     roster_slots_remaining: rosterSlotsRemaining,
   }
 
+  // Compact card — the rest of the left column is the Suggested Targets list.
   return (
-    <div className="h-full flex flex-col p-4 overflow-y-auto">
-      {/* Action header */}
-      <div className={`rounded-lg border p-4 mb-3 ${style.bg} ${style.border}`}>
-        <div className="flex items-center justify-between mb-2">
-          <span className={`text-3xl font-bold ${style.text}`}>
+    <div className="flex flex-col p-3">
+      <div className={`rounded-lg border p-3 ${style.bg} ${style.border}`}>
+        <div className="flex items-center justify-between mb-1.5">
+          <span className={`text-2xl font-bold ${style.text}`}>
             {formatAction(rec.action, rec.bid_ceiling)}
           </span>
           <span className={`text-xs px-2 py-0.5 rounded-full ${confStyle}`}>
             {rec.confidence}
           </span>
         </div>
-        <div className="flex items-center gap-2 mb-2">
+        <div className="flex items-center gap-2 mb-1.5">
           <PositionBadge position={rec.position} />
-          <span className="text-lg font-medium text-slate-200">{rec.player_name}</span>
+          <span className="text-base font-medium text-slate-200 truncate">
+            {rec.player_name}
+          </span>
         </div>
-        {rec.reasoning && (
-          <p className="text-sm text-slate-400">{rec.reasoning}</p>
+        {rec.reasoning && <p className="text-sm text-slate-400">{rec.reasoning}</p>}
+
+        {/* Flags (compact) */}
+        {rec.active_flags?.length > 0 && (
+          <div className="flex flex-wrap gap-1 mt-2">
+            {rec.active_flags.map((f, i) => (
+              <FlagBadge key={i} flagType={f.flag_type} compact />
+            ))}
+          </div>
+        )}
+
+        {/* Opponent alerts (compact, only when present) */}
+        {rec.opponent_alerts?.length > 0 && (
+          <div className="space-y-1 mt-2">
+            {rec.opponent_alerts.map((alert, i) => (
+              <div
+                key={i}
+                className="text-xs text-amber-400 bg-amber-500/10 border border-amber-500/20 rounded px-2 py-1"
+              >
+                {alert}
+              </div>
+            ))}
+          </div>
         )}
       </div>
 
-      {/* Values */}
-      <div className="grid grid-cols-3 gap-2 mb-3 text-center">
-        <div className="bg-[#1c1f2e] rounded-lg p-2">
-          <div className="text-xs text-slate-500">Ceiling</div>
-          <div className="text-lg font-mono text-blue-400">${rec.bid_ceiling}</div>
-        </div>
-        <div className="bg-[#1c1f2e] rounded-lg p-2">
-          <div className="text-xs text-slate-500">System</div>
-          <div className="text-sm font-mono text-slate-300">${rec.system_value}</div>
-        </div>
-        <div className="bg-[#1c1f2e] rounded-lg p-2">
-          <div className="text-xs text-slate-500">Market</div>
-          <div className="text-sm font-mono text-slate-300">${rec.market_value}</div>
-        </div>
+      {/* Values + budget — single compact lines */}
+      <div className="flex gap-3 text-xs text-slate-500 mt-2 font-mono">
+        <span>Ceil <span className="text-blue-400">${rec.bid_ceiling}</span></span>
+        <span>Sys <span className="text-slate-300">${rec.system_value}</span></span>
+        <span>Mkt <span className="text-slate-300">${rec.market_value}</span></span>
       </div>
-
-      {/* Flags */}
-      {rec.active_flags?.length > 0 && (
-        <div className="flex flex-wrap gap-1 mb-3">
-          {rec.active_flags.map((f, i) => (
-            <FlagBadge key={i} flagType={f.flag_type} compact />
-          ))}
-        </div>
-      )}
-
-      {/* Block value */}
-      {rec.block_value > 0 && (
-        <div className="text-xs text-red-400 bg-red-500/10 border border-red-500/20 rounded px-2 py-1 mb-3">
-          Block value: ${rec.block_value.toFixed(0)}
-          {rec.budget_allows_block ? ' — budget allows block' : ' — budget insufficient'}
-        </div>
-      )}
-
-      {/* Opponent alerts */}
-      {rec.opponent_alerts?.length > 0 && (
-        <div className="space-y-1 mb-3">
-          {rec.opponent_alerts.map((alert, i) => (
-            <div
-              key={i}
-              className="text-xs text-amber-400 bg-amber-500/10 border border-amber-500/20 rounded px-2 py-1"
-            >
-              {alert}
-            </div>
-          ))}
-        </div>
-      )}
-
-      {/* Budget summary */}
-      <div className="flex gap-3 text-xs text-slate-500 mb-3">
-        <span>Budget: <span className="text-slate-300 font-mono">${budget.your_remaining}</span></span>
-        <span>Spendable: <span className="text-slate-300 font-mono">${budget.spendable_on_this_player}</span></span>
-        <span>Slots: <span className="text-slate-300 font-mono">{budget.roster_slots_remaining}</span></span>
+      <div className="flex gap-3 text-xs text-slate-500 mt-1">
+        <span>Budget <span className="text-slate-300 font-mono">${budget.your_remaining}</span></span>
+        <span>Spendable <span className="text-slate-300 font-mono">${budget.spendable_on_this_player}</span></span>
       </div>
-
-      {/* Elapsed */}
-      {rec.elapsed_ms != null && (
-        <div className="text-[10px] text-slate-600">{rec.elapsed_ms}ms</div>
-      )}
     </div>
   )
 }
