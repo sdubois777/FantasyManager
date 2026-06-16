@@ -222,14 +222,18 @@ export const useDraftStore = create((set, get) => ({
     )
 
     // Remove ONLY the drafted player from the available list — never clear it.
-    // Relayed picks carry only a name (no id), so match on id OR name
-    // (case-insensitive, since DOM names may differ in case).
-    const newAvailable = state.availablePlayers.filter(
-      (p) =>
-        p.yahoo_player_id !== pick.player_id &&
-        p.id !== pick.player_id &&
-        p.name?.toLowerCase() !== pickName
-    )
+    // Keep every player UNLESS it matches the sold pick by a real id or by name.
+    // Note: relayed picks carry no player_id, and draftboard players have no
+    // yahoo_player_id — so the id checks must be guarded, otherwise
+    // `undefined !== undefined` would (wrongly) treat every player as a match
+    // and wipe the whole list on the first sale.
+    const newAvailable = state.availablePlayers.filter((p) => {
+      const idMatch =
+        pick.player_id != null &&
+        (p.yahoo_player_id === pick.player_id || p.id === pick.player_id)
+      const nameMatch = pickName !== '' && p.name?.toLowerCase() === pickName
+      return !(idMatch || nameMatch)
+    })
 
     // Clear current recommendation + bid + nomination after pick confirmed
     const updates = {
