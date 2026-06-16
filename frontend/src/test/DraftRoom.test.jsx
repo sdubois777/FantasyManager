@@ -1232,4 +1232,150 @@ describe('DraftRoom', () => {
     expect(screen.getByLabelText('Select team').value).toBe('Stephen')
     expect(screen.getByText('CMC')).toBeInTheDocument()
   })
+
+  // --- v2: name normalization, position tracking, unified slots, ws resync ---
+
+  it('recordPick removes Amon-Ra by normalized name', () => {
+    // Draftboard stores the hyphenated name; the relay sends the spaced DOM name.
+    useDraftStore.setState({
+      phase: 'live',
+      availablePlayers: [
+        { id: 'p1', name: 'Amon-Ra St. Brown', position: 'WR', ai_bid_ceiling: 45 },
+        { id: 'p2', name: 'CeeDee Lamb', position: 'WR', ai_bid_ceiling: 58 },
+      ],
+    })
+
+    act(() => {
+      useDraftStore.getState().recordPick({
+        player_name: 'Amon Ra St. Brown', // spaced, no hyphen/punctuation match
+        final_price: 40,
+        winner: 'Team 3',
+      })
+    })
+
+    const remaining = useDraftStore.getState().availablePlayers.map((p) => p.name)
+    expect(remaining).toEqual(['CeeDee Lamb']) // Amon-Ra removed despite spelling diff
+  })
+
+  it('isYours normalizes both sides', () => {
+    useDraftStore.setState({
+      phase: 'live',
+      myTeamName: 'Stephen',
+      availablePlayers: [{ id: 'p1', name: 'CMC', position: 'RB', ai_bid_ceiling: 70 }],
+      myRoster: [],
+    })
+
+    act(() => {
+      useDraftStore.getState().recordPick({
+        player_name: 'CMC',
+        final_price: 50,
+        winner: '  stephen ', // trailing space + lowercase vs 'Stephen'
+      })
+    })
+
+    // Normalized comparison still recognizes the pick as ours.
+    expect(useDraftStore.getState().myRoster.map((p) => p.player_name)).toContain('CMC')
+  })
+
+  it('teamPicks stores position from available', () => {
+    useDraftStore.setState({
+      phase: 'live',
+      availablePlayers: [{ id: 'p1', name: 'Bijan Robinson', position: 'RB', ai_bid_ceiling: 60 }],
+    })
+
+    act(() => {
+      // The relay carries no position — it must come from the available lookup.
+      useDraftStore.getState().recordPick({
+        player_name: 'Bijan Robinson',
+        final_price: 55,
+        winner: 'Team 3',
+      })
+    })
+
+    expect(useDraftStore.getState().teamPicks['Team 3'][0].position).toBe('RB')
+  })
+
+  it('assignToSlot used for opponent rosters', () => {
+    useDraftStore.setState({
+      phase: 'live',
+      myTeamName: 'Stephen',
+      selectedTeam: 'Team 3',
+      teamsState: { 'Team 3': { budget: 100 } },
+      teamPicks: {
+        'Team 3': [{ player_name: 'Bijan Robinson', price: 55, position: 'RB', ceiling: 60 }],
+      },
+    })
+
+    render(
+      <MemoryRouter>
+        <TeamRosterPanel />
+      </MemoryRouter>
+    )
+
+    // The slot grid renders FLEX/BN/Empty labels the old flat opponent list never did.
+    expect(screen.getByText('Bijan Robinson')).toBeInTheDocument()
+    expect(screen.getAllByText('FLEX').length).toBeGreaterThanOrEqual(1)
+    expect(screen.getAllByText('Empty').length).toBeGreaterThanOrEqual(1)
+  })
+
+  it('opponent null position goes to BN', () => {
+    useDraftStore.setState({
+      phase: 'live',
+      myTeamName: 'Stephen',
+      selectedTeam: 'Team 3',
+      teamsState: { 'Team 3': { budget: 100 } },
+      teamPicks: {
+        'Team 3': [{ player_name: 'Ghost Player', price: 5, position: null, ceiling: null }],
+      },
+    })
+
+    render(
+      <MemoryRouter>
+        <TeamRosterPanel />
+      </MemoryRouter>
+    )
+
+    // A null-position pick falls through to the bench slot.
+    const row = screen.getByText('Ghost Player').closest('div')
+    expect(row.textContent).toContain('BN')
+  })
+
+  it('ws reconnect resyncs recommendation', async () => {
+    const draftApi = await import('../api/draft')
+    draftApi.getRecommendation.mockResolvedValue({
+      type: 'recommendation',
+      action: 'buy',
+      player_name: 'Puka Nacua',
+      bid_ceiling: 50,
+      system_value: 40,
+      market_value: 45,
+      confidence: 'high',
+      reasoning: 'Tier 1 WR',
+    })
+
+    useDraftStore.setState({ phase: 'live' })
+    render(
+      <MemoryRouter>
+        <DraftRoom />
+      </MemoryRouter>
+    )
+
+    // Initial connect + onopen resync pulls the recommendation.
+    await waitFor(() =>
+      expect(useDraftStore.getState().recommendation?.player_name).toBe('Puka Nacua')
+    )
+
+    // Simulate a focus-loss reconnect: clear state, re-fire onopen.
+    act(() => useDraftStore.setState({ recommendation: null }))
+    const ws = MockWebSocket.instances[MockWebSocket.instances.length - 1]
+    await act(async () => {
+      ws.onopen()
+    })
+
+    await waitFor(() =>
+      expect(useDraftStore.getState().recommendation?.player_name).toBe('Puka Nacua')
+    )
+
+    draftApi.getRecommendation.mockResolvedValue(null) // restore module default
+  })
 })

@@ -7,9 +7,11 @@ import { POSITION_SLOTS, assignToSlot } from './MyRoster'
 // the prices actually paid.
 export const THREAT_THRESHOLD = 150
 
-// My-team view: position slots with FLEX/BN overflow, reusing MyRoster's
-// tested assignment logic.
-function MyRosterSlots({ roster }) {
+// Position slot grid with FLEX/BN overflow, reusing MyRoster's tested
+// assignment logic. Used identically for your team AND opponents — every pick
+// (yours via myRoster, opponents' via teamPicks) carries position/player_name/
+// price, and a null position falls through to the bench.
+function RosterSlotGrid({ roster }) {
   const grouped = {}
   for (const pick of roster) {
     assignToSlot(pick, grouped, POSITION_SLOTS)
@@ -134,22 +136,12 @@ export default function TeamRosterPanel() {
         </div>
       </div>
 
-      {/* Roster list */}
+      {/* Roster slot grid — identical for your team and opponents */}
       <div className="flex-1 overflow-y-auto p-2">
         {roster.length === 0 ? (
           <div className="text-slate-500 text-sm p-3 text-center">No picks yet</div>
-        ) : isMyTeam ? (
-          <MyRosterSlots roster={myRoster} />
         ) : (
-          roster.map((pick, i) => (
-            <div
-              key={i}
-              className="flex justify-between items-center py-1.5 px-2 text-sm border-b border-[#1c1f2e]"
-            >
-              <span className="text-white truncate">{pick.player_name}</span>
-              <span className="text-slate-400 font-mono">${pick.price}</span>
-            </div>
-          ))
+          <RosterSlotGrid roster={roster} />
         )}
       </div>
     </div>
