@@ -93,6 +93,14 @@ export default function useDraftSocket() {
       ws.onopen = () => {
         setWsStatus('connected')
         reconnectDelay.current = 1000
+        // Chrome suspends WebSockets when the tab/window loses focus, so a
+        // reconnect may have missed events. Resync the latest recommendation
+        // from the backend (no-op if the engine has nothing).
+        getRecommendation()
+          .then((rec) => {
+            if (rec?.type === 'recommendation') setRecommendation(rec)
+          })
+          .catch(() => {})
       }
 
       ws.onmessage = (event) => {
