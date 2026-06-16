@@ -1074,6 +1074,33 @@ describe('DraftRoom', () => {
     expect(useDraftStore.getState().availablePlayers).toHaveLength(2) // pick: -1
   })
 
+  it('a sold pick (relay shape: name only) removes ONLY that player, not the list', () => {
+    // Real draftboard players have `id` + `name` but NO yahoo_player_id, and the
+    // relayed draft_pick has NO player_id. The filter must not wipe the list.
+    useDraftStore.setState({
+      phase: 'live',
+      myTeamName: null,
+      picks: [],
+      availablePlayers: [
+        { id: 'a1b2', name: 'Josh Allen', position: 'QB' },
+        { id: 'c3d4', name: 'Bijan Robinson', position: 'RB' },
+        { id: 'e5f6', name: 'CeeDee Lamb', position: 'WR' },
+      ],
+    })
+
+    act(() => {
+      useDraftStore.getState().recordPick({
+        player_name: 'Josh Allen', // no player_id, as the relay sends
+        final_price: 40,
+        winner: 'Team 3',
+      })
+    })
+
+    const remaining = useDraftStore.getState().availablePlayers.map((p) => p.name)
+    expect(remaining).toHaveLength(2) // NOT wiped to 0
+    expect(remaining).toEqual(['Bijan Robinson', 'CeeDee Lamb'])
+  })
+
   it('opponent tracker shows combo alerts', () => {
     useDraftStore.setState({
       phase: 'live',
