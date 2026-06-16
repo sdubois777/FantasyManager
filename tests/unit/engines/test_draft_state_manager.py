@@ -214,3 +214,52 @@ def test_config_from_user_league_null_fields_use_defaults():
 
     assert config.auction_budget == 200  # None draft_type defaults to auction
     assert config.team_count == 12
+
+
+# ---------------------------------------------------------------------------
+# my_bid tracking — recover an unattributed win (winner='unknown')
+# ---------------------------------------------------------------------------
+
+def test_record_my_bid_stores_player_and_amount():
+    state = _make_state()
+    state.record_my_bid("nfl.p.100", 42)
+    assert state.last_my_bid == {"player_id": "nfl.p.100", "amount": 42}
+
+
+def test_winner_unknown_fallback_via_my_bid_match():
+    """A sale at your last bid price + matching player id is recognized as yours."""
+    state = _make_state()
+    state.record_my_bid("nfl.p.100", 42)
+
+    # Same player, same price -> yours.
+    assert state.is_my_winning_bid("nfl.p.100", 42) is True
+
+
+def test_my_bid_match_falls_back_to_price_when_id_unknown():
+    """When the sold player's id couldn't be resolved, price alone decides."""
+    state = _make_state()
+    state.record_my_bid("nfl.p.100", 42)
+
+    assert state.is_my_winning_bid("", 42) is True
+
+
+def test_my_bid_no_match_on_price_mismatch():
+    """A different final price means someone outbid you — not yours."""
+    state = _make_state()
+    state.record_my_bid("nfl.p.100", 42)
+
+    assert state.is_my_winning_bid("nfl.p.100", 50) is False
+
+
+def test_my_bid_no_match_on_different_player():
+    """Right price but a different known player id is not your win."""
+    state = _make_state()
+    state.record_my_bid("nfl.p.100", 42)
+
+    assert state.is_my_winning_bid("nfl.p.999", 42) is False
+
+
+def test_my_bid_no_match_when_never_bid():
+    """No recorded bid -> never your win."""
+    state = _make_state()
+    assert state.is_my_winning_bid("nfl.p.100", 42) is False

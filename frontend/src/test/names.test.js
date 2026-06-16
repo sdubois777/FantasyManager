@@ -29,4 +29,38 @@ describe('normalizeName', () => {
     expect(normalizeName(null)).toBe('')
     expect(normalizeName(undefined)).toBe('')
   })
+
+  // --- generational suffixes (BUG 4) ---
+
+  it('strips Jr suffix', () => {
+    expect(normalizeName('Michael Pittman Jr.')).toBe('michael pittman')
+    expect(normalizeName('Michael Pittman Jr')).toBe('michael pittman')
+  })
+
+  it('strips Sr suffix', () => {
+    expect(normalizeName('Garrett Wilson Sr.')).toBe('garrett wilson')
+  })
+
+  it('strips III suffix', () => {
+    expect(normalizeName('Kenneth Walker III')).toBe('kenneth walker')
+  })
+
+  it('strips IV suffix', () => {
+    expect(normalizeName('Some Player IV')).toBe('some player')
+  })
+
+  it('James Cook III -> james cook', () => {
+    expect(normalizeName('James Cook III')).toBe('james cook')
+    // The DOM may drop the suffix entirely — both must collapse to the same key.
+    expect(normalizeName('James Cook III')).toBe(normalizeName('James Cook'))
+  })
+
+  it('Travis Etienne Jr -> travis etienne', () => {
+    expect(normalizeName('Travis Etienne Jr.')).toBe('travis etienne')
+    expect(normalizeName('Travis Etienne Jr.')).toBe(normalizeName('Travis Etienne'))
+  })
+
+  it("strips apostrophe in Le'Veon Bell", () => {
+    expect(normalizeName("Le'Veon Bell")).toBe('leveon bell')
+  })
 })
