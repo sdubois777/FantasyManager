@@ -1378,4 +1378,39 @@ describe('DraftRoom', () => {
 
     draftApi.getRecommendation.mockResolvedValue(null) // restore module default
   })
+
+  it('rosterSlotsRemaining only decrements on isYours', () => {
+    useDraftStore.setState({
+      phase: 'live',
+      myTeamName: 'Stephen',
+      rosterSlotsRemaining: 16,
+      myRoster: [],
+      availablePlayers: [
+        { id: 'p1', name: 'Bijan Robinson', position: 'RB', ai_bid_ceiling: 60 },
+        { id: 'p2', name: 'CeeDee Lamb', position: 'WR', ai_bid_ceiling: 58 },
+      ],
+    })
+
+    // An opponent's pick must NOT touch your slot count.
+    act(() => {
+      useDraftStore.getState().recordPick({
+        player_name: 'Bijan Robinson',
+        final_price: 55,
+        winner: 'Team 3',
+      })
+    })
+    expect(useDraftStore.getState().rosterSlotsRemaining).toBe(16) // unchanged
+
+    // Your pick decrements by exactly one.
+    act(() => {
+      useDraftStore.getState().recordPick({
+        player_name: 'CeeDee Lamb',
+        final_price: 40,
+        winner: 'Stephen',
+      })
+    })
+    const s = useDraftStore.getState()
+    expect(s.rosterSlotsRemaining).toBe(15) // exactly one decrement
+    expect(s.myRoster).toHaveLength(1)
+  })
 })

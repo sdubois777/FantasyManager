@@ -118,6 +118,13 @@ async def relay_draft_event(
         await _trigger_nomination(event)
     elif event.type == "draft_pick" and _engine is not None:
         await _record_pick(event)
+    elif event.type == "my_bid" and _state is not None:
+        # Remember your own bid so a later sale whose winner the DOM poller
+        # couldn't attribute ('unknown') can still be recovered as yours.
+        _state.record_my_bid(
+            event.payload.get("yahoo_player_id", ""),
+            event.payload.get("amount"),
+        )
 
     # Always relay the raw event so the UI updates (nomination card, bid,
     # clock, team budgets, pick log) regardless of engine state.
@@ -157,15 +164,35 @@ async def _trigger_nomination(event: "DraftEventPayload") -> None:
 
 
 async def _record_pick(event: "DraftEventPayload") -> None:
-    """Record a confirmed pick into engine state (updates opponent tracking)."""
+    """Record a confirmed pick into engine state (updates opponent tracking).
+
+    Recovers an unattributed win: when the DOM poller couldn't determine the
+    winner ('unknown') but your last relayed bid matches this sale, attribute it
+    to you — both in the engine (team_id -> your_team_id, so your budget/roster
+    update) and in the payload (is_yours/winner), which is broadcast to the UI.
+    """
     payload = event.payload
     player_name = payload.get("player_name", "")
     player = await _resolve_player(player_name)
+    player_id = player.yahoo_player_id if player else ""
+    winner = payload.get("winner", "")
+    final_price = payload.get("final_price", 0) or 0
+
+    if (
+        winner == "unknown"
+        and _state is not None
+        and _state.is_my_winning_bid(player_id, final_price)
+    ):
+        winner = _state.your_team_id or winner
+        payload["winner"] = winner
+        payload["is_yours"] = True
+        _state.last_my_bid = None  # consume so it can't attribute a second sale
+
     await _engine.on_pick_confirmed({
         "type": "draft_pick",
-        "player_id": player.yahoo_player_id if player else "",
-        "team_id": payload.get("winner", ""),
-        "final_price": payload.get("final_price", 0) or 0,
+        "player_id": player_id,
+        "team_id": winner,
+        "final_price": final_price,
         "player_name": player_name,
         "position": player.position if player else "",
     })
