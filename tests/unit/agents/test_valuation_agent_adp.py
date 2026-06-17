@@ -74,3 +74,19 @@ def test_prompt_lists_adp_ai_before_bid_ceiling():
     # adp_ai must come early in the JSON schema so a truncated response still
     # includes it (it was last before, and Sonnet dropped it).
     assert SYSTEM_PROMPT.index('"adp_ai"') < SYSTEM_PROMPT.index('"ai_bid_ceiling"')
+
+
+def test_clamp_adp_qb_caps_at_170():
+    # Streaming QBs cap at 170 so they still get drafted, not skipped.
+    assert clamp_adp(250, "QB") == 170
+
+
+def test_prompt_has_qb_tier_differentiation():
+    # The model was clustering all QBs at ~38; the prompt must spread them by
+    # tier and tell it to wait on QB.
+    assert "QB ADP guidance" in SYSTEM_PROMPT
+    assert "picks 25-40" in SYSTEM_PROMPT  # elite
+    assert "picks 45-80" in SYSTEM_PROMPT  # strong
+    assert "picks 85-130" in SYSTEM_PROMPT  # standard starter
+    assert "Wait on QB" in SYSTEM_PROMPT
+    assert "NEVER cluster" in SYSTEM_PROMPT
