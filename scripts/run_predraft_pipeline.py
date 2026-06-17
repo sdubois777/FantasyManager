@@ -353,6 +353,16 @@ async def main() -> None:
         print("[sync_rosters] WARNING — sync failed, continuing with seed data.")
     print()
 
+    # Sync FantasyPros ADP (snake-draft support) — populates adp_fantasypros
+    # before the agent phases. Independent of the agents; a failure is non-fatal.
+    print("[sync_adp] Syncing ADP from FantasyPros...")
+    adp_result = subprocess.run(
+        [sys.executable, "scripts/sync_adp.py"],
+    )
+    if adp_result.returncode != 0:
+        print("[sync_adp] WARNING — ADP sync failed, continuing without ADP.")
+    print()
+
     # Build warehouse once — all agents read from this shared data store
     from backend.integrations.nfl_data import NflDataWarehouse, populate_gsis_from_depth_charts
     print("[warehouse] Building NflDataWarehouse (one-time data load)...")
