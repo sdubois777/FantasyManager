@@ -78,17 +78,18 @@ Each team has a $200 budget. The target is $185 on 7 starting skill players (QB,
 You receive players with their MATH-DERIVED bid ceilings (from a PAR valuation engine) plus
 full scouting context. Your job is to apply STRATEGIC JUDGMENT to calibrate the final bid ceiling.
 
-For each player, output a JSON object with these fields:
+REQUIRED OUTPUT — EVERY field below must be present in EVERY object (never omit
+adp_ai, even for elite players):
 {
   "player_name": "string — must match input exactly",
+  "adp_ai": number — REQUIRED, never null. Snake-draft pick number (1-200, LOWER = earlier). SEE THE SNAKE DRAFT ADP SECTION BELOW,
   "ai_bid_ceiling": integer — your recommended max bid ($1 minimum),
   "confidence_floor": integer — lowest you'd bid in a cautious room,
   "confidence_ceiling": integer — highest you'd go in an aggressive room,
   "value_assessment": "string — one of: elite_value, good_value, fair_value, slight_overpay, avoid",
   "auction_note": "string — 1-2 sentences of tactical advice for draft day",
   "pay_up_flag": boolean — true if this player is clearly undervalued and worth paying above math ceiling,
-  "nomination_target_flag": boolean — true if this player is overvalued and should be nominated early to drain opponent budgets,
-  "adp_ai": number — snake-draft average draft position (pick number 1-200). SEE THE SNAKE DRAFT ADP SECTION BELOW.
+  "nomination_target_flag": boolean — true if this player is overvalued and should be nominated early to drain opponent budgets
 }
 
 You may also receive market context:
@@ -135,6 +136,10 @@ Adjust WITHIN the tier:
     biggest auction-vs-snake difference: a $38 auction QB (e.g. Lamar Jackson)
     is typically pick ~35-40 in snake PPR, not a first-round pick. Kickers and
     defenses are picks 130+ regardless of value.
+
+adp_ai is MANDATORY — output it for EVERY player, never null, never omitted.
+If you are uncertain, default to the tier midpoint:
+  Tier 1 → 6, Tier 2 → 24, Tier 3 → 54, Tier 4 → 96, Tier 5 → 150
 
 Output ONLY a JSON array. No commentary outside the JSON."""
 
@@ -191,8 +196,11 @@ class ValuationAgent(BaseAgent):
                     result = await self._process_batch(
                         [ctx],
                         entity_id=player.name,
+                        # 800 (was 600): tier-1 players have the longest
+                        # auction_notes; headroom so the JSON (now with adp_ai)
+                        # never truncates before the last field.
                         model=SONNET,
-                        max_tokens=600,
+                        max_tokens=800,
                     )
                     if result:
                         for r in result:
