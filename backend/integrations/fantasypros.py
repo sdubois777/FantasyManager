@@ -14,10 +14,21 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from decimal import Decimal, InvalidOperation
 from typing import Optional
 
 logger = logging.getLogger(__name__)
+
+
+def _position_from_pos_rank(pos_rank: str) -> str:
+    """Extract the bare position from FantasyPros' "POS" cell.
+
+    The ADP table's POS column is a positional rank like "RB1", "WR12",
+    "DST3" — take the leading letters: "RB1" -> "RB".
+    """
+    m = re.match(r"[A-Za-z]+", (pos_rank or "").strip())
+    return m.group(0).upper() if m else ""
 
 FP_BASE = "https://www.fantasypros.com/nfl"
 
@@ -223,31 +234,44 @@ async def get_adp(
 
             for row in rows:
                 cells = await row.query_selector_all("td")
-                if len(cells) < 5:
+                # FantasyPros' 2026 ADP layout has 4 columns:
+                #   RANK | "Player Team (Bye)" | POS | AVG
+                # (the old per-column team/bye/best/worst layout is gone).
+                if len(cells) < 4:
                     continue
 
                 rank_raw = (await cells[0].inner_text()).strip()
 
+                # Player cell combines name + team + bye:
+                #   <a class="player-name" fp-player-name="Name">Name</a>
+                #   <small>TEAM</small> <small>(BYE)</small>
                 player_cell = cells[1]
                 name_el = await player_cell.query_selector("a")
-                name = (await name_el.inner_text()).strip() if name_el else (await player_cell.inner_text()).strip()
+                name = ""
+                if name_el:
+                    name = (await name_el.get_attribute("fp-player-name")) or (
+                        await name_el.inner_text()
+                    )
+                if not name:
+                    name = await player_cell.inner_text()
+                name = name.strip()
 
-                team     = (await cells[2].inner_text()).strip() if len(cells) > 2 else ""
-                position = (await cells[3].inner_text()).strip() if len(cells) > 3 else ""
-                bye_raw  = (await cells[4].inner_text()).strip() if len(cells) > 4 else ""
-                adp_raw  = (await cells[5].inner_text()).strip() if len(cells) > 5 else ""
-                best_raw = (await cells[7].inner_text()).strip() if len(cells) > 7 else ""
-                worst_raw = (await cells[8].inner_text()).strip() if len(cells) > 8 else ""
+                smalls = await player_cell.query_selector_all("small")
+                team = (await smalls[0].inner_text()).strip() if smalls else ""
+                bye_raw = (await smalls[1].inner_text()).strip() if len(smalls) > 1 else ""
+
+                position = _position_from_pos_rank((await cells[2].inner_text()).strip())
+                adp_raw = (await cells[3].inner_text()).strip()
 
                 players.append({
                     "rank":           _clean_float(rank_raw),
                     "name":           name,
                     "team":           team,
                     "position":       position,
-                    "bye":            _clean_float(bye_raw),
+                    "bye":            _clean_float(bye_raw.strip("()")),
                     "adp":            _clean_float(adp_raw),
-                    "best":           _clean_float(best_raw),
-                    "worst":          _clean_float(worst_raw),
+                    "best":           None,  # best/worst columns removed by FP
+                    "worst":          None,
                     "scoring_format": scoring_format,
                 })
 
