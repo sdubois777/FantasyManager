@@ -38,6 +38,37 @@ logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
+# Snake-ADP clamps (pick numbers, 1-200; LOWER = earlier = more valuable —
+# the OPPOSITE of the dollar bid-ceiling maxes). QB/K/DEF floor late because
+# they go far later in snake than their auction dollars imply (e.g. Lamar
+# Jackson ~$38 auction but pick ~35-40 in snake PPR).
+ADP_POSITION_RANGES: dict[str, tuple[int, int]] = {
+    "RB":  (1,   100),
+    "WR":  (1,   120),
+    "QB":  (50,  180),   # QBs go late in snake
+    "TE":  (10,  150),
+    "K":   (140, 200),   # kickers always last
+    "DEF": (130, 200),   # defenses always last
+}
+
+# Scoring format the valuation agent values for. Its prompt is PPR (see below),
+# so adp_ai / adp_scoring are stamped "ppr" — kept consistent with sync_adp's
+# default so the adp_scoring column means the same thing whichever step wrote it.
+# Becomes configurable when half-PPR support lands (Stage 30).
+VALUATION_SCORING = "ppr"
+
+
+def clamp_adp(adp_ai, position: str | None) -> float | None:
+    """Clamp the model's snake ADP into the position's valid pick range.
+
+    LOWER = earlier pick = more valuable (the inverse of the bid-ceiling clamp),
+    so an over-eager QB at pick 5 is pushed back to the position floor (50).
+    """
+    if adp_ai is None:
+        return None
+    lo, hi = ADP_POSITION_RANGES.get(position or "", (1, 200))
+    return max(lo, min(round(float(adp_ai), 1), hi))
+
 # System prompt
 # ---------------------------------------------------------------------------
 
@@ -56,7 +87,8 @@ For each player, output a JSON object with these fields:
   "value_assessment": "string — one of: elite_value, good_value, fair_value, slight_overpay, avoid",
   "auction_note": "string — 1-2 sentences of tactical advice for draft day",
   "pay_up_flag": boolean — true if this player is clearly undervalued and worth paying above math ceiling,
-  "nomination_target_flag": boolean — true if this player is overvalued and should be nominated early to drain opponent budgets
+  "nomination_target_flag": boolean — true if this player is overvalued and should be nominated early to drain opponent budgets,
+  "adp_ai": number — snake-draft average draft position (pick number 1-200). SEE THE SNAKE DRAFT ADP SECTION BELOW.
 }
 
 You may also receive market context:
@@ -77,6 +109,32 @@ Rules:
 - Say "consensus ADP was $X" or "the market typically prices this player at $X"
 - Value assessment considers: projection confidence, injury risk, schedule, dependency flags, positional scarcity
 - Max realistic bids: RB=$80, WR=$70, QB=$50, TE=$45. Never exceed these.
+
+SNAKE DRAFT ADP (adp_ai):
+Output a pick number (1-200) where LOWER numbers = earlier picks = MORE valuable.
+This is the OPPOSITE of bid ceiling — do NOT conflate the two. A high bid ceiling
+means a LOW adp_ai.
+
+  Pick 1   = first overall (most valuable)
+  Pick 200 = last pick (least valuable)
+
+  A player you'd bid $70 in auction is typically a pick 1-12 in snake.
+  A player you'd bid $5  in auction is typically a pick 100+ in snake.
+
+Tier framework (12-team snake):
+  Tier 1 (elite):       picks 1-12
+  Tier 2 (strong):      picks 13-36
+  Tier 3 (solid):       picks 37-72
+  Tier 4 (depth):       picks 73-120
+  Tier 5 (late/flier):  picks 121-180
+
+Adjust WITHIN the tier:
+  - availability_risk="concern"  → push 10-15 picks LATER (higher number)
+  - value_gap strongly positive  → push earlier (lower number)
+  - QB / K / DEF → go MUCH later than their auction dollars imply. This is the
+    biggest auction-vs-snake difference: a $38 auction QB (e.g. Lamar Jackson)
+    is typically pick ~35-40 in snake PPR, not a first-round pick. Kickers and
+    defenses are picks 130+ regardless of value.
 
 Output ONLY a JSON array. No commentary outside the JSON."""
 
@@ -242,6 +300,9 @@ class ValuationAgent(BaseAgent):
         if p.injury_profile:
             ip = p.injury_profile
             ctx["injury_risk"] = ip.overall_risk_level
+            # Games-based availability (durable/monitor/concern) — drives the
+            # snake-ADP "concern → push later" adjustment.
+            ctx["availability_risk"] = ip.availability_risk
             ctx["injury_modifier"] = float(ip.risk_adjusted_value_modifier) if ip.risk_adjusted_value_modifier else None
             active_flags = ip.pattern_flags or []
             if ip.workload_cliff_flag:
@@ -343,6 +404,15 @@ class ValuationAgent(BaseAgent):
                     ai_ceiling = max(1, min(int(ai_ceiling), pos_max))
 
                 db_player.ai_bid_ceiling = ai_ceiling
+
+                # Snake-draft ADP — clamp to the position's pick range (LOWER =
+                # earlier). Mirrors the bid-ceiling clamp but inverted. Stamp
+                # adp_scoring the same way sync_adp does, so the column is
+                # consistent regardless of which step populated the ADP.
+                adp_ai = clamp_adp(result.get("adp_ai"), db_player.position)
+                if adp_ai is not None:
+                    db_player.adp_ai = adp_ai
+                db_player.adp_scoring = VALUATION_SCORING
                 db_player.ai_confidence_floor = result.get("confidence_floor")
                 db_player.ai_confidence_ceiling = result.get("confidence_ceiling")
                 db_player.value_assessment = result.get("value_assessment")

@@ -38,6 +38,9 @@ def mock_player_rb_tier1():
     p.breakout_flag = False
     p.is_rookie = False
     p.value_assessment = None
+    p.adp_ai = None
+    p.adp_fantasypros = None
+    p.adp_scoring = None
     p.dependencies = []
     p.injury_profile = None
     return p
@@ -59,6 +62,9 @@ def mock_player_wr_tier2():
     p.breakout_flag = False
     p.is_rookie = False
     p.value_assessment = None
+    p.adp_ai = None
+    p.adp_fantasypros = None
+    p.adp_scoring = None
     p.dependencies = []
     p.injury_profile = None
     return p

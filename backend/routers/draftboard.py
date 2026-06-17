@@ -57,6 +57,10 @@ class DraftBoardPlayer(BaseModel):
     pay_up_flag: bool = False
     nomination_target_flag: bool = False
     value_assessment: Optional[str] = None
+    # Snake-draft ADP (null until a pipeline run populates them — UI shows "--")
+    adp_ai: Optional[float] = None
+    adp_fantasypros: Optional[float] = None
+    adp_scoring: Optional[str] = None
     flags: list[DraftBoardFlag] = []
     strategy_highlight: Optional[str] = None  # "primary" / "secondary" / "dimmed" / None
 
@@ -194,6 +198,9 @@ async def get_draftboard(
             pay_up_flag=p.pay_up_flag or False,
             nomination_target_flag=p.nomination_target_flag or False,
             value_assessment=p.value_assessment,
+            adp_ai=float(p.adp_ai) if p.adp_ai is not None else None,
+            adp_fantasypros=float(p.adp_fantasypros) if p.adp_fantasypros is not None else None,
+            adp_scoring=p.adp_scoring,
             flags=flags,
             strategy_highlight=None,
         )
