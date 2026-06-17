@@ -74,6 +74,11 @@ class PlayerSummary(BaseModel):
     ai_bid_ceiling: Optional[int] = None
     pay_up_flag: bool = False
     nomination_target_flag: bool = False
+    # Snake-draft fields (inherited by PlayerDetail)
+    adp_rank: Optional[int] = None
+    adp_fantasypros: Optional[float] = None
+    adp_diff: Optional[float] = None
+    snake_flag: Optional[str] = None
 
 
 class PlayerListResponse(BaseModel):
@@ -253,6 +258,10 @@ def _player_to_summary(player: Player) -> PlayerSummary:
         ai_bid_ceiling=player.ai_bid_ceiling,
         pay_up_flag=player.pay_up_flag or False,
         nomination_target_flag=player.nomination_target_flag or False,
+        adp_rank=player.adp_rank,
+        adp_fantasypros=float(player.adp_fantasypros) if player.adp_fantasypros is not None else None,
+        adp_diff=float(player.adp_diff) if player.adp_diff is not None else None,
+        snake_flag=player.snake_flag,
     )
 
 
@@ -415,6 +424,7 @@ async def get_player(player_id: uuid.UUID, db=Depends(get_db)) -> PlayerDetail:
         auction_note=player.auction_note,
         league_bias=float(mctx["league_bias"]) if mctx["league_bias"] is not None else None,
         league_bias_signal=mctx["league_bias_signal"],
+        # adp_rank/adp_fantasypros/adp_diff/snake_flag come via **summary.model_dump()
     )
 
 
