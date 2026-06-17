@@ -56,3 +56,19 @@ def test_prompt_has_snake_adp_section():
 
 def test_valuation_scoring_default_ppr():
     assert VALUATION_SCORING == "ppr"
+
+
+def test_prompt_marks_adp_ai_mandatory():
+    # The Sonnet path was silently omitting adp_ai for top tiers; the prompt must
+    # now demand it explicitly.
+    assert "MANDATORY" in SYSTEM_PROMPT
+    assert "REQUIRED, never null" in SYSTEM_PROMPT
+    # Tier-midpoint fallback so the model always has a value to emit.
+    assert "tier midpoint" in SYSTEM_PROMPT
+    assert "Tier 1 → 6" in SYSTEM_PROMPT
+
+
+def test_prompt_lists_adp_ai_before_bid_ceiling():
+    # adp_ai must come early in the JSON schema so a truncated response still
+    # includes it (it was last before, and Sonnet dropped it).
+    assert SYSTEM_PROMPT.index('"adp_ai"') < SYSTEM_PROMPT.index('"ai_bid_ceiling"')
