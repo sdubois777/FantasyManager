@@ -1385,10 +1385,11 @@ describe('DraftRoom', () => {
 
   // --- Snake draft: your_turn, snake_pick, countdown ---
 
-  it('your_turn WS message sets isYourTurn and clears the recommendation', async () => {
+  it('your_turn WS message sets isYourTurn and clears a stale recommendation', async () => {
     useDraftStore.setState({
       phase: 'live',
-      recommendation: { type: 'recommendation', player_name: 'Old', action: 'draft' },
+      // Stale rec from an earlier pick (50) — your_turn for pick 93 clears it.
+      recommendation: { type: 'recommendation', player_name: 'Old', action: 'draft', pick: 50 },
     })
     render(
       <MemoryRouter>
@@ -1413,6 +1414,60 @@ describe('DraftRoom', () => {
     expect(s.currentPick).toBe(93)
     expect(s.picksUntilYourTurn).toBe(0)
     expect(s.recommendation).toBeNull()
+  })
+
+  it('your_turn does NOT clear the rec when it is for the same pick', async () => {
+    useDraftStore.setState({ phase: 'live' })
+    render(
+      <MemoryRouter>
+        <DraftRoom />
+      </MemoryRouter>
+    )
+    await act(async () => { await Promise.resolve() })
+    const ws = MockWebSocket.instances.at(-1)
+
+    // Engine broadcasts the rec for pick 28 FIRST...
+    act(() => {
+      ws.onmessage({
+        data: JSON.stringify({
+          type: 'recommendation', action: 'draft',
+          player_name: 'Bijan Robinson', pick: 28, adp_rank: 4,
+        }),
+      })
+    })
+    // ...then the raw your_turn for the same pick 28 arrives.
+    act(() => {
+      ws.onmessage({
+        data: JSON.stringify({ type: 'your_turn', payload: { round: 3, pick: 28 } }),
+      })
+    })
+
+    // The fresh rec must survive (not wiped by your_turn).
+    expect(useDraftStore.getState().recommendation?.player_name).toBe('Bijan Robinson')
+    expect(useDraftStore.getState().isYourTurn).toBe(true)
+  })
+
+  it('your_turn clears a STALE rec from a previous pick', async () => {
+    useDraftStore.setState({
+      phase: 'live',
+      recommendation: { type: 'recommendation', player_name: 'Old Guy', pick: 15 },
+    })
+    render(
+      <MemoryRouter>
+        <DraftRoom />
+      </MemoryRouter>
+    )
+    await act(async () => { await Promise.resolve() })
+    const ws = MockWebSocket.instances.at(-1)
+
+    act(() => {
+      ws.onmessage({
+        data: JSON.stringify({ type: 'your_turn', payload: { round: 3, pick: 28 } }),
+      })
+    })
+
+    // The rec was for pick 15 but we're now on pick 28 — clear it.
+    expect(useDraftStore.getState().recommendation).toBeNull()
   })
 
   it('your_turn_soon WS message sets the picks countdown', async () => {
@@ -1580,6 +1635,28 @@ describe('DraftRoom', () => {
         player_name: 'J. DOBBINS', // abbreviated — name wouldn't match
         picker: 'You',
         is_yours: true,
+      })
+    })
+
+    expect(useDraftStore.getState().availablePlayers.map((p) => p.name)).toEqual(['Bijan Robinson'])
+  })
+
+  it('recordSnakePick removes an abbreviated DOM name from available', () => {
+    // Backstop: even if the backend did not enrich, "C. MCCAFFREY" must still
+    // remove "Christian McCaffrey" via matchesPickName.
+    useDraftStore.setState({
+      phase: 'live',
+      availablePlayers: [
+        { id: 'a', name: 'Christian McCaffrey', position: 'RB' },
+        { id: 'b', name: 'Bijan Robinson', position: 'RB' },
+      ],
+    })
+
+    act(() => {
+      useDraftStore.getState().recordSnakePick({
+        player_name: 'C. MCCAFFREY',
+        picker: 'Team 3',
+        is_yours: false,
       })
     })
 

@@ -122,8 +122,30 @@ export function detectSnakeEvents(prev, curr) {
     })
   }
 
+  // OPPONENT PICK — the "Last:" player changed. The console.error ['0'] frame
+  // only fires for YOUR picks, so DOM polling is the only way to see everyone
+  // else's. is_yours:false; the content script suppresses any pick we already
+  // relayed as our own via the ['0'] handler (dedup by name).
+  const lastName = curr.lastPick ? curr.lastPick.player_name : null
+  if (lastName && lastName !== prev.lastSeenPickName) {
+    events.push({
+      type: 'snake_pick',
+      platform: 'yahoo',
+      payload: {
+        pick_number: curr.currentPick,
+        player_name: lastName,
+        position: curr.lastPick.position,
+        team: curr.lastPick.team,
+        picker: curr.currentPicker || 'unknown',
+        is_yours: false,
+        round: curr.currentRound,
+      },
+    })
+  }
+
   next.wasYourTurn = curr.isYourTurn
   next.lastPicksUntil = curr.picksUntilYourTurn
+  next.lastSeenPickName = lastName != null ? lastName : prev.lastSeenPickName
   return { events, next }
 }
 
