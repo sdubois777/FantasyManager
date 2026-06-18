@@ -64,3 +64,72 @@ test('DOM poller core is independent of the MAIN-world interceptor', () => {
 test('webpack builds the yahoo_draft_main entry', () => {
   assert.match(read('webpack.config.js'), /yahoo_draft_main:/)
 })
+
+// --- Snake MAIN-world injection (Yahoo CSP blocks the ISOLATED-only path) ---
+
+test('yahoo_snake_draft_main.js intercepts console.error and sets the flag', () => {
+  const src = read('src/content_scripts/yahoo_snake_draft_main.js')
+  assert.match(src, /console\.error/)
+  assert.match(src, /__yahoo_snake_pick__/)
+  assert.match(src, /window\.__draftmind_snake__\s*=\s*true/)
+  // Snake picks are the '0' frame.
+  assert.match(src, /\[0\]\s*===\s*'0'/)
+})
+
+test('manifest injects yahoo_snake_draft_main.js into the MAIN world', () => {
+  const entry = manifest().content_scripts.find(
+    (cs) => Array.isArray(cs.js) && cs.js.includes('yahoo_snake_draft_main.js')
+  )
+  assert.ok(entry, 'a content_scripts entry must inject yahoo_snake_draft_main.js')
+  assert.equal(entry.world, 'MAIN')
+  assert.equal(entry.run_at, 'document_start')
+  assert.ok(entry.matches.includes(DRAFT_MATCH))
+})
+
+test('yahoo_snake_draft.js (DOM poller) stays in the ISOLATED world', () => {
+  const entry = manifest().content_scripts.find(
+    (cs) => Array.isArray(cs.js) && cs.js.includes('yahoo_snake_draft.js')
+  )
+  assert.ok(entry, 'snake DOM poller entry must exist')
+  // ISOLATED is the default — the poller must NOT be in the MAIN world.
+  assert.notEqual(entry.world, 'MAIN')
+})
+
+test('snake poller listens for the MAIN-world pick event, not direct console.error', () => {
+  const src = read('src/content_scripts/yahoo_snake_draft.js')
+  assert.match(src, /__yahoo_snake_pick__/)
+  // It must NOT wrap console.error itself (it's in the ISOLATED world).
+  assert.doesNotMatch(src, /console\.error\s*=/)
+})
+
+test('snake main IIFE forwards a 0 frame and sets __draftmind_snake__', () => {
+  const src = read('src/content_scripts/yahoo_snake_draft_main.js')
+  const dispatched = []
+  const fakeWin = { dispatchEvent: (e) => dispatched.push(e) }
+  const fakeConsole = { error: () => {} }
+  class FakeCustomEvent {
+    constructor(type, init) {
+      this.type = type
+      this.detail = init && init.detail
+    }
+  }
+  // Execute the IIFE with injected globals (no real browser needed).
+  new Function('window', 'console', 'CustomEvent', src)(fakeWin, fakeConsole, FakeCustomEvent)
+
+  assert.equal(fakeWin.__draftmind_snake__, true)
+
+  // A '0' (snake pick) frame is forwarded across the world boundary.
+  fakeConsole.error(['0', 'lg', 'dr', 84, 'nfl.p.1'])
+  assert.equal(dispatched.length, 1)
+  assert.equal(dispatched[0].type, '__yahoo_snake_pick__')
+  assert.deepEqual(dispatched[0].detail, ['0', 'lg', 'dr', 84, 'nfl.p.1'])
+
+  // Unrelated console.error output is NOT forwarded.
+  fakeConsole.error('a normal error string')
+  fakeConsole.error(['B', 'lg', 'dr', 'p', 5]) // auction bid, not ours to handle
+  assert.equal(dispatched.length, 1)
+})
+
+test('webpack builds the yahoo_snake_draft_main entry', () => {
+  assert.match(read('webpack.config.js'), /yahoo_snake_draft_main:/)
+})
