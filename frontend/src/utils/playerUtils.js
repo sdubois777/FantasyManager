@@ -14,6 +14,7 @@
  *   - RECOMMENDATIONS (engine output): adp_rank|adp_ai, adp_fp, adp_diff
  *     (note: adp_fp, NOT adp_fantasypros). The getRec* helpers cover this shape.
  */
+import { normalizeName } from './names'
 
 // --- Player-row ADP selection (never adp_ai) --------------------------------
 
@@ -98,6 +99,36 @@ export function getSnakeFlagClass(player) {
 /** The raw flag label, or null when the player has none (for badge rendering). */
 export function getSnakeFlagLabel(player) {
   return player?.snake_flag ?? null
+}
+
+// --- Name matching (snake DOM names are abbreviated) ------------------------
+
+/**
+ * Does a player's full name match a (possibly abbreviated) pick name?
+ *
+ * The Yahoo snake DOM gives abbreviated names ("C. MCCAFFREY", "G. PICKENS"),
+ * which won't equal the full names in the available list. Match strategy:
+ *   1. exact normalized equality
+ *   2. abbreviated first name: same last name + same first initial
+ *      ("c mccaffrey" == "christian mccaffrey")
+ *
+ * Centralized here so every consumer (recordSnakePick, etc.) matches the same
+ * way — the backend resolves abbreviations too, this is the frontend backstop.
+ */
+export function matchesPickName(playerName, pickName) {
+  const a = normalizeName(playerName)
+  const b = normalizeName(pickName)
+  if (!a || !b) return false
+  if (a === b) return true
+
+  const ap = a.split(' ')
+  const bp = b.split(' ')
+  if (ap.length >= 2 && bp.length >= 2) {
+    const aLast = ap.slice(1).join(' ')
+    const bLast = bp.slice(1).join(' ')
+    if (aLast === bLast && ap[0][0] === bp[0][0]) return true
+  }
+  return false
 }
 
 // --- Recommendation object (engine output — a DIFFERENT shape) --------------

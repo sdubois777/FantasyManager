@@ -168,8 +168,14 @@ export default function useDraftSocket() {
               setCurrentRound(payload.round ?? null)
               setCurrentPick(payload.pick ?? null)
               setPicksUntilYourTurn(0)
-              // Clear the stale rec; the best-available rec arrives separately.
-              setRecommendation(null)
+              // The engine broadcasts the recommendation for THIS pick just
+              // BEFORE the raw your_turn event, so the rec usually arrives first.
+              // Only clear it if it's stale (belongs to a different pick) —
+              // otherwise we'd wipe the fresh recommendation we just received.
+              const rec = useDraftStore.getState().recommendation
+              if (rec && rec.pick != null && rec.pick !== payload.pick) {
+                setRecommendation(null)
+              }
               break
             }
             case 'your_turn_soon':

@@ -224,46 +224,32 @@ async def _trigger_your_turn(event: "DraftEventPayload") -> None:
     })
 
 
-async def _resolve_player_by_yahoo_id(yahoo_player_id: str):
-    """Look up a Player by its Yahoo id (the console.error frame's id)."""
-    if not yahoo_player_id:
-        return None
-    from sqlalchemy import select
-    from backend.database import AsyncSessionLocal
-    from backend.models.player import Player
-
-    async with AsyncSessionLocal() as session:
-        return (
-            await session.execute(
-                select(Player).where(Player.yahoo_player_id == yahoo_player_id)
-            )
-        ).scalar_one_or_none()
-
-
 async def _record_snake_pick(event: "DraftEventPayload") -> None:
     """Snake: enrich the pick payload and record it into engine state.
 
-    The Yahoo console.error ['0'] frame carries the real yahoo_player_id, but the
-    DOM 'Last:' name is abbreviated ("J. DOBBINS") and draftboard rows have a
-    UUID id + full name with NO yahoo_player_id — so neither id nor name matching
-    works on the frontend as-is. Resolve the canonical Player by yahoo_player_id
-    (same id the auction my_bid recovery relies on) and write the full name +
-    UUID id + position back onto the payload IN PLACE, so the subsequent
-    broadcast relays data the UI can match.
+    Resolve by NAME, not by the console.error frame's player id: our DB
+    yahoo_player_id is "nfl_<gsis>" (e.g. "nfl_00-0033280"), a DIFFERENT id space
+    from Yahoo's own frame id, so an id lookup never matches. The DOM 'Last:'
+    name is abbreviated ("C. MCCAFFREY"), and find_by_name_fuzzy already handles
+    that (first-initial + last-name). Write the canonical full name + UUID id +
+    position back onto the payload IN PLACE so the broadcast relays data the UI
+    can match (draftboard rows have a UUID id + full name, no yahoo_player_id).
     """
     payload = event.payload
-    ypid = payload.get("yahoo_player_id", "") or ""
+    abbreviated = payload.get("player_name", "") or ""
 
-    player = await _resolve_player_by_yahoo_id(ypid)
+    player = await _resolve_player(abbreviated)
     if player is not None:
         payload["id"] = str(player.id)
         payload["player_name"] = player.name
         payload["position"] = player.position or payload.get("position") or ""
+    else:
+        logger.warning("Snake pick: could not resolve player name %r", abbreviated)
 
     if _engine is not None:
         await _engine.on_pick_confirmed({
             "type": "draft_pick",
-            "player_id": ypid,
+            "player_id": payload.get("yahoo_player_id", "") or "",
             "team_id": payload.get("picker", "") or "",
             "final_price": 0,
             "player_name": payload.get("player_name", "") or "",

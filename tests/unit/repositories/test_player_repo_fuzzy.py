@@ -71,6 +71,28 @@ async def test_fuzzy_first_initial_last_name_match():
 
 
 @pytest.mark.asyncio
+async def test_fuzzy_abbreviated_first_name_cmc():
+    # Yahoo snake DOM sends "C. MCCAFFREY"; DB has "Christian McCaffrey".
+    cmc = _player("Christian McCaffrey", position="RB", ypid="nfl_5")
+    repo = _repo([_exact_result(None), _candidates_result([cmc])])
+    assert await repo.find_by_name_fuzzy("C. MCCAFFREY") is cmc
+
+
+@pytest.mark.asyncio
+async def test_fuzzy_abbreviated_first_name_pickens():
+    pickens = _player("George Pickens", position="WR", ypid="nfl_6")
+    repo = _repo([_exact_result(None), _candidates_result([pickens])])
+    assert await repo.find_by_name_fuzzy("G. PICKENS") is pickens
+
+
+@pytest.mark.asyncio
+async def test_fuzzy_abbreviated_no_candidates_returns_none():
+    # "X. UNKNOWN" — no last-name candidates -> None (no wrong-player match).
+    repo = _repo([_exact_result(None), _candidates_result([])])
+    assert await repo.find_by_name_fuzzy("X. UNKNOWN") is None
+
+
+@pytest.mark.asyncio
 async def test_fuzzy_no_candidates_returns_none():
     repo = _repo([_exact_result(None), _candidates_result([])])
     assert await repo.find_by_name_fuzzy("Nonexistent Player") is None

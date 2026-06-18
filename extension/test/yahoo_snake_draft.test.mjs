@@ -78,7 +78,9 @@ test('parseSnakeState returns null on empty text', () => {
 })
 
 test('detectSnakeEvents fires your_turn on the rising edge only', () => {
-  const start = { wasYourTurn: false, lastPicksUntil: null }
+  // Seed lastSeenPickName so the Last: line in the sample doesn't also emit an
+  // opponent snake_pick — this test isolates the your_turn rising edge.
+  const start = { wasYourTurn: false, lastPicksUntil: null, lastSeenPickName: 'J. DOBBINS' }
   const curr = parseSnakeState(YOUR_TURN)
 
   const first = detectSnakeEvents(start, curr)
@@ -116,6 +118,26 @@ test('detectSnakeEvents emits nothing when far from your pick', () => {
   )
   const r = detectSnakeEvents({ wasYourTurn: false, lastPicksUntil: null }, far)
   assert.equal(r.events.length, 0)
+})
+
+test('detectSnakeEvents emits an opponent snake_pick when lastPick changes', () => {
+  const curr = parseSnakeState(SOMEONE_ELSE) // Last: J. DOBBINS (RB · DEN)
+  const start = { wasYourTurn: false, lastPicksUntil: null, lastSeenPickName: null }
+  const r = detectSnakeEvents(start, curr)
+  const pick = r.events.find((e) => e.type === 'snake_pick')
+  assert.ok(pick, 'expected an opponent snake_pick event')
+  assert.equal(pick.payload.player_name, 'J. DOBBINS')
+  assert.equal(pick.payload.position, 'RB')
+  assert.equal(pick.payload.is_yours, false)
+  assert.equal(pick.payload.picker, 'Bart')
+  assert.equal(r.next.lastSeenPickName, 'J. DOBBINS')
+})
+
+test('detectSnakeEvents does not re-emit the same lastPick', () => {
+  const curr = parseSnakeState(SOMEONE_ELSE)
+  const seen = { wasYourTurn: false, lastPicksUntil: null, lastSeenPickName: 'J. DOBBINS' }
+  const r = detectSnakeEvents(seen, curr)
+  assert.equal(r.events.filter((e) => e.type === 'snake_pick').length, 0)
 })
 
 // ['0', league, draft, pick_number, yahoo_player_id] — your own pick frame.
