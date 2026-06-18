@@ -67,13 +67,14 @@ function startPoller() {
 }
 
 // ---------------------------------------------------------------------------
-// console.error pick interception — Yahoo logs every snake pick as
+// Snake pick frames — Yahoo logs every snake pick to console.error as
 //   ['0', league, draft, pick_number, yahoo_player_id]
-// ('0' = snake pick, vs 'B'=bid, 'N'=nomination for auction). Forwarded from
-// the MAIN world by yahoo_draft_main.js as a '__yahoo_draft_action__' event.
+// This content script runs in the ISOLATED world and can't see the page's
+// console, so the interception happens in yahoo_snake_draft_main.js (MAIN
+// world), which forwards the frame across the boundary as '__yahoo_snake_pick__'.
 // ---------------------------------------------------------------------------
 
-window.addEventListener('__yahoo_draft_action__', async (event) => {
+window.addEventListener('__yahoo_snake_pick__', async (event) => {
   const data = event.detail
   if (!Array.isArray(data) || data[0] !== '0') return
 
@@ -122,4 +123,6 @@ if (document.readyState === 'loading') {
   bootstrap()
 }
 
-window.__draftmind_snake__ = true
+// Presence flag for the ISOLATED-world poller. The page-detectable
+// __draftmind_snake__ flag is set by yahoo_snake_draft_main.js in the MAIN world.
+window.__draftmind_snake_poller__ = true
