@@ -18,6 +18,7 @@ import {
   getRecAdp,
   getRecFpAdp,
   getRecAdpDiff,
+  matchesPickName,
 } from '../utils/playerUtils'
 
 // adp_ai (4.0, tied) vs adp_rank (1, clean) — the bug this module prevents.
@@ -127,6 +128,36 @@ describe('playerUtils — snake flag', () => {
   it('getSnakeFlagLabel returns the raw flag or null', () => {
     expect(getSnakeFlagLabel(PLAYER)).toBe('VALUE')
     expect(getSnakeFlagLabel({})).toBeNull()
+  })
+})
+
+describe('playerUtils — matchesPickName (abbreviated DOM names)', () => {
+  it('matches an abbreviated first name against the full name', () => {
+    expect(matchesPickName('Christian McCaffrey', 'C. MCCAFFREY')).toBe(true)
+    expect(matchesPickName('George Pickens', 'G. PICKENS')).toBe(true)
+    expect(matchesPickName('Josh Jacobs', 'J. JACOBS')).toBe(true)
+  })
+
+  it('matches an exact (full) name', () => {
+    expect(matchesPickName('Bijan Robinson', 'Bijan Robinson')).toBe(true)
+  })
+
+  it('does not match a different last name', () => {
+    expect(matchesPickName('Christian McCaffrey', 'C. KIRK')).toBe(false)
+  })
+
+  it('does not match a different first initial, same last name', () => {
+    // "A. Brown" must NOT match "Marquise Brown".
+    expect(matchesPickName('Marquise Brown', 'A. BROWN')).toBe(false)
+  })
+
+  it('drops apostrophes via normalizeName (JaMarr == Ja\'Marr)', () => {
+    expect(matchesPickName("Ja'Marr Chase", "J. CHASE")).toBe(true)
+  })
+
+  it('returns false for empty inputs', () => {
+    expect(matchesPickName('', 'C. MCCAFFREY')).toBe(false)
+    expect(matchesPickName('Bijan Robinson', '')).toBe(false)
   })
 })
 

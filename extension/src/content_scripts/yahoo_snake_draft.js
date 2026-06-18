@@ -29,6 +29,11 @@ let active = false
 let inactivityTimer = null
 let lastPickNumber = null
 
+// Player names we relayed as OUR OWN picks (via the ['0'] frame). The DOM
+// poller also sees these picks in the "Last:" line and would re-send them as
+// opponent picks — suppress those. Names auto-expire after a few seconds.
+const recentYourPickNames = new Set()
+
 function markDraftActive() {
   browser.storage.local.set({
     [STORAGE_KEYS.ACTIVE_DRAFT]: true,
@@ -56,6 +61,14 @@ function startPoller() {
     memory = next
 
     for (const event of events) {
+      // Opponent pick from the DOM: skip if we already relayed it as our own
+      // via the ['0'] frame (same player name from the same "Last:" line).
+      if (
+        event.type === 'snake_pick' &&
+        recentYourPickNames.has(event.payload.player_name)
+      ) {
+        continue
+      }
       if (event.type === 'your_turn') markDraftActive()
       try {
         await postDraftEvent(event)
@@ -86,6 +99,13 @@ window.addEventListener('__yahoo_snake_pick__', async (event) => {
 
   // Best-effort player name from the "Last:" line.
   const state = parseSnakeState(document.querySelector('#app')?.innerText)
+
+  // Remember this name so the DOM poller doesn't re-send it as an opponent pick.
+  const pickedName = state?.lastPick?.player_name
+  if (pickedName) {
+    recentYourPickNames.add(pickedName)
+    setTimeout(() => recentYourPickNames.delete(pickedName), 5000)
+  }
 
   markDraftActive()
   try {

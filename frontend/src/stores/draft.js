@@ -6,6 +6,7 @@ import {
   endDraft as apiEndDraft,
 } from '../api/draft'
 import { normalizeName } from '../utils/names'
+import { matchesPickName } from '../utils/playerUtils'
 
 /** Total seconds remaining from a "M:SS" clock string ("0:19" -> 19). */
 export function parseClockSeconds(clock) {
@@ -341,13 +342,15 @@ export const useDraftStore = create((set, get) => ({
           pick.picker &&
           normalizeName(pick.picker) === normalizeName(state.myTeamName))
 
-      // Match the picked player by UUID id (backend enriches snake_pick with the
-      // canonical id from yahoo_player_id), then yahoo_player_id, then normalized
-      // name. Guard each so undefined === undefined can't wipe the whole list.
+      // Match the picked player by UUID id (the backend enriches snake_pick with
+      // the canonical id by resolving the abbreviated DOM name), then by name —
+      // matchesPickName also handles abbreviated DOM names ("C. MCCAFFREY") as a
+      // frontend backstop. Guard the id check so undefined === undefined can't
+      // wipe the whole list.
       const matchesPick = (p) =>
         (pick.id != null && p.id === pick.id) ||
         (pick.yahoo_player_id != null && p.yahoo_player_id === pick.yahoo_player_id) ||
-        (pickName !== '' && normalizeName(p.name) === pickName)
+        (!!pick.player_name && matchesPickName(p.name, pick.player_name))
 
       const fromAvailable = state.availablePlayers.find(matchesPick)
       const newAvailable = state.availablePlayers.filter((p) => !matchesPick(p))
