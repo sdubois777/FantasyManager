@@ -21,10 +21,11 @@ from backend.agents.valuation_agent import (
 )
 
 
-def test_clamp_adp_qb_floored_late():
-    # QBs go late in snake — pick 5 is clamped up to the QB floor (25). The
-    # floor is 25 (not 50) so elite QBs like Allen can land ~rd 3 where they go.
-    assert clamp_adp(5, "QB") == 25
+def test_qb_floor_at_least_40():
+    # QBs go late in snake — pick 5 is clamped up to the QB floor (40). The floor
+    # was raised 25->40 because QBs ranked 15-20+ picks ahead of FP consensus.
+    assert clamp_adp(5, "QB") == 40
+    assert ADP_POSITION_RANGES["QB"][0] >= 40
 
 
 def test_clamp_adp_within_range_unchanged():
@@ -49,8 +50,9 @@ def test_clamp_adp_unknown_position_full_range():
 
 
 def test_adp_position_ranges_qb_def_k_late():
-    # QB floor 25 keeps elite QBs from being clamped too late; K/DEF stay last.
-    assert ADP_POSITION_RANGES["QB"][0] == 25
+    # QB floor 40 (raised from 25) keeps QBs from being drafted too early; K/DEF
+    # stay last.
+    assert ADP_POSITION_RANGES["QB"][0] == 40
     assert ADP_POSITION_RANGES["K"][0] >= 140
     assert ADP_POSITION_RANGES["DEF"][0] >= 130
 
@@ -232,15 +234,31 @@ def test_prompt_auction_note_no_dollar_instruction():
 
 
 def test_valuation_agent_version_defined():
-    assert VALUATION_AGENT_VERSION == "v2"
+    # Bumped to v4 with the QB 5-tier framework to invalidate the v3 cache.
+    assert VALUATION_AGENT_VERSION == "v4"
 
 
-def test_prompt_has_qb_tier_differentiation():
-    # The model was clustering all QBs at ~38; the prompt must spread them by
-    # tier and tell it to wait on QB.
-    assert "QB ADP guidance" in SYSTEM_PROMPT
-    assert "picks 25-40" in SYSTEM_PROMPT  # elite
-    assert "picks 45-80" in SYSTEM_PROMPT  # strong
-    assert "picks 85-130" in SYSTEM_PROMPT  # standard starter
-    assert "Wait on QB" in SYSTEM_PROMPT
-    assert "NEVER cluster" in SYSTEM_PROMPT
+def test_prompt_qb_floor_is_pick_40():
+    # The prompt must forbid any QB before pick 40 (raised from 25).
+    assert "QB ADP" in SYSTEM_PROMPT
+    assert "NEVER before pick 40" in SYSTEM_PROMPT
+    assert "DEEPEST position" in SYSTEM_PROMPT
+
+
+def test_prompt_has_qb_five_tier_framework():
+    # Five tiers including the "startable streamer" band that v3 lacked.
+    assert "5-TIER FRAMEWORK" in SYSTEM_PROMPT
+    assert "Lamar Jackson ONLY" in SYSTEM_PROMPT
+    assert "picks 40-50" in SYSTEM_PROMPT    # Lamar
+    assert "picks 55-70" in SYSTEM_PROMPT    # elite passers
+    assert "picks 80-110" in SYSTEM_PROMPT   # strong starters
+    assert "Startable streamers" in SYSTEM_PROMPT
+    assert "picks 110-140" in SYSTEM_PROMPT  # startable streamers
+    assert "picks 145-170" in SYSTEM_PROMPT  # backups
+
+
+def test_prompt_qb_anti_cluster_rule():
+    assert "ANTI-CLUSTER RULE" in SYSTEM_PROMPT
+    assert "Minimum 8-pick gap" in SYSTEM_PROMPT
+    assert "Maximum 6 QBs in any 30-pick window" in SYSTEM_PROMPT
+    assert "Do NOT stack QBs at the cap" in SYSTEM_PROMPT

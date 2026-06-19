@@ -45,8 +45,10 @@ logger = logging.getLogger(__name__)
 ADP_POSITION_RANGES: dict[str, tuple[int, int]] = {
     "RB":  (1,   100),
     "WR":  (1,   120),
-    "QB":  (25,  170),   # floor 25 so elite QBs (Allen) aren't clamped too late;
-                         # cap 170 so streaming QBs still get drafted, not skipped
+    "QB":  (40,  170),   # floor 40: QB is the deepest position (32 starters, 12
+                         # needed) and was ranking 15-20+ picks ahead of FP,
+                         # costing elite RB/WR value. Cap 170 so streamers still
+                         # get drafted. Only Lamar's rushing floor warrants ~40.
     "TE":  (10,  150),
     "K":   (140, 200),   # kickers always last
     "DEF": (130, 200),   # defenses always last
@@ -73,7 +75,11 @@ def clamp_adp(adp_ai, position: str | None) -> float | None:
 
 # Bump to invalidate the valuation_agent cache (it keys on input_data, so the
 # version is folded into the key). Increment on any SYSTEM_PROMPT change.
-VALUATION_AGENT_VERSION = "v2"
+# v3: QB ADP floor 25->40 + tiered framework (QBs were ranking ~15-20 picks
+#     ahead of FP consensus, costing elite RB/WR value).
+# v4: QB 5-tier framework + anti-cluster rule (v3 overcorrected — startable QBs
+#     like Lawrence/Murray were dumped to the 170 cap; add a 110-140 streamer band).
+VALUATION_AGENT_VERSION = "v4"
 
 # Position-relative "strong production" PPR season totals — used to split a
 # we-rate-earlier player into VALUE (production justifies it) vs SLEEPER
@@ -212,18 +218,28 @@ Adjust WITHIN the tier:
     is typically pick ~35-40 in snake PPR, not a first-round pick. Kickers and
     defenses are picks 130+ regardless of value.
 
-QB ADP guidance — differentiate by QB tier, and NEVER cluster QBs in the same
-pick range:
-  Elite (Lamar Jackson, Josh Allen, Jalen Hurts — injury-permitting):
-    → picks 25-40 (late 3rd / early 4th)
-  Strong (Burrow, Daniels, Murray, Mahomes — note availability risk):
-    → picks 45-80 (rounds 4-7)
-  Standard starter QBs:
-    → picks 85-130 (rounds 8-11)
-  Backup / streaming QBs:
-    → picks 130+ (round 11+)
-Spread QBs across rounds using this framework — do not give several QBs the same
-adp_ai. QB is the deepest position: 32 starters, only 12 needed. Wait on QB.
+QB ADP (PPR snake, 12-team):
+QB is the DEEPEST position. NEVER before pick 40 — the opportunity cost is too
+high (the elite RBs/WRs available in rounds 1-4 are irreplaceable).
+
+5-TIER FRAMEWORK — assign every QB to exactly one tier, spread evenly:
+  Elite rushing upside (Lamar Jackson ONLY):
+    → picks 40-50
+  Elite passers (Josh Allen, Joe Burrow — healthy):
+    → picks 55-70
+  Strong starters (Patrick Mahomes, Jayden Daniels, Jalen Hurts, Kyler Murray — healthy):
+    → picks 80-110
+  Startable streamers (Trevor Lawrence, Justin Herbert, Caleb Williams, Kyler
+  Murray, Jared Goff, Bo Nix, Dak Prescott, Matthew Stafford):
+    → picks 110-140
+  Backups / handcuffs:
+    → picks 145-170
+
+ANTI-CLUSTER RULE — CRITICAL:
+  - Minimum 8-pick gap between any two QBs.
+  - Maximum 6 QBs in any 30-pick window.
+  - Do NOT stack QBs at the cap (170); spread backups evenly across 145-170.
+  - Lawrence / Murray / Herbert must land between picks 110-135, NOT 145+.
 
 adp_ai is MANDATORY — output it for EVERY player, never null, never omitted.
 If you are uncertain, default to the tier midpoint:
