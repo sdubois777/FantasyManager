@@ -234,28 +234,31 @@ def test_prompt_auction_note_no_dollar_instruction():
 
 
 def test_valuation_agent_version_defined():
-    # Bumped to v3 with the QB floor/framework change to invalidate the cache.
-    assert VALUATION_AGENT_VERSION == "v3"
+    # Bumped to v4 with the QB 5-tier framework to invalidate the v3 cache.
+    assert VALUATION_AGENT_VERSION == "v4"
 
 
 def test_prompt_qb_floor_is_pick_40():
     # The prompt must forbid any QB before pick 40 (raised from 25).
-    assert "QB ADP guidance" in SYSTEM_PROMPT
-    assert "NEVER assign any QB before pick 40" in SYSTEM_PROMPT
+    assert "QB ADP" in SYSTEM_PROMPT
+    assert "NEVER before pick 40" in SYSTEM_PROMPT
     assert "DEEPEST position" in SYSTEM_PROMPT
-    assert "ALWAYS wait" in SYSTEM_PROMPT
 
 
-def test_prompt_has_qb_tier_framework():
-    # Tiered framework that spreads QBs, with Lamar before the elite passers.
+def test_prompt_has_qb_five_tier_framework():
+    # Five tiers including the "startable streamer" band that v3 lacked.
+    assert "5-TIER FRAMEWORK" in SYSTEM_PROMPT
     assert "Lamar Jackson ONLY" in SYSTEM_PROMPT
-    assert "picks 40-50" in SYSTEM_PROMPT   # Lamar
-    assert "picks 55-75" in SYSTEM_PROMPT   # elite passers
-    assert "picks 80-120" in SYSTEM_PROMPT  # strong starters
-    assert "picks 120-170" in SYSTEM_PROMPT  # streamers
+    assert "picks 40-50" in SYSTEM_PROMPT    # Lamar
+    assert "picks 55-70" in SYSTEM_PROMPT    # elite passers
+    assert "picks 80-110" in SYSTEM_PROMPT   # strong starters
+    assert "Startable streamers" in SYSTEM_PROMPT
+    assert "picks 110-140" in SYSTEM_PROMPT  # startable streamers
+    assert "picks 145-170" in SYSTEM_PROMPT  # backups
 
 
-def test_prompt_no_qb_cluster_min_gap():
-    # The prompt must require a minimum gap and forbid clustering.
-    assert "MINIMUM 15-pick gap" in SYSTEM_PROMPT
-    assert "Do NOT cluster" in SYSTEM_PROMPT
+def test_prompt_qb_anti_cluster_rule():
+    assert "ANTI-CLUSTER RULE" in SYSTEM_PROMPT
+    assert "Minimum 8-pick gap" in SYSTEM_PROMPT
+    assert "Maximum 6 QBs in any 30-pick window" in SYSTEM_PROMPT
+    assert "Do NOT stack QBs at the cap" in SYSTEM_PROMPT

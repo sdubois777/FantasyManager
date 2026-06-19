@@ -77,7 +77,9 @@ def clamp_adp(adp_ai, position: str | None) -> float | None:
 # version is folded into the key). Increment on any SYSTEM_PROMPT change.
 # v3: QB ADP floor 25->40 + tiered framework (QBs were ranking ~15-20 picks
 #     ahead of FP consensus, costing elite RB/WR value).
-VALUATION_AGENT_VERSION = "v3"
+# v4: QB 5-tier framework + anti-cluster rule (v3 overcorrected — startable QBs
+#     like Lawrence/Murray were dumped to the 170 cap; add a 110-140 streamer band).
+VALUATION_AGENT_VERSION = "v4"
 
 # Position-relative "strong production" PPR season totals — used to split a
 # we-rate-earlier player into VALUE (production justifies it) vs SLEEPER
@@ -216,20 +218,28 @@ Adjust WITHIN the tier:
     is typically pick ~35-40 in snake PPR, not a first-round pick. Kickers and
     defenses are picks 130+ regardless of value.
 
-QB ADP guidance (PPR snake, 12-team) — QB is the DEEPEST position: 32 NFL
-starters, only 12 needed, so ALWAYS wait unless there is clear elite value.
-NEVER assign any QB before pick 40 — the opportunity cost is too high, because
-the elite RBs/WRs available in rounds 1-4 are irreplaceable.
+QB ADP (PPR snake, 12-team):
+QB is the DEEPEST position. NEVER before pick 40 — the opportunity cost is too
+high (the elite RBs/WRs available in rounds 1-4 are irreplaceable).
+
+5-TIER FRAMEWORK — assign every QB to exactly one tier, spread evenly:
   Elite rushing upside (Lamar Jackson ONLY):
-    → picks 40-50 (round 4)
+    → picks 40-50
   Elite passers (Josh Allen, Joe Burrow — healthy):
-    → picks 55-75 (rounds 5-6)
-  Strong starters (Patrick Mahomes, Jayden Daniels, Jalen Hurts, Kyler Murray):
-    → picks 80-120 (rounds 7-10)
-  Streamers / backups (everyone else — Purdy, Love, Darnold, Young, Stroud, ...):
-    → picks 120-170 (round 10+)
-SPREAD QBs across rounds — keep a MINIMUM 15-pick gap between consecutive QBs.
-Do NOT cluster multiple QBs in the same pick range (no two QBs at the same adp_ai).
+    → picks 55-70
+  Strong starters (Patrick Mahomes, Jayden Daniels, Jalen Hurts, Kyler Murray — healthy):
+    → picks 80-110
+  Startable streamers (Trevor Lawrence, Justin Herbert, Caleb Williams, Kyler
+  Murray, Jared Goff, Bo Nix, Dak Prescott, Matthew Stafford):
+    → picks 110-140
+  Backups / handcuffs:
+    → picks 145-170
+
+ANTI-CLUSTER RULE — CRITICAL:
+  - Minimum 8-pick gap between any two QBs.
+  - Maximum 6 QBs in any 30-pick window.
+  - Do NOT stack QBs at the cap (170); spread backups evenly across 145-170.
+  - Lawrence / Murray / Herbert must land between picks 110-135, NOT 145+.
 
 adp_ai is MANDATORY — output it for EVERY player, never null, never omitted.
 If you are uncertain, default to the tier midpoint:
