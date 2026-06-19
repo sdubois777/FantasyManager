@@ -162,6 +162,29 @@ describe('playerUtils — matchesPickName (abbreviated DOM names)', () => {
     expect(matchesPickName('', 'C. MCCAFFREY')).toBe(false)
     expect(matchesPickName('Bijan Robinson', '')).toBe(false)
   })
+
+  // Multi-part first initials (A.J., D.K., C.J. ...): normalizeName drops the
+  // periods so "A.J." -> "aj", and "aj"[0] === "a" matches Yahoo's "A.".
+  it.each([
+    ['A.J. Brown', 'A. Brown'],
+    ['D.K. Metcalf', 'D. Metcalf'],
+    ['D.J. Moore', 'D. Moore'],
+    ['C.J. Stroud', 'C. Stroud'],
+    ['T.J. Hockenson', 'T. Hockenson'],
+    ['J.K. Dobbins', 'J. Dobbins'],
+  ])('matches %s against %s', (full, abbr) => {
+    expect(matchesPickName(full, abbr)).toBe(true)
+  })
+
+  it('rejects a different last name (A.J. Brown vs D. Brown)', () => {
+    expect(matchesPickName('A.J. Brown', 'D. Brown')).toBe(false)
+  })
+
+  it('does NOT match a compound last name to a single one', () => {
+    // "Amon-Ra St. Brown" -> "amon ra st brown" (hyphen maps to space), whose
+    // last name is "ra st brown", != "brown" — so "A. Brown" must NOT match it.
+    expect(matchesPickName('Amon-Ra St. Brown', 'A. Brown')).toBe(false)
+  })
 })
 
 describe('playerUtils — recommendation shape', () => {
