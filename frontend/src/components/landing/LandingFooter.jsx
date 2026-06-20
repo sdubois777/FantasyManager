@@ -27,7 +27,7 @@ export default function LandingFooter() {
           <span>&copy; {new Date().getFullYear()} Rook. All rights reserved.</span>
           <div className="flex gap-6">
             <Link to="/pricing" className="hover:text-gray-400 transition-colors">Pricing</Link>
-            <a href="mailto:support@draftmind.app" className="hover:text-gray-400 transition-colors">Contact</a>
+            <a href="mailto:support@rookff.com" className="hover:text-gray-400 transition-colors">Contact</a>
           </div>
         </div>
       </div>
