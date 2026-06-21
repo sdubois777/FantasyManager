@@ -92,10 +92,8 @@ Produce a JSON object matching this exact schema:
 }
 
 Rules:
-- rookie_qb_flag = true ONLY if this QB has never been a full-season NFL starter before — meaning a true first or second-year player making their debut as a starter.
-  TRUE examples (actual rookies/first-time starters): Shedeur Sanders (CLE), Jaxson Dart (NYG), Cam Ward (TEN).
-  FALSE examples (veterans on new teams): Kyler Murray (6+ NFL seasons), Gardner Minshew (6+ seasons), Spencer Rattler (1+ seasons, NFL veteran), Bo Nix (played a full prior season as starter).
-  A QB who changes teams is NOT a rookie. A QB who missed time due to injury is NOT a rookie. rookie_qb_flag is about NFL experience level, not familiarity with a new team or system.
+- rookie_qb_flag = true ONLY if this QB has never started an NFL game in a prior season — a genuine first-year starter making his NFL debut this season. Lean on qb_experience_years: effectively 0 prior NFL seasons as a starter means rookie; 1+ prior seasons as a starter means NOT a rookie, even on a new team and even returning from injury.
+  A QB who started games in ANY prior season is NOT a rookie (a QB who started last season is a SECOND-YEAR player, not a rookie). A QB who changes teams is NOT a rookie. A QB who missed time due to injury is NOT a rookie. rookie_qb_flag is about NFL experience level, not familiarity with a new team or system. Do NOT name specific players here — judge each QB from his own experience data, since the current rookie class changes every season.
 - compound_risk_flag = true ONLY when rookie_qb_flag is true AND pass_protection_grade is C or below. This flag is reserved for genuine first-year starters behind bad OLines — a rare scenario. Flag conservatively.
 - The notes field must focus on fantasy implications, not general football analysis
 
