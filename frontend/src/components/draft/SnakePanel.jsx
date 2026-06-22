@@ -60,7 +60,9 @@ export default function SnakePanel() {
           <span className="text-base text-slate-300">
             {picksUntilYourTurn != null
               ? `You're up in ${picksUntilYourTurn} picks`
-              : 'Waiting for the draft...'}
+              : currentPick != null
+              ? 'Draft in progress' /* underway, countdown unavailable — never "waiting" */
+              : 'Waiting for the draft...' /* genuinely pre-draft: no current pick */}
           </span>
         )}
         {roundPick && <span className="text-sm text-slate-500 mt-1">{roundPick}</span>}

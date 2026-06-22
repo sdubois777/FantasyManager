@@ -185,6 +185,27 @@ export function detectSnakeEvents(prev, curr) {
     })
   }
 
+  // CONTINUOUS STATUS — additive. Yahoo already renders the current pick/round
+  // and "You're up in N" (snake-reversal-correct) every poll; we parse it but
+  // previously only emitted at the 0/2 alert boundaries, so the status line went
+  // stale between them. Emit whenever any of these change, so the panel is always
+  // current — not just at the alert moments. This is STATUS DATA, not an alert:
+  // the your_turn / your_turn_soon alerts above are unchanged.
+  const status = {
+    current_pick: curr.currentPick,
+    current_round: curr.currentRound,
+    picks_until_your_turn: curr.picksUntilYourTurn,
+  }
+  const ps = prev.lastStatus || {}
+  if (
+    status.current_pick !== ps.current_pick ||
+    status.current_round !== ps.current_round ||
+    status.picks_until_your_turn !== ps.picks_until_your_turn
+  ) {
+    events.push({ type: 'snake_status', platform: 'yahoo', payload: status })
+  }
+  next.lastStatus = status
+
   next.wasYourTurn = curr.isYourTurn
   next.lastPicksUntil = curr.picksUntilYourTurn
   return { events, next }
