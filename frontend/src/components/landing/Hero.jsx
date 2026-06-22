@@ -10,7 +10,7 @@ export default function Hero() {
   return (
     <section className="relative pt-32 pb-20 px-4 sm:px-6 overflow-hidden">
       {/* Background gradient */}
-      <div className="absolute inset-0 bg-gradient-to-b from-blue-950/20 via-[#0f1117] to-[#0f1117]" />
+      <div className="absolute inset-0 bg-gradient-to-b from-blue-950/20 via-surface-0 to-surface-0" />
 
       <div className="relative max-w-4xl mx-auto text-center">
         <h1 className="text-4xl sm:text-5xl lg:text-6xl font-extrabold text-white leading-tight tracking-tight">

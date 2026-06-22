@@ -3,10 +3,11 @@ import { SignedIn, SignedOut } from '@clerk/clerk-react'
 
 export default function LandingNav() {
   return (
-    <nav className="fixed top-0 left-0 right-0 z-50 bg-[#0f1117]/80 backdrop-blur-md border-b border-gray-800/50">
+    <nav className="fixed top-0 left-0 right-0 z-50 bg-surface-0/80 backdrop-blur-md border-b border-gray-800/50">
       <div className="max-w-6xl mx-auto px-4 sm:px-6 h-16 flex items-center justify-between">
+        {/* TODO(brand): swap this wordmark for the approved R-glyph + "Rook" lockup. */}
         <Link to="/" className="text-xl font-bold text-white tracking-tight">
-          Draft<span className="text-blue-400">Mind</span>
+          Rook
         </Link>
 
         <div className="hidden sm:flex items-center gap-6 text-sm text-gray-400">

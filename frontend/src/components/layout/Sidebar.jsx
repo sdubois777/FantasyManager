@@ -34,14 +34,14 @@ export default function Sidebar({ mobileOpen = false, onClose }) {
   const labelHidden = collapsed ? 'lg:hidden' : ''
   return (
     <aside
-      className={`fixed top-0 left-0 h-full bg-[#161822] border-r border-[#2d3148] flex flex-col transition-transform duration-200 w-64 z-50 ${
+      className={`fixed top-0 left-0 h-full bg-surface-1 border-r border-border flex flex-col transition-transform duration-200 w-64 z-50 ${
         mobileOpen ? 'translate-x-0' : '-translate-x-full'
       } lg:translate-x-0 lg:z-40 lg:transition-all ${
         collapsed ? 'lg:w-16' : 'lg:w-56'
       }`}
     >
       {/* Header */}
-      <div className="flex items-center h-14 px-4 border-b border-[#2d3148]">
+      <div className="flex items-center h-14 px-4 border-b border-border">
         <span
           className={`text-blue-400 font-semibold text-sm tracking-wide ${labelHidden}`}
         >
@@ -80,7 +80,7 @@ export default function Sidebar({ mobileOpen = false, onClose }) {
               `flex items-center gap-3 px-4 py-2.5 text-sm transition-colors min-h-11 lg:min-h-0 ${
                 isActive
                   ? 'text-blue-400 bg-blue-500/10 border-r-2 border-blue-400'
-                  : 'text-slate-400 hover:text-slate-200 hover:bg-[#1c1f2e]'
+                  : 'text-slate-400 hover:text-slate-200 hover:bg-surface-2'
               }`
             }
           >
@@ -97,7 +97,7 @@ export default function Sidebar({ mobileOpen = false, onClose }) {
             `flex items-center gap-3 px-4 py-2.5 text-sm transition-colors min-h-11 lg:min-h-0 ${
               isActive
                 ? 'text-blue-400 bg-blue-500/10 border-r-2 border-blue-400'
-                : 'text-amber-400 hover:text-amber-300 hover:bg-[#1c1f2e]'
+                : 'text-amber-400 hover:text-amber-300 hover:bg-surface-2'
             }`
           }
         >
@@ -107,7 +107,7 @@ export default function Sidebar({ mobileOpen = false, onClose }) {
       </nav>
 
       {/* Footer — user */}
-      <div className="p-4 border-t border-[#2d3148]">
+      <div className="p-4 border-t border-border">
         <div className="flex items-center gap-2">
           <UserButton afterSignOutUrl="/sign-in" />
           <span className={`text-xs text-slate-400 truncate ${labelHidden}`}>
