@@ -78,18 +78,21 @@ test('parseSnakeState returns null on empty text', () => {
 // --- detectSnakeEvents (turn/countdown ONLY now) ----------------------------
 
 test('detectSnakeEvents fires your_turn on the rising edge only', () => {
+  // The alert is unchanged; a continuous snake_status now also rides along, so
+  // assert on the your_turn event by type (not the total event count).
   const start = { wasYourTurn: false, lastPicksUntil: null }
   const curr = parseSnakeState(YOUR_TURN)
 
   const first = detectSnakeEvents(start, curr)
-  assert.equal(first.events.length, 1)
-  assert.equal(first.events[0].type, 'your_turn')
-  assert.deepEqual(first.events[0].payload, {
+  const yourTurn = first.events.find((e) => e.type === 'your_turn')
+  assert.ok(yourTurn, 'your_turn alert fires on the rising edge')
+  assert.deepEqual(yourTurn.payload, {
     round: 8,
     pick: 93,
     picks_until_your_turn: 0,
   })
 
+  // Same state next poll: no your_turn AND no snake_status (nothing changed).
   const second = detectSnakeEvents(first.next, curr)
   assert.equal(second.events.length, 0)
 })
@@ -100,11 +103,45 @@ test('detectSnakeEvents fires your_turn_soon once at 2 picks away', () => {
   )
   const start = { wasYourTurn: false, lastPicksUntil: 3 }
   const r = detectSnakeEvents(start, twoAway)
-  assert.equal(r.events.length, 1)
-  assert.equal(r.events[0].type, 'your_turn_soon')
+  const soon = r.events.find((e) => e.type === 'your_turn_soon')
+  assert.ok(soon, 'your_turn_soon alert fires at 2 picks away')
+  assert.equal(soon.payload.picks_until_your_turn, 2)
 
+  // Same state next poll: alert does not refire and status is unchanged.
   const again = detectSnakeEvents(r.next, twoAway)
   assert.equal(again.events.length, 0)
+})
+
+test('detectSnakeEvents emits continuous snake_status with pick/round/countdown', () => {
+  const start = { wasYourTurn: false, lastPicksUntil: null }
+  const curr = parseSnakeState(SOMEONE_ELSE) // Round 7, Pick 84, up in 9
+  const r = detectSnakeEvents(start, curr)
+  const status = r.events.find((e) => e.type === 'snake_status')
+  assert.ok(status, 'snake_status fires with the parsed continuous values')
+  assert.deepEqual(status.payload, {
+    current_pick: 84,
+    current_round: 7,
+    picks_until_your_turn: 9,
+  })
+})
+
+test('snake_status fires only when values change (deduped), then on each change', () => {
+  const start = { wasYourTurn: false, lastPicksUntil: null }
+  const curr = parseSnakeState(SOMEONE_ELSE)
+  const r1 = detectSnakeEvents(start, curr)
+  assert.ok(r1.events.some((e) => e.type === 'snake_status'))
+
+  // Steady poll, same state → no snake_status (no flicker source).
+  const r2 = detectSnakeEvents(r1.next, curr)
+  assert.equal(r2.events.filter((e) => e.type === 'snake_status').length, 0)
+
+  // Countdown decrements as the next pick lands → snake_status fires again.
+  const next = parseSnakeState("Cal's Pick • You're up in 8 Picks • Round 7, Pick 85")
+  const r3 = detectSnakeEvents(r2.next, next)
+  const s3 = r3.events.find((e) => e.type === 'snake_status')
+  assert.ok(s3, 'snake_status re-fires when the countdown changes')
+  assert.equal(s3.payload.picks_until_your_turn, 8)
+  assert.equal(s3.payload.current_pick, 85)
 })
 
 test('detectSnakeEvents no longer emits pick events (parsePicks owns those)', () => {

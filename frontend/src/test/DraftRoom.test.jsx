@@ -1450,6 +1450,64 @@ describe('DraftRoom', () => {
     expect(s.recommendation).toBeNull()
   })
 
+  it('snake_status WS message updates the continuous pick/round/countdown', async () => {
+    useDraftStore.setState({ phase: 'live', currentPick: null, currentRound: null, picksUntilYourTurn: null })
+    render(<MemoryRouter><DraftRoom /></MemoryRouter>)
+    await act(async () => { await Promise.resolve() })
+    const ws = MockWebSocket.instances.at(-1)
+
+    act(() => {
+      ws.onmessage({
+        data: JSON.stringify({
+          type: 'snake_status',
+          payload: { current_pick: 84, current_round: 7, picks_until_your_turn: 9 },
+        }),
+      })
+    })
+
+    const s = useDraftStore.getState()
+    expect(s.currentPick).toBe(84)
+    expect(s.currentRound).toBe(7)
+    expect(s.picksUntilYourTurn).toBe(9)
+  })
+
+  it('snake_pick does NOT null the countdown — status stays populated pick-over-pick', async () => {
+    useDraftStore.setState({ phase: 'live' })
+    render(<MemoryRouter><DraftRoom /></MemoryRouter>)
+    await act(async () => { await Promise.resolve() })
+    const ws = MockWebSocket.instances.at(-1)
+
+    // Continuous status says "up in 5".
+    act(() => {
+      ws.onmessage({ data: JSON.stringify({ type: 'snake_status', payload: { current_pick: 80, current_round: 7, picks_until_your_turn: 5 } }) })
+    })
+    expect(useDraftStore.getState().picksUntilYourTurn).toBe(5)
+
+    // A pick lands — must NOT revert the countdown to null (the flicker bug).
+    act(() => {
+      ws.onmessage({ data: JSON.stringify({ type: 'snake_pick', payload: { player_name: 'Some Player', picker: 'Bart', pick_number: 80, round: 7 } }) })
+    })
+    expect(useDraftStore.getState().picksUntilYourTurn).toBe(5) // unchanged, not null
+    expect(useDraftStore.getState().isYourTurn).toBe(false)     // a pick still ends your turn
+  })
+
+  it('snake_status degrades gracefully when fields are absent (no crash, no false numbers)', async () => {
+    useDraftStore.setState({ phase: 'live', currentPick: 50, currentRound: 4, picksUntilYourTurn: 3 })
+    render(<MemoryRouter><DraftRoom /></MemoryRouter>)
+    await act(async () => { await Promise.resolve() })
+    const ws = MockWebSocket.instances.at(-1)
+
+    // A status event carrying only the pick (e.g. a partial/other-platform emit)
+    // must update only what's present and leave the rest intact.
+    act(() => {
+      ws.onmessage({ data: JSON.stringify({ type: 'snake_status', payload: { current_pick: 51 } }) })
+    })
+    const s = useDraftStore.getState()
+    expect(s.currentPick).toBe(51)        // applied
+    expect(s.currentRound).toBe(4)        // untouched
+    expect(s.picksUntilYourTurn).toBe(3)  // untouched — no false reset
+  })
+
   it('your_turn does NOT clear the rec when it is for the same pick', async () => {
     useDraftStore.setState({ phase: 'live' })
     render(
@@ -1600,8 +1658,11 @@ describe('DraftRoom', () => {
     expect(useDraftStore.getState().availablePlayers).toHaveLength(2)
   })
 
-  it('snake_pick WS message resets isYourTurn to false', async () => {
-    useDraftStore.setState({ phase: 'live', isYourTurn: true, picksUntilYourTurn: 0 })
+  it('snake_pick WS message resets isYourTurn to false (but no longer nulls the countdown)', async () => {
+    // CHANGED (snake status-line fix): snake_pick still ends your turn, but it
+    // MUST NOT null picksUntilYourTurn — that was the flicker-then-revert bug.
+    // The continuous snake_status stream owns the countdown now.
+    useDraftStore.setState({ phase: 'live', isYourTurn: true, picksUntilYourTurn: 4 })
     render(
       <MemoryRouter>
         <DraftRoom />
@@ -1621,7 +1682,7 @@ describe('DraftRoom', () => {
 
     const s = useDraftStore.getState()
     expect(s.isYourTurn).toBe(false)
-    expect(s.picksUntilYourTurn).toBeNull()
+    expect(s.picksUntilYourTurn).toBe(4) // unchanged — not reset to null
   })
 
   it('recordSnakePick adds to roster when is_yours (no team-name match needed)', () => {

@@ -213,12 +213,27 @@ export default function useDraftSocket() {
               )
               if (data.payload?.round != null) setCurrentRound(data.payload.round)
               break
+            // Continuous snake status (current pick/round + countdown), pushed by
+            // the extension on every change — keeps the status line live instead
+            // of reverting to the "waiting" default between alert boundaries.
+            // Graceful: apply only the fields the event actually carries, so a
+            // platform that doesn't emit them (ESPN/Sleeper stubs) degrades
+            // cleanly rather than showing wrong numbers.
+            case 'snake_status': {
+              const p = data.payload || {}
+              if ('current_pick' in p) setCurrentPick(p.current_pick ?? null)
+              if ('current_round' in p) setCurrentRound(p.current_round ?? null)
+              if ('picks_until_your_turn' in p)
+                setPicksUntilYourTurn(p.picks_until_your_turn ?? null)
+              break
+            }
             case 'snake_pick':
               recordSnakePick(data.payload || {})
               // Any pick (yours or otherwise) ends the on-the-clock state until
-              // the next your_turn event arrives.
+              // the next your_turn event. Do NOT null the countdown here — the
+              // snake_status stream owns it; nulling was the flicker-then-revert
+              // bug (status reset to the "waiting" default on every pick).
               setIsYourTurn(false)
-              setPicksUntilYourTurn(null)
               break
           }
         } catch {
