@@ -574,6 +574,27 @@ Lamar Jackson proj=368 vs actual=213 is the main non-injury QB miss.
   June 2026 mock draft. Re-verify against
   real August draft room — Yahoo may change
   their DOM between now and then.
+- [ ] AUCTION DOM SELECTOR DRIFT (live bug,
+  open): the auction poller emits ZERO events
+  in a current live auction — Yahoo changed
+  the auction-room markup. yahoo_draft.js
+  reads `document.querySelector('#draft')
+  .innerText` and yahoo_draft_parse.mjs parses
+  it by line regex (pos/team `^[A-Z]{2,3} [–-]
+  [A-Z]{1,3}$`, bid `^\$\d+$`, clock line
+  contains "Remaining", budget `^.+\$\d+/\d+$`).
+  Prime suspect: `#draft` container is gone/
+  renamed (querySelector→null → parseDraftState
+  null → no events). Secondary: the 4 line
+  patterns. Snake is UNAFFECTED — separate
+  poller (yahoo_snake_draft.js, `#app` +
+  PICK_CARD_SELECTOR). FIX NEEDS captured live
+  auction DOM (do NOT guess selectors). Same
+  class as the August snake-DOM re-verify
+  above — auction just hit it first. Backend
+  relay was hardened separately so an engine
+  throw can't suppress delivery, but that is
+  NOT this bug (events never reach the relay).
 - Extension not yet published to Chrome
   Web Store or Firefox Add-ons. Sideload
   only (Load unpacked / Temporary Add-on).
