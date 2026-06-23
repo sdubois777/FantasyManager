@@ -151,8 +151,17 @@ export function resolveTeams(root, health, warn) {
       const t = txt(s)
       return t && t !== EXPECTED_YOU_LABEL && !MONEY_RE.test(t) && !ROSTER_RE.test(t)
     })
-    const name = nameSpan ? txt(nameSpan) : dataId ? `Team ${dataId}` : null
-    if (!nameSpan) sawName = false
+    // The user's own card shows "You", not a team name — that's expected, so
+    // key it by "You" and DON'T treat its missing team-name span as a
+    // degradation (only an OPPONENT missing its name is a real miss).
+    const name = nameSpan
+      ? txt(nameSpan)
+      : isYou
+      ? EXPECTED_YOU_LABEL
+      : dataId
+      ? `Team ${dataId}`
+      : null
+    if (!nameSpan && !isYou) sawName = false
     const budget = budgetSpan ? parseInt(txt(budgetSpan).replace(/[^\d]/g, ''), 10) : null
     let slotsUsed = null
     let totalSlots = null
@@ -180,29 +189,63 @@ export function resolveTeams(root, health, warn) {
   return { teams, yourTeamId }
 }
 
-/** Smallest capped container holding the clock + a money span + a name candidate. */
-export function resolveNominationCard(root) {
-  const clock = findLiveTimer(root)
-  if (!clock) return null // no live countdown → no active nomination
-  let el = clock.parentElement
-  let depth = 0
-  while (el && depth < CARD_MAX_ASCENT) {
-    const hasMoney = spansIn(el).some((s) => MONEY_RE.test(txt(s)))
-    const hasPlayerId = !!el.querySelector('[class~="ys-player"][data-id], .ys-player[data-id]')
-    const hasName = spansIn(el).some((s) => isNameShape(txt(s)))
-    if (hasMoney && (hasPlayerId || hasName)) return el
-    el = el.parentElement
-    depth += 1
-  }
-  return null // cap hit without a valid card → treat as between-nominations
+/**
+ * The nominee on the block: the single ys-player[data-id] in the offer panel,
+ * distinguished from the (many) Players-table rows by its SHORT text carrying
+ * the projected price ("Proj $N") — the table rows are long stat lines. Returns
+ * null when no nomination is active (e.g. an empty lobby) so the resolver
+ * reports no nominee instead of grabbing the first player in the table.
+ */
+export function findNomineeEl(root) {
+  const yps = root
+    ? Array.from(root.querySelectorAll('[class~="ys-player"][data-id], .ys-player[data-id]'))
+    : []
+  return (
+    yps.find((p) => {
+      const t = txt(p)
+      return t.length < 60 && /Proj/i.test(t) && /\$/.test(t)
+    }) || null
+  )
 }
 
-/** Player ID (Amendment B PRIMARY) — stable across deploys. */
-export function resolvePlayerId(card) {
-  const el = card
-    ? card.querySelector('[class~="ys-player"][data-id], .ys-player[data-id]')
-    : null
-  return el ? el.getAttribute('data-id') : null
+/**
+ * The nomination "offer panel" = the nominee's LARGEST ancestor that still
+ * excludes the team-budget SIDEBAR (no `.ys-team`) and the Players TABLE (≤1
+ * ys-player). That structural boundary is what keeps the bidder resolution off
+ * the sidebar — anchoring on the timer jumped straight to the everything-
+ * container (12 .ys-team), which is how the bidder mis-resolved to a sidebar
+ * team. Structural, not positional.
+ */
+export function resolveNominationCard(root) {
+  const nominee = findNomineeEl(root)
+  if (!nominee) return null
+  let card = nominee
+  let depth = 0
+  while (card.parentElement && depth < CARD_MAX_ASCENT) {
+    const p = card.parentElement
+    if (p.querySelectorAll('.ys-team').length > 0) break
+    if (p.querySelectorAll('[class~="ys-player"], .ys-player').length > 1) break
+    card = p
+    depth += 1
+  }
+  return card
+}
+
+/** Player ID (Amendment B PRIMARY) — stable across deploys. From the nominee. */
+export function resolvePlayerId(nominee) {
+  return nominee ? nominee.getAttribute('data-id') : null
+}
+
+const POS_RE = /^(QB|RB|WR|TE|K|DEF|DST)$/
+
+/** Best-effort "POS · Team" from the nominee element (backend resolves by name). */
+export function resolvePosTeam(nominee) {
+  if (!nominee) return null
+  const spans = spansIn(nominee).map(txt)
+  const i = spans.findIndex((t) => POS_RE.test(t))
+  if (i < 0) return null
+  const team = spans[i + 1] && /^[A-Za-z]{2,3}$/.test(spans[i + 1]) ? spans[i + 1] : null
+  return team ? `${spans[i]} · ${team}` : spans[i]
 }
 
 /**
@@ -210,38 +253,33 @@ export function resolvePlayerId(card) {
  * fallback = name-shape span in document order; last resort = the _ys_ name
  * span. Sets health.name and warns on any fallback.
  */
-export function resolvePlayerName(card, playerId, health, warn) {
-  if (!card) {
+export function resolvePlayerName(nominee, card, health, warn) {
+  if (!nominee && !card) {
     health.name = 'na'
     return null
   }
-  // Primary: name within the ys-player[data-id] subtree (id-anchored).
-  if (playerId) {
-    const row = card.querySelector(
-      `[class~="ys-player"][data-id="${playerId}"], .ys-player[data-id="${playerId}"]`
-    )
-    const idName = row ? spansIn(row).map(txt).find(isNameShape) : null
-    if (idName) {
-      health.name = 'primary'
-      return idName
-    }
+  // Primary: name span inside the id-anchored nominee element (Amendment B).
+  const idName = nominee ? spansIn(nominee).map(txt).find(isNameShape) : null
+  if (idName) {
+    health.name = 'primary'
+    return idName
   }
-  // Fallback: first name-shape span in document order within the card.
-  const shapeName = spansIn(card).map(txt).find(isNameShape)
+  // Fallback: first name-shape span in the offer panel (document order).
+  const shapeName = card ? spansIn(card).map(txt).find(isNameShape) : null
   if (shapeName) {
     health.name = 'fallback'
-    warn('name', playerId ? 'shape(no-id-name)' : 'shape')
+    warn('name', 'shape')
     return shapeName
   }
   // Last resort: the rotating _ys_ name span, behind the shape gate.
-  const fb = card.querySelector('span._ys_1i9qkex')
+  const fb = card ? card.querySelector('span._ys_1i9qkex') : null
   if (fb && isNameShape(txt(fb))) {
     health.name = 'fallback'
     warn('name', 'hash')
     return txt(fb)
   }
   health.name = 'missing'
-  warn('name', 'missing')
+  if (card) warn('name', 'missing')
   return null
 }
 
@@ -276,39 +314,57 @@ export function resolveBid(card, health, warn) {
 export function resolveBidder(card, teams, health, warn) {
   if (!card) {
     health.bidder = 'na'
-    return null
+    return { name: null, teamId: null }
   }
-  const knownNames = new Set(Object.keys(teams || {}))
+  // Structural: a team label WITHIN the offer panel. The card excludes the
+  // .ys-team sidebar, so a known-team-name match here is the high bidder, not a
+  // stray sidebar card. Cross-check to the stable .ys-team[data-id] so we thread
+  // a team ID, not just the display string (Amendment 5) — NOT positional.
+  const idByName = new Map(
+    Object.entries(teams || {}).map(([n, v]) => [n, v.dataId ?? null])
+  )
   const hit = spansIn(card)
     .map(txt)
-    .find((t) => knownNames.has(t))
+    .find((t) => idByName.has(t))
   if (hit) {
     health.bidder = 'primary'
-    return hit
+    return { name: hit, teamId: idByName.get(hit) }
   }
   const fb = card.querySelector('span._ys_aug67i')
-  if (fb && knownNames.has(txt(fb))) {
+  if (fb && idByName.has(txt(fb))) {
     health.bidder = 'fallback'
     warn('bidder', 'hash')
-    return txt(fb)
+    return { name: txt(fb), teamId: idByName.get(txt(fb)) }
   }
   health.bidder = teams && Object.keys(teams).length ? 'missing' : 'na'
-  return null // bidder is best-effort; absence is not fatal
+  return { name: null, teamId: null } // best-effort; absence is not fatal
 }
 
 /** "N nominations until your turn" → viewer countdown (heartbeat-only data). */
 export function resolveTurn(root, health) {
   const texts = spansIn(root).map(txt)
+  // Prefer a span whose ENTIRE text is the countdown. A catch-all container
+  // span can concatenate the whole app text (e.g. the clock "00:19" abutting
+  // "4 nominations until your turn" → a false "194"), so a full-match anchor is
+  // required; only fall back to a substring match (loud) if no clean span.
+  const FULL = /^(\d+)\s+nominations?\s+until your turn$/i
   for (const t of texts) {
-    const m = t.match(TURN_RE)
+    const m = t.match(FULL)
     if (m) {
       health.turn = 'primary'
       return parseInt(m[1], 10)
     }
   }
-  if (texts.some((t) => YOUR_TURN_NOW_RE.test(t))) {
+  if (texts.some((t) => t.length < 60 && YOUR_TURN_NOW_RE.test(t))) {
     health.turn = 'primary'
     return 0 // your turn now
+  }
+  for (const t of texts) {
+    const m = t.match(TURN_RE)
+    if (m) {
+      health.turn = 'fallback' // matched inside a noisy/blob span
+      return parseInt(m[1], 10)
+    }
   }
   health.turn = 'na'
   return null
@@ -324,19 +380,22 @@ export function resolveTurn(root, health) {
 export function resolveAuctionState(root, { warn = () => {} } = {}) {
   const health = freshHealth()
   const { teams, yourTeamId } = resolveTeams(root, health, warn)
+  const nominee = findNomineeEl(root)
   const card = resolveNominationCard(root)
-  const playerId = resolvePlayerId(card)
-  const playerName = resolvePlayerName(card, playerId, health, warn)
+  const playerId = resolvePlayerId(nominee)
+  const playerName = resolvePlayerName(nominee, card, health, warn)
+  const posTeam = resolvePosTeam(nominee)
   const currentBid = resolveBid(card, health, warn)
-  const currentBidder = resolveBidder(card, teams, health, warn)
-  const clock = card ? resolveClock(card, root, health, warn) : ((health.clock = 'na'), null)
+  const bidder = resolveBidder(card, teams, health, warn)
+  const clock = card ? resolveClock(root, health, warn) : ((health.clock = 'na'), null)
   const picksUntilYourTurn = resolveTurn(root, health)
   return {
     playerName,
     playerId,
-    posTeam: null, // TODO(capture: nomination.html): extract POS·TEAM if present
+    posTeam,
     currentBid,
-    currentBidder,
+    currentBidder: bidder.name,
+    currentBidderTeamId: bidder.teamId,
     clock,
     teams,
     yourTeamId,
@@ -345,15 +404,14 @@ export function resolveAuctionState(root, { warn = () => {} } = {}) {
   }
 }
 
-/** Clock within the nomination card (primary) → root → _ys_ fallback. */
-export function resolveClock(card, root, health, warn) {
-  const inCard = card ? spansIn(card).find((s) => CLOCK_RE.test(txt(s)) && notInDialog(s)) : null
-  const prim = inCard || findLiveTimer(root)
+/** The live countdown (root-level widget) → _ys_ fallback behind the text check. */
+export function resolveClock(root, health, warn) {
+  const prim = findLiveTimer(root)
   if (prim) {
     health.clock = 'primary'
     return txt(prim)
   }
-  const fb = (card || root).querySelector('span._ys_12k0qlu')
+  const fb = root ? root.querySelector('span._ys_12k0qlu') : null
   if (fb && CLOCK_RE.test(txt(fb)) && notInDialog(fb)) {
     health.clock = 'fallback'
     warn('clock', 'hash')
@@ -423,6 +481,8 @@ export function detectAuctionEvents(prev, curr) {
           player_id: curr.playerId,
           pos_team: curr.posTeam,
           opening_bid: curr.currentBid,
+          current_bidder: curr.currentBidder,
+          current_bidder_team_id: curr.currentBidderTeamId,
           clock: curr.clock,
         },
       })
@@ -453,6 +513,7 @@ export function detectAuctionEvents(prev, curr) {
         player_name: curr.playerName,
         current_bid: curr.currentBid,
         current_bidder: curr.currentBidder,
+        current_bidder_team_id: curr.currentBidderTeamId,
         clock: curr.clock,
       },
     })

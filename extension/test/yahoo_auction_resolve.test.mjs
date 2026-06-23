@@ -3,14 +3,26 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
+import { parseHTML } from 'linkedom'
 
 import {
   auctionGateDecision,
   isNameShape,
+  resolveAuctionState,
+  shouldAuctionActivate,
 } from '../src/content_scripts/yahoo_auction_resolve.mjs'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const FIX = join(__dirname, 'fixtures', 'auction')
+
+// Parse a captured Yahoo outerHTML fixture into a document (+ React root).
+function docFor(name) {
+  const { document } = parseHTML(readFileSync(join(FIX, name), 'utf-8'))
+  return document
+}
+function rootFor(name) {
+  return docFor(name).querySelector('#main-0-DraftClientBootstrap-Proxy')
+}
 
 // ---------------------------------------------------------------------------
 // Activation gate — pure decision (no DOM). Root + live signal + cross-poller
@@ -72,28 +84,59 @@ test('isNameShape: rejects money / number / roster / clock / label / single toke
 })
 
 // ---------------------------------------------------------------------------
-// Fixture-backed resolver tests — SKIPPED stubs until REAL captures land.
-//
-// Drop captured Yahoo outerHTML into test/fixtures/auction/<state>.html and
-// un-skip. Do NOT hand-mock the markup — the regression net must be real Yahoo
-// DOM, re-runnable after their next deploy. linkedom (dev-dep) parses fixtures:
-//   import { parseHTML } from 'linkedom'
-//   const { document } = parseHTML(loadFixture('lobby.html'))
-// Field tuning (name/bid/clock/bidder) stays HELD until a mid-nomination capture.
+// Fixture-backed resolver tests — REAL captured Yahoo outerHTML (the regression
+// net; re-runnable after each Yahoo deploy). Do NOT hand-mock the markup.
+// Remaining states are SKIPPED until those captures land.
 // ---------------------------------------------------------------------------
-// eslint-disable-next-line no-unused-vars
-function loadFixture(name) {
-  return readFileSync(join(FIX, name), 'utf-8')
-}
+
+// nomination.html — a real mid-nomination capture: T. McMillan (id 41793) on the
+// block, $1 bid by Team 3, clock 00:19, 4 nominations until our turn, our team
+// (data-id 4) is "You" with $200 / 0-15. All fields resolve off stable anchors
+// (ys-player[data-id] name, structural offer-panel bid/bidder, .ys-team teams).
+test('nomination: resolves name/bid/clock/bidder/teams off stable anchors', () => {
+  const doc = docFor('nomination.html')
+  const root = doc.querySelector('#main-0-DraftClientBootstrap-Proxy')
+  const warns = []
+  const st = resolveAuctionState(root, { warn: (f, l) => warns.push(`${f}:${l}`) })
+
+  // gate active
+  assert.equal(shouldAuctionActivate(doc), true)
+  // nominee — id-anchored (Amendment B)
+  assert.equal(st.playerName, 'T. McMillan')
+  assert.equal(st.playerId, '41793')
+  assert.equal(st.posTeam, 'WR · Car')
+  // bid + high bidder (structural, cross-checked to the stable team data-id)
+  assert.equal(st.currentBid, 1)
+  assert.equal(st.currentBidder, 'Team 3')
+  assert.equal(st.currentBidderTeamId, '3')
+  // clock
+  assert.equal(st.clock, '00:19')
+  // viewer countdown (full-match anchor, not the catch-all blob's "194")
+  assert.equal(st.picksUntilYourTurn, 4)
+  // every field off its PRIMARY anchor — no _ys_ fallback, no warns
+  assert.deepEqual(st.health, {
+    clock: 'primary', name: 'primary', bid: 'primary',
+    bidder: 'primary', teams: 'primary', turn: 'primary',
+  })
+  assert.deepEqual(warns, [])
+})
+
+test('nomination: teams + your-team self-id (You span + data-id, NOT a degradation)', () => {
+  const root = rootFor('nomination.html')
+  const st = resolveAuctionState(root, { warn: () => {} })
+  assert.equal(Object.keys(st.teams).length, 12)
+  assert.equal(st.yourTeamId, '4') // the "You" card
+  // your own card: keyed "You", full budget, 0/15, data-id 4
+  assert.deepEqual(st.teams['You'], {
+    budget: 200, slotsUsed: 0, totalSlots: 15, dataId: '4',
+  })
+  // an opponent card carries budget/roster/data-id
+  assert.equal(st.teams['Team 3'].dataId, '3')
+})
 
 test(
-  'lobby: gate ACTIVE (root + .ys-team), no nomination; teams + your-team self-id (You/data-id)',
-  { skip: 'awaiting test/fixtures/auction/lobby.html' },
-  () => {}
-)
-test(
-  'nomination: name via ys-player[data-id] (primary), current bid, clock, current_bidder',
-  { skip: 'awaiting test/fixtures/auction/nomination.html' },
+  'lobby: gate ACTIVE (root + .ys-team), NO nominee; teams + self-id',
+  { skip: 'awaiting a TRUE empty-lobby capture (the prior file was mid-nomination)' },
   () => {}
 )
 test(
@@ -112,7 +155,13 @@ test(
   () => {}
 )
 test(
-  'degradation: mutated _ys_ hashes fall back via text/structure and report fallback/missing (LOUD, not silent)',
-  { skip: 'awaiting test/fixtures/auction/nomination.html (+ a hash-mutated variant)' },
+  'degradation: breaking a STRUCTURE/TEXT anchor falls to _ys_ + reports fallback/missing (LOUD)',
+  // NOTE: the primary anchors are text/structure/kebab — NOT _ys_ hashes — so
+  // mutating the hashes alone does NOT degrade (that's the desired property,
+  // verified by nomination.html resolving all-primary with the hashes present).
+  // This test must instead break a STRUCTURAL anchor (e.g. strip .ys-team or the
+  // nominee's "Proj $" text) and assert the _ys_ fallback fires loudly. Holding
+  // until we lock the exact fallback selectors against a 2nd-deploy capture.
+  { skip: 'design against a real post-deploy capture (hash-mutation alone is a no-op by design)' },
   () => {}
 )
