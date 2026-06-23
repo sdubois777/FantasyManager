@@ -10,6 +10,9 @@ import {
   isNameShape,
   resolveAuctionState,
   shouldAuctionActivate,
+  isDraftComplete,
+  detectAuctionEvents,
+  initAuctionMemory,
 } from '../src/content_scripts/yahoo_auction_resolve.mjs'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
@@ -134,26 +137,73 @@ test('nomination: teams + your-team self-id (You span + data-id, NOT a degradati
   assert.equal(st.teams['Team 3'].dataId, '3')
 })
 
-test(
-  'lobby: gate ACTIVE (root + .ys-team), NO nominee; teams + self-id',
-  { skip: 'awaiting a TRUE empty-lobby capture (the prior file was mid-nomination)' },
-  () => {}
-)
-test(
-  'your-turn: picks_until_your_turn === 0 (your-turn-now wording)',
-  { skip: 'awaiting test/fixtures/auction/your-turn.html' },
-  () => {}
-)
-test(
-  'post-pick: draft_pick via team-delta, attributed to the last-known nomination',
-  { skip: 'awaiting test/fixtures/auction/post-pick.html' },
-  () => {}
-)
-test(
-  'draft-complete: gate INERT via the negative-override marker',
-  { skip: 'awaiting test/fixtures/auction/draft-complete.html (if it shares the root)' },
-  () => {}
-)
+// lobby.html — a TRUE empty lobby (room loaded, no nominee). Gate is active (the
+// room is up) but there is NO nomination, and that's NOT a degradation.
+test('lobby: gate ACTIVE but NO nominee; teams + self-id resolve clean', () => {
+  const doc = docFor('lobby.html')
+  const root = doc.querySelector('#main-0-DraftClientBootstrap-Proxy')
+  const warns = []
+  const st = resolveAuctionState(root, { warn: (f, l) => warns.push(`${f}:${l}`) })
+  assert.equal(shouldAuctionActivate(doc), true) // root + .ys-team
+  assert.equal(st.playerName, null) // findNomineeEl → null (no "Proj $" nominee)
+  assert.equal(st.currentBid, null)
+  assert.equal(st.clock, null)
+  assert.equal(st.health.name, 'na') // absence of a nomination is not a miss
+  assert.equal(st.health.bid, 'na')
+  assert.equal(Object.keys(st.teams).length, 12)
+  assert.equal(st.yourTeamId, '2') // this league's "You" card is data-id 2
+  assert.deepEqual(warns, [])
+})
+
+// your-turn.html — "It's your turn to nominate" (N=0). A SUGGESTED player is
+// shown (Proj $, no bid); that must NOT be reported as a nomination.
+test('your-turn: N=0 via real wording; suggested player is NOT a nomination', () => {
+  const doc = docFor('your-turn.html')
+  const root = doc.querySelector('#main-0-DraftClientBootstrap-Proxy')
+  const st = resolveAuctionState(root, { warn: () => {} })
+  assert.equal(shouldAuctionActivate(doc), true)
+  assert.equal(st.picksUntilYourTurn, 0) // your-turn-now
+  assert.equal(st.health.turn, 'primary')
+  assert.equal(st.playerName, null) // suggested, no bid → not an active nomination
+  assert.equal(st.currentBid, null)
+})
+
+// post-pick.html — real post-sale team budgets. Drive the team-delta draft_pick
+// from a prior tick whose nomination is about to resolve to a winner.
+test('post-pick: team-delta draft_pick attributed to the last-known nominee', () => {
+  const curr = resolveAuctionState(rootFor('post-pick.html'), { warn: () => {} })
+  // Reconstruct the pre-sale baseline by reversing one team's last purchase
+  // (the winner spent `price` and gained a roster slot).
+  const winner = 'Team 10'
+  const w = curr.teams[winner]
+  const price = 10
+  const nominationTeams = JSON.parse(JSON.stringify(curr.teams))
+  nominationTeams[winner] = { ...w, budget: w.budget + price, slotsUsed: w.slotsUsed - 1 }
+  const prev = {
+    ...initAuctionMemory(),
+    lastPlayerKey: '99999',
+    lastPlayerName: 'Sold Player',
+    lastBid: price,
+    nominationTeams,
+  }
+  const { events } = detectAuctionEvents(prev, { ...curr, playerName: null })
+  const sale = events.find((e) => e.type === 'draft_pick')
+  assert.ok(sale, 'draft_pick emitted on the team-budget delta')
+  assert.equal(sale.payload.winner, winner)
+  assert.equal(sale.payload.player_name, 'Sold Player') // last-known nominee
+  assert.equal(sale.payload.player_id, '99999')
+  assert.equal(sale.payload.final_price, price)
+})
+
+// draft-complete.html — post-draft summary on the SAME root. It has no .ys-team
+// and no timer, so the live-signal gate already keeps it inactive; the marker is
+// defense-in-depth.
+test('draft-complete: gate INACTIVE + draft-complete marker detected', () => {
+  const doc = docFor('draft-complete.html')
+  const root = doc.querySelector('#main-0-DraftClientBootstrap-Proxy')
+  assert.equal(shouldAuctionActivate(doc), false) // no .ys-team, no timer
+  assert.equal(isDraftComplete(root), true) // "Thank you for drafting…"
+})
 test(
   'degradation: breaking a STRUCTURE/TEXT anchor falls to _ys_ + reports fallback/missing (LOUD)',
   // NOTE: the primary anchors are text/structure/kebab — NOT _ys_ hashes — so

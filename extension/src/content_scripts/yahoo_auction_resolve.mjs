@@ -36,8 +36,9 @@ const MONEY_RE = /^\$\d+/
 const CLOCK_RE = /^\d{2}:\d{2}$/
 const ROSTER_RE = /^\d+\/\d+$/
 const TURN_RE = /(\d+)\s+nominations?\s+until your turn/i
-// "your turn now" wording — TBD from the your-turn capture; permissive stub.
-const YOUR_TURN_NOW_RE = /your turn to nominate|nominate a player|you'?re up( to nominate)?/i
+// "your turn now" wording — locked to the real capture: "It's your turn to
+// nominate" (your-turn.html). Match the stable core phrase.
+const YOUR_TURN_NOW_RE = /your turn to nominate/i
 
 // Known non-name labels that must never be read as a player name.
 const KNOWN_LABELS = new Set([
@@ -63,15 +64,17 @@ export function findLiveTimer(root) {
 }
 
 /**
- * Negative gate: a post-draft summary/results-review state can share the React
- * root WITH .ys-team cards but no live auction. STUB — the exact marker is TBD
- * from the draft-complete capture; returns false (never blocks) until then.
- * When the capture lands, anchor this on the draft-complete text/structure.
+ * Negative gate: a post-draft summary/results screen shares the React root.
+ * Verified from draft-complete.html: that screen has NO .ys-team cards and no
+ * live timer, so the live-signal gate already keeps it inactive. This marker is
+ * defense-in-depth (in case a future summary keeps the team cards) — anchored on
+ * the draft-complete greeting "Thank you for drafting with Yahoo".
  */
-export function isDraftComplete(_root) {
-  // TODO(capture: draft-complete.html): detect the draft-complete marker and
-  // return true so the poller does NOT activate on a finished-draft summary.
-  return false
+export function isDraftComplete(root) {
+  if (!root) return false
+  return Array.from(root.querySelectorAll('span')).some((s) =>
+    /thank you for drafting/i.test(txt(s))
+  )
 }
 
 // ---------------------------------------------------------------------------
@@ -302,8 +305,10 @@ export function resolveBid(card, health, warn) {
     warn('bid', 'hash')
     return parseInt(txt(fb).replace(/[^\d]/g, ''), 10)
   }
+  // No bid in the panel. NOT necessarily a degradation — the "your turn to
+  // nominate" state shows a suggested player with no bid yet. The caller decides
+  // (active-vs-suggested) and resets health to 'na' when there's no live bid.
   health.bid = 'missing'
-  warn('bid', 'missing')
   return null
 }
 
@@ -380,22 +385,42 @@ export function resolveTurn(root, health) {
 export function resolveAuctionState(root, { warn = () => {} } = {}) {
   const health = freshHealth()
   const { teams, yourTeamId } = resolveTeams(root, health, warn)
-  const nominee = findNomineeEl(root)
   const card = resolveNominationCard(root)
-  const playerId = resolvePlayerId(nominee)
-  const playerName = resolvePlayerName(nominee, card, health, warn)
-  const posTeam = resolvePosTeam(nominee)
+  const nominee = findNomineeEl(root)
   const currentBid = resolveBid(card, health, warn)
-  const bidder = resolveBidder(card, teams, health, warn)
-  const clock = card ? resolveClock(root, health, warn) : ((health.clock = 'na'), null)
+
+  // An ACTIVE nomination requires a live bid. "It's your turn to nominate" shows
+  // a SUGGESTED player (Proj $, no bid) and a lobby shows none — neither is a
+  // nomination, so they must not emit one or report degraded name/clock/bidder.
+  const active = card != null && currentBid != null
+  let playerName = null
+  let playerId = null
+  let posTeam = null
+  let currentBidder = null
+  let currentBidderTeamId = null
+  let clock = null
+  if (active) {
+    playerId = resolvePlayerId(nominee)
+    playerName = resolvePlayerName(nominee, card, health, warn)
+    posTeam = resolvePosTeam(nominee)
+    const bidder = resolveBidder(card, teams, health, warn)
+    currentBidder = bidder.name
+    currentBidderTeamId = bidder.teamId
+    clock = resolveClock(root, health, warn)
+  } else {
+    health.name = 'na'
+    health.bid = 'na'
+    health.bidder = 'na'
+    health.clock = 'na'
+  }
   const picksUntilYourTurn = resolveTurn(root, health)
   return {
     playerName,
     playerId,
     posTeam,
-    currentBid,
-    currentBidder: bidder.name,
-    currentBidderTeamId: bidder.teamId,
+    currentBid: active ? currentBid : null,
+    currentBidder,
+    currentBidderTeamId,
     clock,
     teams,
     yourTeamId,
