@@ -82,6 +82,15 @@ async def test_cors_allows_espn_draft_origin():
 
 
 @pytest.mark.asyncio
+async def test_cors_allows_sleeper_draft_origins():
+    """The Sleeper draft sites (sleeper.com + the legacy sleeper.app) are allowed."""
+    for origin in ("https://sleeper.com", "https://sleeper.app"):
+        resp = await _preflight(origin, request_headers="x-draft-token")
+        assert resp.status_code == 200, f"preflight rejected for {origin}"
+        assert resp.headers["access-control-allow-origin"] == origin
+
+
+@pytest.mark.asyncio
 async def test_cors_rejects_unknown_origin():
     """Arbitrary web origins are still refused."""
     resp = await _preflight("https://evil.example.com")
@@ -91,4 +100,7 @@ async def test_cors_rejects_unknown_origin():
     assert "access-control-allow-origin" not in resp.headers
     # ...nor a lookalike of the ESPN alternative (fantasy.espn.com.evil.com).
     resp = await _preflight("https://fantasy.espn.com.evil.com")
+    assert "access-control-allow-origin" not in resp.headers
+    # ...nor a lookalike of the Sleeper alternative (sleeper.com.evil.com).
+    resp = await _preflight("https://sleeper.com.evil.com")
     assert "access-control-allow-origin" not in resp.headers
