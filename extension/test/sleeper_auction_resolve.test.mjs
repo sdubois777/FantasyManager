@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
-import { parseFrame } from '../src/content_scripts/sleeper_resolve.mjs'
+import { parseFrame, parseUserId } from '../src/content_scripts/sleeper_resolve.mjs'
 import { initAuctionMemory, detectAuctionEvents } from '../src/content_scripts/sleeper_auction_resolve.mjs'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
@@ -55,6 +55,18 @@ test('draft_pick (sale): winner via slot, price, is_yours, full name', () => {
   assert.equal(s.final_price, 72)
   assert.equal(s.winner, 'Team 3')
   assert.equal(s.is_yours, true) // my slot 3 won
+})
+
+test('self-win resolves is_yours when user_id comes JSON-quoted from localStorage', () => {
+  // End-to-end of the fix: the real localStorage form is "\"<id>\"". Feeding the
+  // RAW quoted value (without unwrapping) would miss draft_order and mis-attribute
+  // the win to "Team 3"; parseUserId unwraps it so my slot resolves.
+  const quoted = '"1373225184038764544"'
+  const sale = replay(FRAMES, parseUserId(quoted)).find((e) => e.type === 'draft_pick')
+  assert.equal(sale.payload.is_yours, true)
+  // ...and the raw quoted id (the bug) would NOT resolve.
+  const broken = replay(FRAMES, quoted).find((e) => e.type === 'draft_pick')
+  assert.equal(broken.payload.is_yours, false)
 })
 
 test('teams_update: budgets derived (budget − Σ won)', () => {
