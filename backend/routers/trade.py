@@ -14,6 +14,8 @@ the Sonnet agent only writes the rationale.
 """
 from __future__ import annotations
 
+from typing import Optional
+
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
@@ -26,6 +28,7 @@ from backend.services.trade.trade_analysis import (
     validate_trade,
 )
 from backend.services.trade.trade_demo_source import trade_demo_enabled
+from backend.services.trade.trade_proposals import evaluate_candidates
 
 router = APIRouter(prefix="/trade", tags=["trade"])
 
@@ -77,6 +80,25 @@ class TradeAnalyzeResponse(BaseModel):
     demo_mode: bool
 
 
+class TradeIdeasRequest(BaseModel):
+    my_team_id: Optional[str] = Field(
+        default=None, description="defaults to your (is_me) team if omitted",
+    )
+
+
+class TradeIdea(BaseModel):
+    counterparty_team_id: str
+    counterparty_team_name: str
+    why: str
+    verdict: TradeAnalyzeResponse   # the full slice-3 verdict payload, unchanged
+
+
+class TradeIdeasResponse(BaseModel):
+    proposals: list[TradeIdea]      # 0-5; empty is a first-class result
+    message: str                    # "" or "no clear trade right now"
+    demo_mode: bool
+
+
 # ---------------------------------------------------------------------------
 # Seams (patch points for tests + the slice-6 real provider)
 # ---------------------------------------------------------------------------
@@ -107,6 +129,12 @@ def get_trade_analyzer():
     """Factory for the Sonnet rationale agent (overridable in tests)."""
     from backend.agents.trade_analyzer import TradeAnalyzerAgent
     return TradeAnalyzerAgent()
+
+
+def get_trade_proposals_agent():
+    """Factory for the Sonnet candidate-generation agent (overridable in tests)."""
+    from backend.agents.trade_proposals import TradeProposalsAgent
+    return TradeProposalsAgent()
 
 
 def _to_response(a: TradeAnalysis, demo: bool) -> TradeAnalyzeResponse:
@@ -170,3 +198,57 @@ async def analyze(
     analysis.rationale = await agent.explain_trade(analysis)
 
     return _to_response(analysis, demo)
+
+
+@router.post("/ideas", response_model=TradeIdeasResponse)
+async def ideas(
+    body: TradeIdeasRequest,
+    user=Depends(get_current_user),
+    db=Depends(get_db),
+    credit_service=Depends(get_credit_service),
+    proposals_agent=Depends(get_trade_proposals_agent),
+    analyzer=Depends(get_trade_analyzer),
+):
+    """Pro-only: the system finds trades. Each surfaced idea is an agent-built
+    trade run through slice-3's EXACT verdict path — never a second engine."""
+    demo = trade_demo_enabled()
+
+    # 1. FEATURE GATE (403, trade_finder = pro-only) — before anything; skipped in demo.
+    if not demo:
+        from backend.services.feature_service import FeatureService
+        FeatureService.check_feature_access(user, "trade_finder")
+
+    # 2. League + per-player values (501 if real not ready — before any deduct).
+    state, values, roster_limit = await load_league_for_analysis(db, user, demo)
+
+    my_team_id = body.my_team_id or (state.my_team.team_id if state.my_team else None)
+    if my_team_id is None:
+        raise HTTPException(status_code=400, detail="no team specified and no is_me team")
+
+    # 3. CREDIT DEDUCT (402, 20cr) — only now, generation is about to run; skipped in demo.
+    if not demo:
+        await credit_service.deduct(user, "trade_finder", agent_name="trade_proposals")
+
+    # 4. Generate candidates (LLM, deterministic fallback) → filter through the
+    #    SAME slice-3 verdict + benefit bar → rank → cap (never-pad lives there).
+    candidates = await proposals_agent.generate_candidates(state, my_team_id, values)
+    surfaced = evaluate_candidates(
+        state, values, my_team_id, candidates, roster_limit=roster_limit,
+    )
+
+    proposals: list[TradeIdea] = []
+    for cand, analysis in surfaced:
+        analysis.rationale = await analyzer.explain_trade(analysis)
+        team_name = next(
+            (t.team_name for t in state.teams if t.team_id == cand.counterparty_team_id),
+            cand.counterparty_team_id,
+        )
+        proposals.append(TradeIdea(
+            counterparty_team_id=cand.counterparty_team_id,
+            counterparty_team_name=team_name,
+            why=analysis.rationale,
+            verdict=_to_response(analysis, demo),
+        ))
+
+    message = "" if proposals else "no clear trade right now"
+    return TradeIdeasResponse(proposals=proposals, message=message, demo_mode=demo)
