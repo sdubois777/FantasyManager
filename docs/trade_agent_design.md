@@ -111,6 +111,13 @@ buy-low = "recency bias suppressing value below true projection").
 reputation when the underlying role has decayed; the value is justified by the usage
 data, not the name.
 
+**Prior source nuance (learned, slice-2 casting):** the demo sources the preseason
+prior from `PlayerProfile.clean_season_baseline["ppr_points"] / 17`. Genuine 2025
+rookies DO carry a baseline here (college-comp-derived), so a **null prior signals a
+veteran missing a projection, NOT a rookie** — do not treat `prior is None` as "rookie"
+in the value engine or downstream agents. Real rookies enter with a (low-confidence)
+prior; the null-prior code path (`prior_weight 0`) is the unprofiled-veteran case.
+
 Where this lives: a **value engine** (mostly Python signal computation; a Haiku pass
 only for formatting if needed — Stage 17's model rule). The signals feed the Sonnet
 trade agents as structured context.
