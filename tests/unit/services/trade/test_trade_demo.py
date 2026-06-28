@@ -165,11 +165,14 @@ def test_studs_full_sparse_insufficient_partial_limited(synthetic_demo_source):
     assert by_name["Najee Harris"].confidence is Confidence.LIMITED
 
 
-def test_team_change_player_flagged_limited(synthetic_demo_source):
+def test_team_change_player_limited_with_direction_suppressed(synthetic_demo_source):
+    """Team change → confidence limited AND the actionable buy/sell flags are
+    suppressed (cross-team share delta isn't a real trajectory)."""
     _, by_name = _values_by_name(synthetic_demo_source)
     cooks = by_name["Brandin Cooks"]
     assert cooks.confidence is Confidence.LIMITED
     assert "team change" in cooks.confidence_reason
+    assert cooks.buy_low is False and cooks.sell_high is False
 
 
 def test_buy_low_and_sell_high_fire_with_sane_why(synthetic_demo_source):
@@ -215,6 +218,8 @@ async def test_real_demo_seed_produces_sane_tiers():
     assert by_name["Christian McCaffrey"].confidence is Confidence.FULL
     assert by_name["DJ Turner"].confidence is Confidence.INSUFFICIENT
     assert by_name["DJ Turner"].buy_low is False and by_name["DJ Turner"].sell_high is False
-    assert "team change" in by_name["Brandin Cooks"].confidence_reason
+    cooks = by_name["Brandin Cooks"]
+    assert "team change" in cooks.confidence_reason
+    assert cooks.buy_low is False and cooks.sell_high is False  # direction suppressed
     assert by_name["A.J. Brown"].buy_low is True
     assert by_name["Hunter Renfrow"].sell_high is True

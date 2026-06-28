@@ -173,8 +173,9 @@ def _assess_confidence(games: int, team_changed: bool) -> tuple[Confidence, str]
         return Confidence.INSUFFICIENT, f"only {games} played game(s) — no trend"
     if team_changed:
         return Confidence.LIMITED, (
-            f"team change within last-{_TREND_WINDOW} window — usage spans two "
-            f"offenses; trend treated with caution"
+            f"team change within last-{_TREND_WINDOW} window — trajectory not "
+            f"cleanly computable across a mid-window team change (cross-team "
+            f"share denominator)"
         )
     if games < _FULL_TREND_GAMES:
         return Confidence.LIMITED, f"{games} played games — partial trend window"
@@ -314,14 +315,23 @@ def compute_player_value(
         trend = ValueTrend.STABLE
         buy_low = sell_high = False
         why = confidence_reason
+    elif team_changed:
+        # Team change isn't too-LITTLE signal, it's WRONG signal: the usage trend
+        # diffs two different offenses (the per-week target-share denominator is a
+        # different team's targets before vs after the move), so the share delta
+        # is not a real trajectory. We decline to assert an actionable buy/sell we
+        # can't honestly derive — but, unlike insufficient, confidence stays
+        # `limited` and value_trend keeps its RAW direction as a transparency
+        # sub-signal. Recovering a true cross-team trajectory is the documented v2
+        # cross-team-share-normalization item.
+        buy_low = sell_high = False
+        why = confidence_reason
     else:
         buy_low, sell_high, why = _flags_and_why(
             position=position, trend=trend, u_recent=u_recent, u_prior=u_prior,
             u_delta=u_delta, form=form, expected=expected, gap=gap,
             unsustainable_hot=unsustainable_hot, guard=guard,
         )
-        if team_changed:
-            why += "; team change in window — verify role on new team"
 
     return InSeasonValue(
         canonical_player_id=canonical_player_id, name=name, position=position,

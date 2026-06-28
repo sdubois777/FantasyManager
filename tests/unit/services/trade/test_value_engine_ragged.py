@@ -125,7 +125,11 @@ def test_nan_usage_does_not_propagate_to_output():
 # ---------------------------------------------------------------------------
 # 0E — team change across the window
 # ---------------------------------------------------------------------------
-def test_team_change_in_window_flags_limited_confidence():
+def test_team_change_suppresses_direction_but_keeps_limited_and_raw_trend():
+    """A team change in the window corrupts the share delta (two offenses), so the
+    actionable buy/sell flags are SUPPRESSED — but, unlike insufficient,
+    confidence stays `limited` and value_trend keeps its RAW direction as a
+    transparency sub-signal."""
     traded = _weeks(
         [0.50, 0.50, 0.50, 0.85, 0.90],
         [0.10, 0.10, 0.10, 0.26, 0.28],
@@ -136,12 +140,22 @@ def test_team_change_in_window_flags_limited_confidence():
         canonical_player_id="e", name="Traded WR", position="WR",
         weeks=traded, current_week=5,
     )
-    assert v.confidence is Confidence.LIMITED
-    assert "team change" in v.confidence_reason
-    assert "team change" in v.why
+    assert v.confidence is Confidence.LIMITED          # NOT insufficient
+    assert v.buy_low is False and v.sell_high is False  # direction suppressed
+    assert v.value_trend is ValueTrend.RISING          # raw direction retained
+    assert "team change" in v.confidence_reason and v.why == v.confidence_reason
 
-    # Same trajectory, SAME team → not flagged (proves the team change is what
-    # triggers it, not the rising usage or the game count).
+    # The suppression cause is distinct from insufficient's (different message).
+    insufficient = compute_player_value(
+        canonical_player_id="ins", name="One Game", position="WR",
+        weeks=_weeks([0.5], [0.1], [10]), current_week=1,
+    )
+    assert insufficient.confidence is Confidence.INSUFFICIENT
+    assert insufficient.confidence_reason != v.confidence_reason
+    assert "team change" not in insufficient.confidence_reason
+
+    # Same trajectory, SAME team → flag is NOT suppressed (proves the team change,
+    # not the trajectory or game count, is what neutralizes the direction).
     same_team = traded.copy()
     same_team["nfl_team"] = "AAA"
     v2 = compute_player_value(
@@ -149,6 +163,7 @@ def test_team_change_in_window_flags_limited_confidence():
         weeks=same_team, current_week=5,
     )
     assert v2.confidence is Confidence.FULL
+    assert v2.value_trend is ValueTrend.RISING and v2.buy_low is True
 
 
 # ---------------------------------------------------------------------------
