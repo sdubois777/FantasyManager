@@ -1,0 +1,172 @@
+"""
+Trade router — POST /api/trade/analyze (evaluate a trade the user builds).
+
+Gating (uses the as-built machinery; NO config changes):
+  - paid-only via the existing `trade_analyzer` feature + `trade_analysis` (10cr).
+  - feature check (403) fires BEFORE any credit decrement; credits are deducted
+    only on a call that actually runs the analysis (after input validation,
+    before the agent). Intro stays locked out by design.
+  - TRADE_DEMO_MODE is the ONLY bypass: when on, the route runs on the seeded
+    demo league with no tier/credit gate (the demo league isn't a real tier).
+
+The verdict is computed deterministically from engine value (trade_analysis.py);
+the Sonnet agent only writes the rationale.
+"""
+from __future__ import annotations
+
+from fastapi import APIRouter, Depends, HTTPException
+from pydantic import BaseModel, Field
+
+from backend.core.dependencies import get_credit_service, get_current_user, get_db
+from backend.services.trade.trade_analysis import (
+    DEFAULT_ROSTER_LIMIT,
+    TradeAnalysis,
+    TradeValidationError,
+    analyze_trade,
+    validate_trade,
+)
+from backend.services.trade.trade_demo_source import trade_demo_enabled
+
+router = APIRouter(prefix="/trade", tags=["trade"])
+
+
+# ---------------------------------------------------------------------------
+# Schemas
+# ---------------------------------------------------------------------------
+class TradeAnalyzeRequest(BaseModel):
+    my_team_id: str
+    give: list[str] = Field(default_factory=list, description="canonical player ids you send")
+    get: list[str] = Field(default_factory=list, description="canonical player ids you receive")
+
+
+class PlayerGroundingOut(BaseModel):
+    id: str
+    name: str
+    position: str
+    side: str
+    forward_value: float
+    value_trend: str
+    confidence: str
+    buy_low: bool
+    sell_high: bool
+    why: str
+
+
+class RosterGuardOut(BaseModel):
+    triggered: bool
+    net_players: int
+    open_slots: int
+    drop_recommendations: list[dict]
+    message: str
+
+
+class TradeAnalyzeResponse(BaseModel):
+    my_team_id: str
+    winner: str
+    fairness: str
+    value_delta: float
+    give_value: float
+    get_value: float
+    confidence: str
+    hedged: bool
+    hedge_reason: str
+    give: list[PlayerGroundingOut]
+    get: list[PlayerGroundingOut]
+    roster_guard: RosterGuardOut
+    rationale: str
+    demo_mode: bool
+
+
+# ---------------------------------------------------------------------------
+# Seams (patch points for tests + the slice-6 real provider)
+# ---------------------------------------------------------------------------
+async def load_league_for_analysis(db, user, demo: bool):
+    """Return (LeagueState, {player_id: InSeasonValue}, roster_limit).
+
+    Demo rides the existing TRADE_DEMO_MODE seam (#152). The real per-user
+    league-state provider arrives with slice 6; until then the non-demo path
+    raises 501 — AFTER the feature check and BEFORE any credit deduction, so a
+    real user is never charged for an unavailable analysis."""
+    if demo:
+        from backend.services.trade.trade_demo_source import seed_demo_league
+        from backend.services.trade.value_engine import evaluate_league
+
+        source = await seed_demo_league(db)
+        state = source.get_league_state()
+        values = evaluate_league(state, source.weekly_usage, priors=source.priors)
+        return state, values, DEFAULT_ROSTER_LIMIT
+
+    raise HTTPException(
+        status_code=501,
+        detail="real-league trade analysis is not available yet (arrives with "
+               "the real league-state provider); set TRADE_DEMO_MODE to try it.",
+    )
+
+
+def get_trade_analyzer():
+    """Factory for the Sonnet rationale agent (overridable in tests)."""
+    from backend.agents.trade_analyzer import TradeAnalyzerAgent
+    return TradeAnalyzerAgent()
+
+
+def _to_response(a: TradeAnalysis, demo: bool) -> TradeAnalyzeResponse:
+    def out(p):
+        return PlayerGroundingOut(
+            id=p.canonical_player_id, name=p.name, position=p.position, side=p.side,
+            forward_value=p.forward_value, value_trend=p.value_trend,
+            confidence=p.confidence, buy_low=p.buy_low, sell_high=p.sell_high, why=p.why,
+        )
+    return TradeAnalyzeResponse(
+        my_team_id=a.my_team_id, winner=a.winner, fairness=a.fairness,
+        value_delta=a.value_delta, give_value=a.give_value, get_value=a.get_value,
+        confidence=a.confidence, hedged=a.hedged, hedge_reason=a.hedge_reason,
+        give=[out(p) for p in a.give], get=[out(p) for p in a.get],
+        roster_guard=RosterGuardOut(
+            triggered=a.roster_guard.triggered, net_players=a.roster_guard.net_players,
+            open_slots=a.roster_guard.open_slots,
+            drop_recommendations=a.roster_guard.drop_recommendations,
+            message=a.roster_guard.message,
+        ),
+        rationale=a.rationale, demo_mode=demo,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Route
+# ---------------------------------------------------------------------------
+@router.post("/analyze", response_model=TradeAnalyzeResponse)
+async def analyze(
+    body: TradeAnalyzeRequest,
+    user=Depends(get_current_user),
+    db=Depends(get_db),
+    credit_service=Depends(get_credit_service),
+    agent=Depends(get_trade_analyzer),
+):
+    demo = trade_demo_enabled()
+
+    # 1. FEATURE GATE (403) — before anything else; skipped in demo.
+    if not demo:
+        from backend.services.feature_service import FeatureService
+        FeatureService.check_feature_access(user, "trade_analyzer")
+
+    # 2. Resolve the league + per-player engine values (501 if real not ready —
+    #    still before any credit deduction).
+    state, values, roster_limit = await load_league_for_analysis(db, user, demo)
+
+    # 3. Validate the trade (400) — cheap, BEFORE any deduction.
+    try:
+        validate_trade(state, values, body.my_team_id, body.give, body.get)
+    except TradeValidationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+    # 4. CREDIT DEDUCT (402) — only now, the analysis is about to run; skipped in demo.
+    if not demo:
+        await credit_service.deduct(user, "trade_analysis", agent_name="trade_analyzer")
+
+    # 5. Deterministic verdict + Sonnet rationale.
+    analysis = analyze_trade(
+        state, values, body.my_team_id, body.give, body.get, roster_limit=roster_limit,
+    )
+    analysis.rationale = await agent.explain_trade(analysis)
+
+    return _to_response(analysis, demo)
