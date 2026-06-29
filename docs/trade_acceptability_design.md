@@ -116,6 +116,7 @@ Carried-forward known simplifications, in one place:
 - **Positional-scarcity-aware drop recommendations** in the analyzer (slice 3) — v1 drops by raw `forward_value`.
 - **Bye-week context** in acceptability — `bye_week` is currently unpopulated; wire only if the model ends up wanting it.
 - **Value-blend calibration** (`_RECENT_VS_SEASON_WEIGHT = 0.5`, #158) — provisional, calibrate against the real league.
+- **`optimal_lineup` greedy is optimal for single-flex-from-a-superset only** (§2.1); superflex / multi-flex needs an assignment solver — guard or solve when a non-single-flex real league is in scope.
 
 **Resolved / superseded:**
 - "Mutual-benefit vs user-win framing" (flagged at slice 4) — *superseded by this entire model*; the edge band is the resolution.

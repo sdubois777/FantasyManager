@@ -15,6 +15,14 @@ best remaining eligible — is provably optimal. Dedicated slots always want the
 top players at their position (any optimal lineup can be rearranged so without
 loss), and a single/again-greedy FLEX then takes the best leftover. All
 forward_values are ≥ 0, so filling more legal slots never hurts.
+
+⚠️ OPTIMALITY BOUNDARY: the greedy is provably optimal ONLY for single-FLEX-
+from-a-superset shapes (the demo + standard redraft). SUPERFLEX (a slot eligible
+for QB *and* RB/WR/TE) and MULTI-FLEX with DISJOINT pools break the greedy proof
+— greedy could silently return a plausible-but-suboptimal lineup. A real non-
+single-flex league needs a proper assignment solver (e.g. max-weight bipartite
+matching). No runtime guard today (nothing exercises non-single-flex); guard or
+solve before a non-single-flex real league is in scope.
 """
 from __future__ import annotations
 
