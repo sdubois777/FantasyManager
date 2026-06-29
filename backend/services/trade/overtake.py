@@ -31,11 +31,17 @@ class PostTrade:
 
 @dataclass(frozen=True)
 class OvertakeResult:
-    """Result of the §4 guard: ``passes`` is True when my post-trade starting
-    strength stays ≥ theirs. The two strengths are surfaced for slice 4 / debug."""
+    """Result of the §4 guard. ``passes`` is True unless the trade FLIPS me from
+    ahead-or-tied to behind (a trade-caused overtake) — it is a RELATIVE,
+    before→after test, not an absolute "must end up ahead" bar. ``my_strength`` /
+    ``their_strength`` are the POST-trade strengths (callers rely on this); the
+    ``*_pre`` fields surface the pre-trade strengths so the verdict/analyzer can
+    explain c4 honestly."""
     passes: bool
-    my_strength: float
-    their_strength: float
+    my_strength: float          # post-trade (mine)
+    their_strength: float       # post-trade (theirs)
+    my_strength_pre: float
+    their_strength_pre: float
 
 
 def apply_trade(
@@ -70,14 +76,30 @@ def overtake_guard(
     get_ids: list[str],
     rules: Optional[LineupRules] = None,
 ) -> OvertakeResult:
-    """§4 condition 4: after the trade, does my starting-lineup strength stay
-    ≥ theirs? Passes when I don't fall behind on the field — even if the trade
-    looked good on raw player value. (Equal strengths pass: the bar is ≥.)"""
+    """§4 condition 4 — NO-OVERTAKE-ONLY (relative, trade-caused). The guard FAILS
+    iff the trade flips me from AHEAD-OR-TIED to BEHIND on the field:
+
+        was_ahead_or_tied = my_pre  >= their_pre
+        is_behind_after   = my_post <  their_post
+        passes            = NOT (was_ahead_or_tied AND is_behind_after)
+
+    Consequences (intended): if I was ALREADY BEHIND pre-trade I have no lead to
+    surrender, so c4 cannot fail — a weaker team trades up freely. A leader may
+    narrow their own lead and still pass (conditions 1-3 already stop them being
+    fleeced on the value of the trade itself). c4 blocks ONLY the specific case of
+    a trade that hands the other side a lead they didn't have."""
+    my_pre = roster_strength(list(my_roster), rules)
+    their_pre = roster_strength(list(their_roster), rules)
     post = apply_trade(my_roster, their_roster, give_ids, get_ids)
-    my_strength = roster_strength(list(post.my_roster), rules)
-    their_strength = roster_strength(list(post.their_roster), rules)
+    my_post = roster_strength(list(post.my_roster), rules)
+    their_post = roster_strength(list(post.their_roster), rules)
+
+    was_ahead_or_tied = my_pre >= their_pre
+    is_behind_after = my_post < their_post
     return OvertakeResult(
-        passes=my_strength >= their_strength,
-        my_strength=my_strength,
-        their_strength=their_strength,
+        passes=not (was_ahead_or_tied and is_behind_after),
+        my_strength=my_post,
+        their_strength=their_post,
+        my_strength_pre=my_pre,
+        their_strength_pre=their_pre,
     )

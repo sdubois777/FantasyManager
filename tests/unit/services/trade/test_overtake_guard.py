@@ -106,3 +106,54 @@ def test_guard_passes_on_exactly_equal_post_trade_strengths():
     res = overtake_guard(mine, theirs, give_ids=["qa"], get_ids=["qb"])
     assert res.my_strength == res.their_strength == 20.0
     assert res.passes is True            # equal → passes (the bar is ≥)
+
+
+# ===========================================================================
+# NO-OVERTAKE-ONLY semantics (relative, trade-caused). The guard fails ONLY when
+# a trade FLIPS me from ahead-or-tied to behind — not whenever I end up behind.
+# ===========================================================================
+def test_headline_regression_already_behind_team_trades_up_now_passes():
+    # The recon's Gronk→Burrow class: I'm WEAKER than my trade partner pre-trade,
+    # the trade IMPROVES me, and I'm still behind after. The OLD absolute guard
+    # wrongly blocked this (I "end up behind"); the new relative guard PASSES it —
+    # I had no lead to surrender, so no overtake occurred.
+    mine = [_p("q", "QB", 10), _p("r1", "RB", 12), _p("r2", "RB", 10), _p("w", "WR", 8)]
+    theirs = [_p("q2", "QB", 20), _p("r3", "RB", 22), _p("r4", "RB", 20), _p("w2", "WR", 18)]
+    res = overtake_guard(mine, theirs, give_ids=["w"], get_ids=["w2"])
+    assert (res.my_strength_pre, res.their_strength_pre) == (40.0, 80.0)   # behind pre
+    assert (res.my_strength, res.their_strength) == (50.0, 70.0)           # behind post
+    assert res.my_strength > res.my_strength_pre     # the trade improved me
+    assert res.my_strength < res.their_strength      # still behind...
+    assert res.passes is True                        # ...but PASSES — no flip
+
+
+def test_leader_narrowing_their_own_lead_but_staying_ahead_passes():
+    # I'm ahead; the trade shrinks my lead but I stay ahead → no overtake → passes.
+    # (Conditions 1-3 guard the value fairness of the trade itself, not c4.)
+    mine = [_p("q", "QB", 22), _p("r1", "RB", 20), _p("r2", "RB", 18), _p("w", "WR", 16)]
+    theirs = [_p("q2", "QB", 14), _p("r3", "RB", 12), _p("r4", "RB", 10), _p("w2", "WR", 8)]
+    res = overtake_guard(mine, theirs, give_ids=["r1"], get_ids=["r3"])
+    assert res.my_strength_pre - res.their_strength_pre == 32.0   # lead 76-44
+    assert res.my_strength - res.their_strength == 16.0           # lead 68-52 (narrowed)
+    assert res.my_strength >= res.their_strength                 # still ahead
+    assert res.passes is True
+
+
+def test_surrendering_a_tie_into_a_deficit_is_an_overtake_and_fails():
+    # Tied pre, behind post — I gave up a tie, which IS an overtake → FAILS.
+    mine = [_p("r1", "RB", 12), _p("r2", "RB", 8)]
+    theirs = [_p("r3", "RB", 10), _p("r4", "RB", 10)]
+    res = overtake_guard(mine, theirs, give_ids=["r1"], get_ids=["r3"])
+    assert res.my_strength_pre == res.their_strength_pre == 20.0  # tied pre
+    assert res.my_strength == 18.0 and res.their_strength == 22.0  # behind post
+    assert res.passes is False
+
+
+def test_behind_climbing_to_a_tie_passes():
+    # Behind pre, tied post — I didn't fall behind (I closed the gap) → passes.
+    mine = [_p("r1", "RB", 8), _p("r2", "RB", 8)]
+    theirs = [_p("r3", "RB", 10), _p("r4", "RB", 10)]
+    res = overtake_guard(mine, theirs, give_ids=["r2"], get_ids=["r3"])
+    assert res.my_strength_pre == 16.0 and res.their_strength_pre == 20.0  # behind pre
+    assert res.my_strength == res.their_strength == 18.0                   # tied post
+    assert res.passes is True

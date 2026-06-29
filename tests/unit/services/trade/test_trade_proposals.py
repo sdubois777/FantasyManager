@@ -69,17 +69,19 @@ def test_perspective_is_per_roster_not_zero_sum():
     assert e.their_net != -e.your_net
 
 
-def test_condition_4_blocks_a_trade_that_passes_1_through_3():
-    # Same beneficial swap, but my roster is weak everywhere except the RB I give
-    # → I'm behind on the field, and the trade (good for me 1-3) still leaves me
-    # behind → condition 4 fails.
+def test_condition_4_allows_an_already_behind_team_to_trade_up():
+    # SEMANTICS CHANGE (fix/overtake-guard-relative): condition 4 is now no-
+    # overtake-only (relative), not absolute. My roster is weak everywhere except
+    # the RB I give → I'm BEHIND on the field pre-trade (91 vs 117) and still
+    # behind post-trade (104 vs 125) — but the trade caused NO overtake (I was
+    # never ahead). The OLD absolute guard wrongly blocked this; it now CLEARS.
     me_weak = _lp([("qm", "QB", 8), ("rm1", "RB", 24), ("rm2", "RB", 22),
                    ("rm3", "RB", 20), ("rm4", "RB", 15),
                    ("wm1", "WR", 6), ("wm2", "WR", 5), ("tm", "TE", 6)])
     e = evaluate_edge_band(me_weak, _lp(THEM), ["rm4"], ["wt5"])
     assert e.your_net > 0 and e.their_net > _COMFORT_THRESHOLD and e.your_net > e.their_net
-    assert e.my_strength < e.their_strength    # I stay behind
-    assert e.clears is False                   # condition 4 blocks it
+    assert e.my_strength < e.their_strength    # I stay behind on the field...
+    assert e.clears is True                    # ...but c4 no longer blocks it
 
 
 # ---------------------------------------------------------------------------
