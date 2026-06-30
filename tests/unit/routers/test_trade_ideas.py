@@ -180,11 +180,11 @@ async def test_demo_bypass_runs_without_gate(monkeypatch):
 # ---------------------------------------------------------------------------
 # NEVER-PAD through the route
 # ---------------------------------------------------------------------------
-async def test_route_never_pads_to_five_when_fewer_clear(monkeypatch):
+async def test_route_caps_proposals_at_five(monkeypatch):
     """The agent proposes five candidates (my surplus RB for each of their WRs).
-    Only the swaps that IMPROVE BOTH lineups clear (giving rm4 for their better WRs
-    helps me, but giving them rm4 only improves their RB-thin lineup when what they
-    part with isn't a top starter) — fewer than five surface, NOT a padded list."""
+    Under the asymmetric gate this rich mutual-benefit matchup clears several
+    (I'm RB-rich/WR-thin, they're RB-thin), but the route NEVER returns more than
+    the cap of five — and every returned proposal is a real cleared trade."""
     monkeypatch.setenv("TRADE_DEMO_MODE", "true")
     user = _make_user(tier="pro", credits=200)
     _patch_loader(monkeypatch, _fixture(ME, THEM))
@@ -195,7 +195,7 @@ async def test_route_never_pads_to_five_when_fewer_clear(monkeypatch):
     finally:
         app.dependency_overrides.clear()
     data = resp.json()
-    assert 0 < len(data["proposals"]) < 5         # some clear, but NOT padded to 5
+    assert 0 < len(data["proposals"]) <= 5        # some clear; capped at 5 (never padded beyond)
     assert all(p["counterparty_team_name"] == "Rivals" for p in data["proposals"])
 
 

@@ -37,18 +37,26 @@ from backend.services.trade.value_engine import InSeasonValue
 
 MAX_PROPOSALS = 5
 
-# --- LINEUP-IMPROVEMENT OBJECTIVE (trade_lineup_value_design.md) --------------
-# A trade is judged by the change in your STARTING LINEUP's projected points/week,
-# computed ONCE on the RESULTING roster (incoming + outgoing + forced drops) — NOT
-# by summing the values of the players involved (which double-counted multi-player
-# gets and never debited drops). §4 two-clause value rule:
-_LINEUP_GAIN_THRESHOLD = 5.0   # clause (a): ppg starting-lineup gain to have value
-                               # (anchor LOW ~5; below this is dwarfed by weekly variance)
-_MAINTAINS_TOLERANCE = 0.5     # clause (b): "maintains" = Δlineup >= -this (anti-churn)
+# --- ASYMMETRIC EDGE-BAND GATE (trade_lineup_value_design.md + calibration) ---
+# A trade is judged by the change in each STARTING LINEUP's projected points/week
+# on the RESULTING roster (incoming + outgoing + forced drops), evaluated once.
+# The gate is ASYMMETRIC + value-fairness (all thresholds MEASURED):
+#   cond 1 — you improve:   Δlineup_me   >= _LINEUP_GAIN_THRESHOLD
+#   cond 2 — they maintain: Δlineup_them >= -_MAINTAIN_TOL  (need only not get worse)
+#   cond 3 — value-fair:    acquirer asset-value get/give ratio within [1/R, R]
+#   cond 4 — overtake:      the #168 relative guard
+# Requiring BOTH sides to GAIN >=5 (the old gate) demanded every trade be a major
+# upgrade for both managers — rare, so almost nothing surfaced. Loosening cond 2 to
+# "maintain" surfaces fair asymmetric trades; cond 3 (value ratio) kills the
+# reverse-fleece that loosening would otherwise open (give a stud/startable bench
+# for junk) while keeping deep-owner deals (Bijan ratio 1.30) + fair consolidations
+# (Swift 3.92). Ratio, NOT absolute gap (gap doesn't separate the cases — measured).
+_LINEUP_GAIN_THRESHOLD = 5.0   # cond 1: ppg starting-lineup gain the ACQUIRER must clear
+_MAINTAIN_TOL = 0.5            # cond 2: the opponent need only not get WORSE on the field
+_FAIRNESS_RATIO = 5.0         # cond 3: acquirer get/give asset-value ratio bound
 
 # DEPRECATED (superseded by the lineup objective): the old contextual-value comfort
-# epsilon. Kept only as the acceptability READ's marginal-band label; the GATE's
-# "acceptable to them" is now "improves their lineup" (§9), not a value epsilon.
+# epsilon. Kept only as the acceptability READ's marginal-band label.
 _COMFORT_THRESHOLD = 2.0
 
 # Targeted-enumeration bounds (slice 6, §6d/§6e). HARD CAP 3 players per side
@@ -109,15 +117,16 @@ class EdgeBand:
     clears: bool
 
 
-def _has_value(lineup_gain: float, gets_rising_bench: bool) -> bool:
-    """§4 two-clause value rule (in lineup ppg). (a) a real starting-lineup upgrade,
-    OR (b) the lineup is maintained AND an incoming bench piece is a rising/buy-low
-    stash. A flat-usage bench add maintains the lineup but fails (b) → no value."""
-    if lineup_gain >= _LINEUP_GAIN_THRESHOLD:
-        return True                                              # clause (a)
-    if lineup_gain >= -_MAINTAINS_TOLERANCE and gets_rising_bench:
-        return True                                              # clause (b)
-    return False
+def _value_fair(get_val: float, give_val: float) -> bool:
+    """cond 3 — anti-reverse-fleece. The acquirer's ASSET-value get/give ratio
+    (Σforward_value) must be within [1/R, R]; rejects trades where one side gives
+    up more than R× the value it receives (the McLaurin-for-junk class, ratio 16.7)
+    while keeping deep-owner deals (Bijan, 1.30) and fair consolidations (Swift,
+    3.92). Ratio, not absolute gap (measured: gap doesn't separate the cases).
+    Guards BOTH directions: give-nothing-for-something is as unfair as the reverse."""
+    if give_val <= 0:
+        return get_val <= 0          # giving no real value for something → unfair
+    return (1.0 / _FAIRNESS_RATIO) <= (get_val / give_val) <= _FAIRNESS_RATIO
 
 
 # Acceptability verdicts (the analyzer's opponent-side READ, §7). NOT a gate: any
@@ -392,14 +401,13 @@ def evaluate_edge_band(
     roster_limit: int = DEFAULT_ROSTER_LIMIT,
     rules: LineupRules | None = None,
 ) -> EdgeBand:
-    """Score a candidate by the §6 lineup objective. Each side's gain is the change
-    in its OPTIMAL STARTING LINEUP's points/week, computed ONCE on the RESULTING
-    roster (after incoming + outgoing + forced drops) — not a per-player value sum.
-    This kills the multi-player double-count and debits forced drops automatically.
-    The §4 two-clause value rule decides "has value"; cond 3 keeps the edge; cond 4
-    is the #168 relative overtake guard."""
+    """Score a candidate by the ASYMMETRIC lineup-objective gate. Each side's gain
+    is the change in its OPTIMAL STARTING LINEUP's points/week, computed ONCE on the
+    RESULTING roster (after incoming + outgoing + forced drops) — not a per-player
+    value sum. The four conditions: (1) the acquirer's lineup improves >=threshold,
+    (2) the opponent's lineup at least MAINTAINS, (3) the trade is value-fair (asset
+    ratio within [1/R, R] — anti-reverse-fleece), (4) the #168 overtake guard."""
     rules = rules or DEFAULT_LINEUP_RULES
-    give_set, get_set = set(give_ids), set(get_ids)
 
     post = apply_trade(my_roster, their_roster, list(give_ids), list(get_ids))
     my_post = fit_to_limit(list(post.my_roster), roster_limit)
@@ -408,24 +416,19 @@ def evaluate_edge_band(
     your_lineup_gain = round(lineup_strength_ppg(my_post, rules) - lineup_strength_ppg(my_roster, rules), 2)
     their_lineup_gain = round(lineup_strength_ppg(their_post, rules) - lineup_strength_ppg(their_roster, rules), 2)
 
-    # Depth clause (§5a): an INCOMING bench piece (not in the resulting starting
-    # lineup) carrying the #170 rising/buy-low signal — a stash, not flat churn.
-    my_starters = {p.player_id for p in optimal_lineup(my_post, rules).starters}
-    their_starters = {p.player_id for p in optimal_lineup(their_post, rules).starters}
-    my_rising_bench = any(
-        p.rising and p.player_id not in my_starters for p in my_post if p.player_id in get_set
-    )
-    their_rising_bench = any(
-        p.rising and p.player_id not in their_starters for p in their_post if p.player_id in give_set
-    )
+    # cond 3 asset value (Σforward_value) of what the ACQUIRER gives vs gets.
+    my_by = {p.player_id: p for p in my_roster}
+    their_by = {p.player_id: p for p in their_roster}
+    give_val = sum(my_by[g].forward_value for g in give_ids if g in my_by)
+    get_val = sum(their_by[g].forward_value for g in get_ids if g in their_by)
 
     guard = overtake_guard(my_roster, their_roster, list(give_ids), list(get_ids), rules)  # cond 4 (#168)
 
     clears = (
-        _has_value(your_lineup_gain, my_rising_bench)           # 1: value to you (§4)
-        and _has_value(their_lineup_gain, their_rising_bench)   # 2: acceptable to them (§4, their roster)
-        and your_lineup_gain > their_lineup_gain                # 3: you keep the edge
-        and guard.passes                                        # 4: no overtake
+        your_lineup_gain >= _LINEUP_GAIN_THRESHOLD     # 1: you improve (acquirer)
+        and their_lineup_gain >= -_MAINTAIN_TOL        # 2: they maintain (not worse on the field)
+        and _value_fair(get_val, give_val)             # 3: value-fair (no reverse-fleece)
+        and guard.passes                               # 4: no overtake
     )
     return EdgeBand(
         your_lineup_gain=your_lineup_gain, their_lineup_gain=their_lineup_gain,
