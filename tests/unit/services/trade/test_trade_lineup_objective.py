@@ -3,7 +3,7 @@ Acceptance tests for the LINEUP-IMPROVEMENT objective (trade_lineup_value_design
 §8). A trade is judged by the change in your STARTING LINEUP's points/week on the
 RESULTING roster — not the sum of the players' values. These lock the headline
 behaviors: the proof trade reads honestly and doesn't surface, forced drops are
-debited, the §4 two-clause value rule (incl. the ascending-usage depth clause),
+debited, the asymmetric gate (acquirer improves, opponent maintains, value-fair),
 and the verdict reads in points/week.
 """
 from __future__ import annotations
@@ -12,10 +12,13 @@ from backend.services.trade.league_state import LeagueState, RosterPlayer, TeamS
 from backend.services.trade.trade_analysis import analyze_trade
 from backend.services.trade.trade_proposals import (
     Candidate,
+    _FAIRNESS_RATIO,
     _LINEUP_GAIN_THRESHOLD,
-    _MAINTAINS_TOLERANCE,
-    _has_value,
+    _MAINTAIN_TOL,
+    _lineup_roster,
     evaluate_candidates,
+    evaluate_edge_band,
+    _value_fair,
 )
 from backend.services.trade.value_engine import Confidence, InSeasonValue, ValueTrend
 
@@ -113,19 +116,41 @@ def test_genuine_starter_upgrade_clears_clause_a():
 
 
 # ---------------------------------------------------------------------------
-# §8.5 DEPTH PATH GUARDED — the §4 two-clause rule (ascending-usage depth only)
+# ASYMMETRIC GATE — the value-fairness condition (cond 3, anti-reverse-fleece)
 # ---------------------------------------------------------------------------
-def test_two_clause_value_rule():
-    big = _LINEUP_GAIN_THRESHOLD + 1
-    tiny = _MAINTAINS_TOLERANCE / 2
-    # clause (a): a real lineup upgrade, regardless of depth signal
-    assert _has_value(big, gets_rising_bench=False) is True
-    # clause (b): lineup maintained AND a rising/buy-low bench stash incoming
-    assert _has_value(tiny, gets_rising_bench=True) is True
-    # maintained but FLAT bench (the proof-trade churn) → no value
-    assert _has_value(tiny, gets_rising_bench=False) is False
-    # lineup drops → not maintained → even a rising stash can't rescue it
-    assert _has_value(-(_MAINTAINS_TOLERANCE + 1), gets_rising_bench=True) is False
+def test_value_fairness_ratio_brackets_the_calibration_cases():
+    # The three measured calibration ratios: McLaurin-fleece 16.7 (FAIL), Swift
+    # 3.92 (PASS), Bijan 1.30 (PASS). R=5 brackets them cleanly.
+    assert _value_fair(get_val=96.9, give_val=5.8) is False   # McLaurin: ratio 16.7 > R
+    assert _value_fair(get_val=89.4, give_val=22.8) is True    # Swift: ratio 3.92 < R
+    assert _value_fair(get_val=94.6, give_val=72.9) is True    # Bijan: ratio 1.30
+    # boundary: just under R passes, just over fails (ratio, not gap)
+    assert _value_fair(get_val=4.9, give_val=1.0) is True      # 4.9 < 5
+    assert _value_fair(get_val=5.1, give_val=1.0) is False     # 5.1 > 5
+    assert _value_fair(get_val=1.0, give_val=5.1) is False     # reverse direction guarded
+    assert _value_fair(get_val=10.0, give_val=0.0) is False    # give nothing of value
+
+
+def test_reverse_fleece_fails_cond3_even_though_cond1_and_2_pass():
+    # ACQUIRE a startable bench WR (44) + scraps for a junk QB (5): my lineup
+    # improves (cond 1), the opponent only benched the WR so they maintain (cond 2),
+    # but I'm getting ~16x the value I give → cond 3 (value-fairness) kills it.
+    me = [("qb", "QB", 20), ("rb1", "RB", 22), ("rb2", "RB", 20), ("rb3", "RB", 18),
+          ("wr1", "WR", 16), ("wr2", "WR", 14), ("wr3", "WR", 8), ("te", "TE", 15),
+          ("junkqb", "QB", 5)]
+    # opp is WR-LOADED: McLaurin(44) is their benched WR5 (all 4 starters score >44)
+    # → giving him MAINTAINS their lineup, so cond 2 passes and only cond 3 can kill it.
+    opp = [("oqb", "QB", 19), ("orb1", "RB", 16), ("orb2", "RB", 14),
+           ("ow1", "WR", 50), ("ow2", "WR", 48), ("ow3", "WR", 46), ("ow4", "WR", 45),
+           ("mclaurin", "WR", 44), ("ote", "TE", 13)]
+    state, values = _state(me, opp)
+    e = evaluate_edge_band(_lineup_roster(state.my_team, values), _lineup_roster(state.teams[1], values),
+                           ["junkqb"], ["mclaurin"], roster_limit=16)
+    assert e.your_lineup_gain >= _LINEUP_GAIN_THRESHOLD     # cond 1 passes (McLaurin upgrades my WR3)
+    assert e.their_lineup_gain >= -_MAINTAIN_TOL            # cond 2 passes (they benched him → maintain)
+    assert e.clears is False                                # but cond 3 (value-fair) kills the fleece
+
+
 
 
 # ---------------------------------------------------------------------------
