@@ -166,6 +166,23 @@ export default function VerdictPanel({ verdict: v, className = '' }) {
       </div>
 
       <div className="p-4 space-y-3">
+        {/* Empty-slot warnings — an honest heads-up, NOT a rejection. The trade is
+            still good (it surfaced); the user just needs to know the roster
+            consequence of giving away their last player at a required position. */}
+        {v.warnings?.length > 0 && (
+          <div className="space-y-1.5">
+            {v.warnings.map((w, i) => (
+              <div
+                key={`${w.type}-${w.position}-${i}`}
+                className="flex items-start gap-2 rounded-md border border-amber-500/40 bg-amber-500/[0.08] px-3 py-2"
+              >
+                <AlertTriangle size={16} className="mt-0.5 shrink-0 text-amber-400" />
+                <div className="text-xs text-amber-200/90">{w.message}</div>
+              </div>
+            ))}
+          </div>
+        )}
+
         {v.rationale && <p className="text-sm text-slate-300">{v.rationale}</p>}
 
         <div className="grid gap-3 md:grid-cols-2">

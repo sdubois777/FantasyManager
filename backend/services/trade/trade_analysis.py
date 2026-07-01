@@ -21,8 +21,10 @@ from backend.services.trade.league_state import LeagueState
 from backend.services.trade.lineup import (
     DEFAULT_LINEUP_RULES,
     LineupPlayer,
+    _slot_pos,
     fit_to_limit,
     lineup_strength_ppg,
+    optimal_lineup,
 )
 from backend.services.trade.value_engine import (
     Confidence,
@@ -70,6 +72,15 @@ class RosterGuard:
     message: str
 
 
+@dataclass(frozen=True)
+class TradeWarning:
+    """A non-blocking heads-up about a roster consequence of a (still-good) trade.
+    ``type`` is a stable machine key; ``message`` is the user-facing line."""
+    type: str          # e.g. "empty_required_slot"
+    position: str      # the affected required position (QB/RB/WR/TE)
+    message: str
+
+
 @dataclass
 class TradeAnalysis:
     my_team_id: str
@@ -86,6 +97,7 @@ class TradeAnalysis:
     hedge_reason: str
     roster_guard: RosterGuard
     rationale: str = ""
+    warnings: tuple[TradeWarning, ...] = ()   # non-blocking roster-consequence notices
 
 
 def _grounding(v: InSeasonValue, side: str) -> PlayerGrounding:
@@ -215,6 +227,14 @@ def analyze_trade(
         - lineup_strength_ppg(my_pre, DEFAULT_LINEUP_RULES, replacement_ppg), 2,
     )
 
+    # Empty-slot WARNING (#179 follow-up): the resulting roster is priced with the
+    # replacement floor above, so a position-punt can surface — but the user must be
+    # TOLD they've emptied a required starter slot (they'd stream a waiver player).
+    # Reuse the SAME optimal_lineup my_post the lineup calc runs: any dedicated
+    # (non-FLEX) required slot left None = an emptied position. FLEX is flexible, so
+    # an unfilled FLEX is not a hole to warn about.
+    warnings = _empty_slot_warnings(my_post)
+
     abs_g = abs(lineup_gain)
     if abs_g <= _MAINTAINS_TOLERANCE:
         winner, fairness = "even", "fair"
@@ -245,4 +265,26 @@ def analyze_trade(
         lineup_gain=lineup_gain,
         winner=winner, fairness=fairness, confidence=floor.value,
         hedged=hedged, hedge_reason=hedge_reason, roster_guard=guard,
+        warnings=warnings,
     )
+
+
+def _empty_slot_warnings(my_post: list[LineupPlayer]) -> tuple[TradeWarning, ...]:
+    """Warn for each REQUIRED (dedicated, non-FLEX) starter slot the acquirer's
+    post-trade roster can't fill — the position they've given away their last
+    startable player at. Deduped per position, in slot order. Reuses the same
+    optimal_lineup slot assignment the lineup value is computed from."""
+    lineup = optimal_lineup(my_post, DEFAULT_LINEUP_RULES)
+    seen: set[str] = set()
+    out: list[TradeWarning] = []
+    for label, pid in lineup.slots:
+        if pid is not None:
+            continue
+        pos = _slot_pos(label)
+        if pos in DEFAULT_LINEUP_RULES.slots and pos not in seen:  # required, not FLEX
+            seen.add(pos)
+            out.append(TradeWarning(
+                type="empty_required_slot", position=pos,
+                message=f"You're giving away your only {pos} — waiver pickup required.",
+            ))
+    return tuple(out)
