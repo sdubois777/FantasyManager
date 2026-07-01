@@ -142,7 +142,16 @@ async def _verify_stripe_signature(request: Request) -> dict:
     try:
         from backend.services.billing import stripe_gateway
 
-        return stripe_gateway.construct_event(body, sig_header, webhook_secret)
+        # construct_event verifies the signature (raises on tamper/mismatch). We
+        # then parse the raw body ourselves: construct_event returns a stripe.Event
+        # (StripeObject) whose attribute access is key-based — `event.get(...)`
+        # raises — so we hand the handler plain nested dicts from json.loads,
+        # identical to the dev-unverified path. (Body is unchanged, so parsing it
+        # after a successful verify is safe.)
+        stripe_gateway.construct_event(body, sig_header, webhook_secret)
+        return json.loads(body)
+    except HTTPException:
+        raise
     except Exception as e:
         logger.warning("Stripe webhook signature invalid: %s", e)
         raise HTTPException(
