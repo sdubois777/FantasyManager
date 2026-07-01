@@ -126,3 +126,37 @@ describe('VerdictPanel — acceptability read (the other side)', () => {
     expect(screen.queryByText('Likely to reject')).not.toBeInTheDocument()
   })
 })
+
+describe('VerdictPanel — empty-slot warning (heads-up, not a rejection)', () => {
+  it('renders the warning message(s) when present', () => {
+    const v = makeVerdict({
+      warnings: [
+        { type: 'empty_required_slot', position: 'TE',
+          message: "You're giving away your only TE — waiver pickup required." },
+      ],
+    })
+    render(<VerdictPanel verdict={v} />)
+    expect(screen.getByText(/giving away your only TE/)).toBeInTheDocument()
+    // it's a heads-up, not a rejection — the winning verdict still shows
+    expect(screen.getByText('You win')).toBeInTheDocument()
+  })
+
+  it('renders multiple warnings', () => {
+    const v = makeVerdict({
+      warnings: [
+        { type: 'empty_required_slot', position: 'QB', message: "You're giving away your only QB — waiver pickup required." },
+        { type: 'empty_required_slot', position: 'TE', message: "You're giving away your only TE — waiver pickup required." },
+      ],
+    })
+    render(<VerdictPanel verdict={v} />)
+    expect(screen.getByText(/only QB/)).toBeInTheDocument()
+    expect(screen.getByText(/only TE/)).toBeInTheDocument()
+  })
+
+  it('renders no warning when the list is empty or absent', () => {
+    const { rerender } = render(<VerdictPanel verdict={makeVerdict({ warnings: [] })} />)
+    expect(screen.queryByText(/waiver pickup required/)).not.toBeInTheDocument()
+    rerender(<VerdictPanel verdict={makeVerdict({ warnings: undefined })} />)
+    expect(screen.queryByText(/waiver pickup required/)).not.toBeInTheDocument()
+  })
+})

@@ -75,6 +75,14 @@ class AcceptabilityOut(BaseModel):
     why: str                 # one-line, grounded in their roster
 
 
+class TradeWarningOut(BaseModel):
+    """Non-blocking roster-consequence heads-up (e.g. emptying a required slot).
+    A LIST on the response so future warning types are additive."""
+    type: str            # stable machine key, e.g. "empty_required_slot"
+    position: str        # affected required position (QB/RB/WR/TE)
+    message: str         # user-facing line
+
+
 class TradeAnalyzeResponse(BaseModel):
     my_team_id: str
     winner: str
@@ -92,6 +100,7 @@ class TradeAnalyzeResponse(BaseModel):
     rationale: str
     demo_mode: bool
     acceptability: Optional[AcceptabilityOut] = None
+    warnings: list[TradeWarningOut] = []   # additive; empty when no consequence to flag
 
 
 class TradeIdeasRequest(BaseModel):
@@ -210,6 +219,10 @@ def _to_response(
             message=a.roster_guard.message,
         ),
         rationale=a.rationale, demo_mode=demo, acceptability=acceptability,
+        warnings=[
+            TradeWarningOut(type=w.type, position=w.position, message=w.message)
+            for w in a.warnings
+        ],
     )
 
 

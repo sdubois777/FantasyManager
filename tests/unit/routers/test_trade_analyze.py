@@ -324,3 +324,65 @@ async def test_demo_route_end_to_end_on_real_league(monkeypatch):
     assert data["demo_mode"] is True
     assert data["winner"] in {"you", "opponent", "even"}
     assert data["confidence"] in {"full", "limited", "insufficient"}
+
+
+# ---------------------------------------------------------------------------
+# EMPTY-SLOT WARNING surfaces through the route (additive `warnings` field)
+# ---------------------------------------------------------------------------
+def _iv_pos(pid, pos, fv):
+    return InSeasonValue(
+        canonical_player_id=pid, name=pid, position=pos, forward_value=fv,
+        value_trend=ValueTrend.STABLE, buy_low=False, sell_high=False, why="usage",
+        games_played=10, usage_recent=0.5, usage_prior=0.5, usage_delta=0.0,
+        recency_ppg=fv, expected_ppg=fv, opportunity_gap=0.0, sustainable=True,
+        forward_ppg=fv, schedule_modifier=0.0, prior_projection=None,
+        prior_weight=0.0, name_bias_guard_applied=False, confidence=Confidence.FULL,
+        confidence_reason="",
+    )
+
+
+def _full_league():
+    my = tuple(RosterPlayer(p, p, pos) for p, pos in [
+        ("qb", "QB"), ("rb1", "RB"), ("rb2", "RB"), ("rb3", "RB"),
+        ("wr1", "WR"), ("wr2", "WR"), ("wr3", "WR"), ("te", "TE")])
+    opp = tuple(RosterPlayer(p, p, pos) for p, pos in [("owr", "WR"), ("owr2", "WR")])
+    state = LeagueState(2025, 14, (TeamState("me", "Me", True, my),
+                                   TeamState("opp", "Opp", False, opp)))
+    specs = [("qb", "QB", 30), ("rb1", "RB", 40), ("rb2", "RB", 35), ("rb3", "RB", 20),
+             ("wr1", "WR", 38), ("wr2", "WR", 34), ("wr3", "WR", 30), ("te", "TE", 25),
+             ("owr", "WR", 45), ("owr2", "WR", 44)]
+    return state, {p: _iv_pos(p, pos, fv) for p, pos, fv in specs}, 16
+
+
+async def test_empty_slot_warning_surfaces_in_response(monkeypatch):
+    monkeypatch.setenv("TRADE_DEMO_MODE", "true")
+    user = _make_user(tier="pro", credits=100)
+    state, values, rl = _full_league()
+    _patch_loader(monkeypatch, (state, values, rl))
+    _wire(user)
+    try:
+        # ship the only TE for two WRs → empties the TE slot
+        resp = await _post({"my_team_id": "me", "give": ["te"], "get": ["owr", "owr2"]})
+    finally:
+        app.dependency_overrides.clear()
+    assert resp.status_code == 200
+    data = resp.json()
+    assert isinstance(data["warnings"], list)                       # additive list field
+    assert len(data["warnings"]) == 1
+    w = data["warnings"][0]
+    assert w["type"] == "empty_required_slot" and w["position"] == "TE"
+    assert "only TE" in w["message"]
+
+
+async def test_filled_trade_has_empty_warnings_list(monkeypatch):
+    monkeypatch.setenv("TRADE_DEMO_MODE", "true")
+    user = _make_user(tier="pro", credits=100)
+    state, values, rl = _full_league()
+    _patch_loader(monkeypatch, (state, values, rl))
+    _wire(user)
+    try:
+        resp = await _post({"my_team_id": "me", "give": ["wr3"], "get": ["owr"]})  # keeps all slots
+    finally:
+        app.dependency_overrides.clear()
+    data = resp.json()
+    assert data["warnings"] == []                                   # present, empty — additive
