@@ -545,6 +545,21 @@ def derive_anchors(
     return out
 
 
+def replacement_ppg_by_position(values: dict[str, "InSeasonValue"]) -> dict[str, float]:
+    """{position: replacement-level ppg} for the league's rostered pool — the SAME
+    ``derive_anchors`` replacement the #172 anchors use, read in ``forward_ppg``
+    units (what ``lineup_strength_ppg`` sums). Lets an unfillable starter slot be
+    valued at the streamable-waiver floor instead of 0. Reuses ``derive_anchors``;
+    introduces NO new constant (falls back to the documented ``_PPG_ANCHORS``
+    replacement when a position is too sparse to derive)."""
+    ppg_by_pos: dict[str, list[float]] = {}
+    for v in values.values():
+        if v.position in ("QB", "RB", "WR", "TE"):
+            ppg_by_pos.setdefault(v.position, []).append(v.forward_ppg)
+    anchors = derive_anchors(ppg_by_pos)
+    return {pos: anchors[pos][0] for pos in ("QB", "RB", "WR", "TE")}
+
+
 # ---------------------------------------------------------------------------
 # the engine
 # ---------------------------------------------------------------------------

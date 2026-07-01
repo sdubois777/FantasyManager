@@ -33,7 +33,10 @@ from backend.services.trade.trade_analysis import (
     analyze_trade,
     validate_trade,
 )
-from backend.services.trade.value_engine import InSeasonValue
+from backend.services.trade.value_engine import (
+    InSeasonValue,
+    replacement_ppg_by_position,
+)
 
 MAX_PROPOSALS = 5
 
@@ -239,8 +242,11 @@ def acceptability_read(
 
     my_roster = _lineup_roster(my_team, values)
     their_roster = _lineup_roster(counterparty, values)
+    replacement_ppg = replacement_ppg_by_position(values)
     try:
-        edge = evaluate_edge_band(my_roster, their_roster, give_ids, get_ids, roster_limit=roster_limit)
+        edge = evaluate_edge_band(
+            my_roster, their_roster, give_ids, get_ids,
+            roster_limit=roster_limit, replacement_ppg=replacement_ppg)
     except Exception:
         return Acceptability(ACCEPT_REJECT, 0.0, False, hedged,
                              "could not evaluate the other side of this trade")
@@ -443,6 +449,7 @@ def evaluate_edge_band(
     *,
     roster_limit: int = DEFAULT_ROSTER_LIMIT,
     rules: LineupRules | None = None,
+    replacement_ppg: dict[str, float] | None = None,
 ) -> EdgeBand:
     """Score a candidate by the ASYMMETRIC lineup-objective gate. Each side's gain
     is the change in its OPTIMAL STARTING LINEUP's points/week, computed ONCE on the
@@ -456,8 +463,14 @@ def evaluate_edge_band(
     my_post = fit_to_limit(list(post.my_roster), roster_limit)
     their_post = fit_to_limit(list(post.their_roster), roster_limit)
 
-    your_lineup_gain = round(lineup_strength_ppg(my_post, rules) - lineup_strength_ppg(my_roster, rules), 2)
-    their_lineup_gain = round(lineup_strength_ppg(their_post, rules) - lineup_strength_ppg(their_roster, rules), 2)
+    # Symmetric empty-slot replacement floor (both sides), so cond1/cond2 price a
+    # position-punt honestly and consistently — no asymmetry the gate could exploit.
+    your_lineup_gain = round(
+        lineup_strength_ppg(my_post, rules, replacement_ppg)
+        - lineup_strength_ppg(my_roster, rules, replacement_ppg), 2)
+    their_lineup_gain = round(
+        lineup_strength_ppg(their_post, rules, replacement_ppg)
+        - lineup_strength_ppg(their_roster, rules, replacement_ppg), 2)
 
     # cond 3 asset value (Σforward_value) of what the ACQUIRER gives vs gets.
     my_by = {p.player_id: p for p in my_roster}
@@ -500,6 +513,7 @@ def evaluate_candidates(
         t.team_id: _lineup_roster(t, values)
         for t in state.teams if t.team_id != my_team_id
     }
+    replacement_ppg = replacement_ppg_by_position(values)
 
     scored: list[tuple[Candidate, TradeAnalysis, EdgeBand]] = []
     seen: set[tuple] = set()
@@ -514,7 +528,8 @@ def evaluate_candidates(
         try:
             validate_trade(state, values, my_team_id, list(cand.give_ids), list(cand.get_ids))
             edge = evaluate_edge_band(
-                my_roster, their_roster, cand.give_ids, cand.get_ids, roster_limit=roster_limit,
+                my_roster, their_roster, cand.give_ids, cand.get_ids,
+                roster_limit=roster_limit, replacement_ppg=replacement_ppg,
             )
             if not edge.clears:
                 continue

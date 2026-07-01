@@ -153,10 +153,43 @@ def fit_to_limit(roster: list[LineupPlayer], limit: int) -> list[LineupPlayer]:
     return ranked[len(roster) - limit:]
 
 
-def lineup_strength_ppg(roster: list[LineupPlayer], rules: Optional[LineupRules] = None) -> float:
+def _slot_pos(label: str) -> str:
+    """'WR3' -> 'WR', 'QB' -> 'QB', 'FLEX' -> 'FLEX'."""
+    return "".join(ch for ch in label if not ch.isdigit())
+
+
+def lineup_strength_ppg(
+    roster: list[LineupPlayer],
+    rules: Optional[LineupRules] = None,
+    replacement_ppg: Optional[dict[str, float]] = None,
+) -> float:
     """The optimal starting lineup's total projected POINTS/WEEK — the same
     starters optimal_lineup chooses (ranked by 0-100 forward_value), summed by
     their forward_ppg (trade_lineup_value_design.md §3). This is the honest unit
     the trade verdict + lineup gate use; 0-100 deltas are non-additive and
-    meaningless. Degenerate rosters (empty slots) sum what legally starts."""
-    return round(sum(p.forward_ppg for p in optimal_lineup(roster, rules).starters), 2)
+    meaningless.
+
+    ``replacement_ppg`` ({position: replacement-level ppg}, from
+    ``value_engine.replacement_ppg_by_position``) values an UNFILLABLE required
+    starter slot at the position's streamable-waiver floor instead of 0 — a team
+    with no TE would start a waiver TE worth ~replacement, not score 0 there.
+    Without it (None) an empty slot contributes 0 (the pre-fix behavior), so
+    existing callers are unchanged; the fix only ever ADDS value to a hole, and
+    only for genuinely unfilled slots."""
+    rules = rules or DEFAULT_LINEUP_RULES
+    ol = optimal_lineup(roster, rules)
+    total = sum(p.forward_ppg for p in ol.starters)
+    if replacement_ppg:
+        for label, pid in ol.slots:
+            if pid is not None:
+                continue
+            pos = _slot_pos(label)
+            if pos == "FLEX":
+                # A FLEX is rarely unfillable; when it is, credit the most-lenient
+                # (highest) eligible replacement — you'd stream the easiest-to-fill
+                # flex-eligible position.
+                elig = [replacement_ppg.get(p, 0.0) for p in rules.flex_positions]
+                total += max(elig) if elig else 0.0
+            else:
+                total += replacement_ppg.get(pos, 0.0)
+    return round(total, 2)
