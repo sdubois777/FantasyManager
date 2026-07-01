@@ -75,6 +75,15 @@ _MATCH_POOL_CAP = 5
 # swap isn't crowded out by the many near-zero-imbalance 3-for-3s a bigger package
 # trivially hits) while the count stays bounded. The gate still judges every survivor.
 _PER_SHAPE_CAP = 2
+# Give-side DIVERSITY cap (surfacing only): a team with one dominant asset (Ben
+# Dover's Josh Allen) otherwise ships it in ALL 5 surfaced trades — cheaper-give
+# alternatives clear the gate but rank lower and get crowded out. Cap how many
+# SURFACED trades may ship the SAME premium give-asset, so the set is a mix of
+# strategies, not 5 variations of one. Only assets at/above the PREMIUM bar count
+# (a scrub throw-in never triggers the cap); this DEMOTES repeats, never promotes a
+# worse trade or pads (never-pad holds).
+_MAX_TRADES_PER_GIVE_ASSET = 2
+_PREMIUM_GIVE_VALUE = 30.0   # forward_value bar for "premium" (above replacement/startable)
 # A dedicated starter weaker than this fraction of the team's MEDIAN starter is a
 # fixable weakness → that position is a NEED (scale-free, relative to the roster).
 _NEED_REL_FRACTION = 0.6
@@ -542,4 +551,32 @@ def evaluate_candidates(
         scored.append((cand, analysis, edge))
 
     scored.sort(key=lambda ce: ce[2].your_lineup_gain, reverse=True)
-    return scored[:max_results]
+    return _select_diverse(scored, values, max_results)
+
+
+def _select_diverse(
+    scored: list[tuple[Candidate, TradeAnalysis, EdgeBand]],
+    values: dict[str, InSeasonValue],
+    max_results: int,
+) -> list[tuple[Candidate, TradeAnalysis, EdgeBand]]:
+    """Give-side DIVERSITY cap on the FINAL surfaced set (surfacing only — the
+    ranking is untouched). Walk the already-ranked (best-first) list and take each
+    trade UNLESS a PREMIUM give-asset it ships has already hit its per-asset cap in
+    the surfaced set; then skip to the next-best DIFFERENT-give trade. Only DEMOTES
+    repeats of an already-capped asset — never promotes a worse trade, never pads:
+    if there aren't ``max_results`` diverse cleared trades, we surface FEWER. A
+    multi-premium give counts against EACH premium asset (either capped → skip); a
+    sub-premium throw-in never triggers the cap."""
+    selected: list[tuple[Candidate, TradeAnalysis, EdgeBand]] = []
+    asset_uses: dict[str, int] = {}
+    for cand, analysis, edge in scored:
+        premium = [g for g in cand.give_ids
+                   if g in values and values[g].forward_value >= _PREMIUM_GIVE_VALUE]
+        if any(asset_uses.get(g, 0) >= _MAX_TRADES_PER_GIVE_ASSET for g in premium):
+            continue
+        selected.append((cand, analysis, edge))
+        for g in premium:
+            asset_uses[g] = asset_uses.get(g, 0) + 1
+        if len(selected) >= max_results:
+            break
+    return selected
