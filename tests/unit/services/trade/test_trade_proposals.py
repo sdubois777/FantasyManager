@@ -137,10 +137,13 @@ def test_never_pads_when_nothing_clears():
 
 
 def test_cleared_candidates_ranked_by_lineup_gain_descending():
+    # Give my surplus RB for progressively better WRs — bigger WR = bigger lineup
+    # gain. (ME_STRONG's empty WR3 is credited replacement ppg now, so the gains
+    # are over the streamable baseline; wt3/wt4/wt5 still clear at 8/6/5.)
     state, values = _league(ME_STRONG, THEM)
     cands = [Candidate(("rm4",), ("wt5",), "opp"),
-             Candidate(("rm4",), ("wt6",), "opp"),
-             Candidate(("rm5",), ("wt6",), "opp")]
+             Candidate(("rm4",), ("wt3",), "opp"),
+             Candidate(("rm4",), ("wt4",), "opp")]
     out = evaluate_candidates(state, values, "me", cands, roster_limit=16)
     assert len(out) >= 2
     gains = [edge.your_lineup_gain for _, _, edge in out]

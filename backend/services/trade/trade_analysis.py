@@ -24,7 +24,12 @@ from backend.services.trade.lineup import (
     fit_to_limit,
     lineup_strength_ppg,
 )
-from backend.services.trade.value_engine import Confidence, InSeasonValue, ValueTrend
+from backend.services.trade.value_engine import (
+    Confidence,
+    InSeasonValue,
+    ValueTrend,
+    replacement_ppg_by_position,
+)
 
 # Verdict is the change in your STARTING LINEUP's points/week on the RESULTING
 # roster (trade_lineup_value_design.md §7), NOT summed forward_value. Thresholds
@@ -202,9 +207,12 @@ def analyze_trade(
         [p for p in my_pre if p.player_id not in give_set] + [_lp(g) for g in get_ids],
         roster_limit,
     )
+    # Value an unfilled required starter slot at replacement ppg (not 0), so a
+    # position-punt is priced honestly — SAME floor the edge-band gate uses.
+    replacement_ppg = replacement_ppg_by_position(values)
     lineup_gain = round(
-        lineup_strength_ppg(my_post, DEFAULT_LINEUP_RULES)
-        - lineup_strength_ppg(my_pre, DEFAULT_LINEUP_RULES), 2,
+        lineup_strength_ppg(my_post, DEFAULT_LINEUP_RULES, replacement_ppg)
+        - lineup_strength_ppg(my_pre, DEFAULT_LINEUP_RULES, replacement_ppg), 2,
     )
 
     abs_g = abs(lineup_gain)
