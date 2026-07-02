@@ -6,7 +6,6 @@ import { useEntitlements, isFeatureLocked } from '../../hooks/useEntitlements'
 
 export default function DraftSetup() {
   const [teamId, setTeamId] = useState('')
-  const [draftRoomUrl, setDraftRoomUrl] = useState('')
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState(null)
 
@@ -25,7 +24,7 @@ export default function DraftSetup() {
     try {
       // Pass the selected league's type so the engine picks the snake vs
       // auction path (and loads league settings via league_id).
-      await startDraft(teamId.trim(), draftRoomUrl.trim() || undefined, {
+      await startDraft(teamId.trim(), {
         leagueId: selectedLeague?.id,
         draftType: selectedLeague?.draft_type || 'auction',
       })
@@ -54,23 +53,6 @@ export default function DraftSetup() {
             <p className="text-xs text-slate-600 mt-1">
               Must match your team name in the draft room's team list exactly —
               this is how Rook detects the players you win.
-            </p>
-          </div>
-
-          <div>
-            <label className="block text-sm text-slate-400 mb-1">
-              Draft Room URL <span className="text-slate-600">(optional)</span>
-            </label>
-            <input
-              type="text"
-              value={draftRoomUrl}
-              onChange={(e) => setDraftRoomUrl(e.target.value)}
-              placeholder="https://football.fantasysports.yahoo.com/..."
-              className="w-full px-3 py-2 bg-surface-2 text-slate-200 border border-border rounded-lg focus:outline-none focus:border-brand-accent/60 placeholder-slate-600"
-              disabled={loading}
-            />
-            <p className="text-xs text-slate-600 mt-1">
-              Leave empty for manual frame injection (testing)
             </p>
           </div>
 
