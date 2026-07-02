@@ -18,9 +18,6 @@ vi.mock('../api/draft', () => ({
     positional_counts: { RB: 1 },
   }),
   getRecommendation: vi.fn().mockResolvedValue(null),
-  placeBid: vi.fn().mockResolvedValue({ status: 'bid_placed' }),
-  passNomination: vi.fn().mockResolvedValue({ status: 'passed' }),
-  nominatePlayer: vi.fn().mockResolvedValue({ status: 'nominated' }),
   endDraft: vi.fn().mockResolvedValue({ status: 'ended' }),
   getAvailablePlayers: vi.fn().mockResolvedValue({
     tiers: {

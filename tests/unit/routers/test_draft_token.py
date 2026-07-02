@@ -438,8 +438,8 @@ async def test_start_draft_creates_session_for_user():
     build = AsyncMock(return_value="STATE")
 
     with patch("backend.routers.draft.session_manager", mgr), patch(
-        "backend.routers.draft._bridge", None
-    ), patch("backend.routers.draft._build_state", build):
+        "backend.routers.draft._build_state", build
+    ):
         try:
             async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
                 resp = await ac.post("/api/draft/start", json={"your_team_id": "team_5"})
@@ -465,8 +465,8 @@ async def test_start_draft_denied_for_intro_tier():
     app.dependency_overrides[get_current_user] = lambda: user
 
     with patch("backend.routers.draft.session_manager", mgr), patch(
-        "backend.routers.draft._bridge", None
-    ), patch("backend.routers.draft._build_state", AsyncMock()) as build:
+        "backend.routers.draft._build_state", AsyncMock()
+    ) as build:
         try:
             async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
                 resp = await ac.post("/api/draft/start", json={"your_team_id": "team_5"})
@@ -517,8 +517,8 @@ async def test_start_draft_allowed_for_pro_tier():
     app.dependency_overrides[get_current_user] = lambda: user
 
     with patch("backend.routers.draft.session_manager", mgr), patch(
-        "backend.routers.draft._bridge", None
-    ), patch("backend.routers.draft._build_state", AsyncMock(return_value="STATE")):
+        "backend.routers.draft._build_state", AsyncMock(return_value="STATE")
+    ):
         try:
             async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
                 resp = await ac.post("/api/draft/start", json={"your_team_id": "team_5"})
@@ -585,9 +585,7 @@ async def test_start_recreates_stale_but_warm_session_then_state_200():
     assert await mgr.is_resumable(user.id, 3600) is False  # but stale → not resumable
 
     app.dependency_overrides[get_current_user] = lambda: user
-    with patch("backend.routers.draft.session_manager", mgr), patch(
-        "backend.routers.draft._bridge", None
-    ):
+    with patch("backend.routers.draft.session_manager", mgr):
         try:
             async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
                 start = await ac.post("/api/draft/start", json={"your_team_id": "team_new"})
