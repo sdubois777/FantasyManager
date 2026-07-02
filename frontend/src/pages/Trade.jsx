@@ -176,12 +176,15 @@ export default function Trade() {
 
   const ideas = ideasMut.data
 
-  // Demo bypasses the backend gate + credit charge; reflect that in the UI. When
-  // demo is OFF and the tier lacks the feature, show a proactive locked CTA.
+  // Demo bypasses the backend gate + credit charge — UNLESS enforcement is on
+  // (TRADE_DEMO_ENFORCE_GATES), in which case demo behaves like the real thing.
+  // Show a proactive locked CTA whenever the gate is live and the tier lacks it.
   const demo = !!league.demo_mode
-  const analyzeLocked = !demo && tierLimits && tierLimits.trade_analyzer === false
-  const ideasLocked = !demo && tierLimits && tierLimits.trade_finder === false
-  const costLabel = (n) => (demo ? 'demo · no charge' : `${n} cr`)
+  const enforced = !!league.enforced
+  const gateLive = !demo || enforced
+  const analyzeLocked = gateLive && tierLimits && tierLimits.trade_analyzer === false
+  const ideasLocked = gateLive && tierLimits && tierLimits.trade_finder === false
+  const costLabel = (n) => (demo && !enforced ? 'demo · no charge' : `${n} cr`)
 
   return (
     <div className="mx-auto max-w-6xl space-y-4 p-4 lg:p-6">

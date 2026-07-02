@@ -14,9 +14,9 @@ vi.mock('../hooks/useMe', () => ({ useMe: () => ({ tierLimits: h.limits }) }))
 import Trade from '../pages/Trade'
 import { fetchTradeLeague } from '../api/trade'
 
-function league(demo) {
+function league(demo, enforced = false) {
   return {
-    week: 14, season: 2025, demo_mode: demo,
+    week: 14, season: 2025, demo_mode: demo, enforced,
     teams: [
       { team_id: 'a', team_name: 'A', is_me: true, roster: [
         { id: 'p1', name: 'P1', position: 'RB', forward_value: 20, value_trend: 'stable', confidence: 'full' },
@@ -75,5 +75,21 @@ describe('Trade page gating + credit labels', () => {
     await screen.findByText(/Analyze my trade · 10 cr/i)
     fireEvent.click(screen.getByRole('button', { name: /Trade ideas/i }))
     expect(await screen.findByText(/Give me trade ideas · 20 cr/i)).toBeInTheDocument()
+  })
+
+  it('demo WITH enforcement: charges shown + gate applies (intro locked)', async () => {
+    h.limits = { trade_analyzer: false, trade_finder: false }
+    fetchTradeLeague.mockResolvedValue(league(true, true)) // demo + enforced
+    renderTrade()
+    // Not "no charge" anymore, and the gate locks like real.
+    expect(await screen.findByText(/Trade analyzer needs Standard/i)).toBeInTheDocument()
+    expect(screen.queryByText(/no charge/i)).not.toBeInTheDocument()
+  })
+
+  it('demo WITH enforcement: standard sees the 10 cr cost (not "no charge")', async () => {
+    h.limits = { trade_analyzer: true, trade_finder: false }
+    fetchTradeLeague.mockResolvedValue(league(true, true))
+    renderTrade()
+    expect(await screen.findByText(/Analyze my trade · 10 cr/i)).toBeInTheDocument()
   })
 })
