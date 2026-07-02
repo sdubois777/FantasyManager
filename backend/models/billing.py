@@ -46,3 +46,19 @@ class GrantedMonthlyInvoice(Base):
     granted_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
+
+
+class GrantedPackSession(Base):
+    __tablename__ = "granted_pack_sessions"
+
+    # Stripe Checkout session id, e.g. "cs_...". Primary key => a one-time credit
+    # pack is granted exactly once per completed checkout session (§6), even if the
+    # completed event is redelivered under a different event id.
+    session_id: Mapped[str] = mapped_column(String(255), primary_key=True)
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), nullable=False, index=True
+    )
+    credits: Mapped[int] = mapped_column(Integer, nullable=False)
+    granted_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )

@@ -12,7 +12,11 @@ import uuid
 
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
-from backend.models.billing import GrantedMonthlyInvoice, ProcessedStripeEvent
+from backend.models.billing import (
+    GrantedMonthlyInvoice,
+    GrantedPackSession,
+    ProcessedStripeEvent,
+)
 
 
 class ProcessedStripeEventRepository:
@@ -49,5 +53,22 @@ class GrantedInvoiceRepository:
             pg_insert(GrantedMonthlyInvoice)
             .values(invoice_id=invoice_id, user_id=user_id, credits=credits)
             .on_conflict_do_nothing(index_elements=["invoice_id"])
+        )
+        return result.rowcount > 0
+
+
+class GrantedPackSessionRepository:
+    def __init__(self, session):
+        self._session = session
+
+    async def record_grant(
+        self, session_id: str, user_id: uuid.UUID, credits: int
+    ) -> bool:
+        """Record a credit-pack grant against a checkout session id; return True if
+        new (§6 pack idempotency). False => already granted, do NOT grant again."""
+        result = await self._session.execute(
+            pg_insert(GrantedPackSession)
+            .values(session_id=session_id, user_id=user_id, credits=credits)
+            .on_conflict_do_nothing(index_elements=["session_id"])
         )
         return result.rowcount > 0

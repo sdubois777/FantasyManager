@@ -4,6 +4,8 @@ import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link } from 'react-router-dom'
 import { apiClient } from '../api/client'
 import { createPortal, redirectTo } from '../api/billing'
+import ChangePlanCard from '../components/billing/ChangePlanCard'
+import BuyCreditsCard from '../components/billing/BuyCreditsCard'
 import { SCORING_LABELS, TIER_LABELS } from '../lib/constants'
 
 const SUBSCRIPTION_STATUS_COPY = {
@@ -231,17 +233,17 @@ export default function AccountPage() {
     () => new URLSearchParams(window.location.search).get('billing') === 'success'
   )
 
-  // Checkout success return: the URL grants NOTHING — the webhook is authoritative.
-  // Poll /account/me a few times so the freshly-flipped tier appears without a
-  // manual refresh, handling the webhook-vs-redirect race, then clean the URL.
+  // Refresh /account/me a few times so a freshly-flipped tier/credits appears
+  // without a manual refresh — covers BOTH the checkout-redirect return and an
+  // in-app upgrade (webhook-vs-request race). The URL/return grants NOTHING; the
+  // webhook is authoritative. Poll a fixed number of times, then clean the URL.
   useEffect(() => {
     if (!confirming) return
     let tries = 0
     const iv = setInterval(() => {
       tries += 1
       queryClient.invalidateQueries({ queryKey: ['account'] })
-      const latest = queryClient.getQueryData(['account'])
-      if (tries >= 6 || latest?.user?.subscription_status) {
+      if (tries >= 6) {
         clearInterval(iv)
         setConfirming(false)
         window.history.replaceState({}, '', '/account')
@@ -321,6 +323,15 @@ export default function AccountPage() {
               {SUBSCRIPTION_STATUS_COPY[user.subscription_status]}
             </p>
           )}
+
+          {/* In-app change plan — only for active subscribers (they have a sub to
+              modify). Non-subscribers upgrade via the Upgrade -> /pricing path. */}
+          {user.subscription_status && (
+            <ChangePlanCard
+              currentTier={user.tier}
+              onApplied={() => setConfirming(true)}
+            />
+          )}
         </section>
 
         {/* Credits */}
@@ -375,6 +386,8 @@ export default function AccountPage() {
               </div>
             </div>
           )}
+
+          <BuyCreditsCard />
         </section>
 
         {/* Browser Extension */}

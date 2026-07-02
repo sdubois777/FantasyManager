@@ -30,6 +30,23 @@ _PACK_PRICE_ATTR = {
     "large": "stripe_price_pack_large",
 }
 
+# Tier ordering — lets change-plan decide upgrade vs downgrade server-side.
+_TIER_RANK = {"intro": 0, "standard": 1, "pro": 2}
+
+
+def tier_rank(tier: str) -> Optional[int]:
+    """Ordinal rank of a tier (intro < standard < pro), or None if unknown."""
+    return _TIER_RANK.get(tier)
+
+
+def is_upgrade(current_tier: str, target_tier: str) -> Optional[bool]:
+    """True if target outranks current (upgrade), False if lower (downgrade),
+    None if either tier is unknown or they're equal."""
+    a, b = tier_rank(current_tier), tier_rank(target_tier)
+    if a is None or b is None or a == b:
+        return None
+    return b > a
+
 
 def tier_to_price(tier: str, s: Settings = settings) -> Optional[str]:
     """Server-configured monthly price id for a tier, or None if unconfigured."""
