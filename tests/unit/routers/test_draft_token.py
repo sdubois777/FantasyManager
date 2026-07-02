@@ -479,6 +479,35 @@ async def test_start_draft_denied_for_intro_tier():
 
 
 @pytest.mark.asyncio
+async def test_start_draft_refused_on_suspended_league():
+    """A parked (suspended) league is readable history but NOT usable — /start 403s."""
+    from types import SimpleNamespace
+    user = _make_user(tier="standard")
+    mgr = _fake_manager(warm=None)
+    from backend.core.dependencies import get_current_user, get_db
+
+    suspended_league = SimpleNamespace(suspended_at=object())  # truthy = parked
+
+    app.dependency_overrides[get_current_user] = lambda: user
+    app.dependency_overrides[get_db] = lambda: MagicMock()
+    with patch("backend.routers.draft.session_manager", mgr), patch(
+        "backend.repositories.league_repo.LeagueRepository.get_user_league",
+        AsyncMock(return_value=suspended_league),
+    ):
+        try:
+            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+                resp = await ac.post(
+                    "/api/draft/start",
+                    json={"your_team_id": "team_5", "league_id": str(uuid.uuid4())},
+                )
+            assert resp.status_code == 403
+            assert resp.json()["error"] == "league_suspended"
+            mgr.create.assert_not_awaited()
+        finally:
+            app.dependency_overrides.clear()
+
+
+@pytest.mark.asyncio
 async def test_start_draft_allowed_for_pro_tier():
     """Pro tier also has live_draft — /start proceeds to create the session."""
     user = _make_user(tier="pro")

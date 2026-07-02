@@ -53,6 +53,14 @@ class FakePackRepo:
         return True
 
 
+class FakeLeagueReconciler:
+    def __init__(self):
+        self.calls = []
+
+    async def reconcile_for_tier(self, user_id, tier):
+        self.calls.append((user_id, tier))
+
+
 class FakeUserRepo:
     """Duck-types the UserRepository methods the webhook + UserService touch."""
 
@@ -106,6 +114,7 @@ def _build(user):
     events = FakeEventRepo()
     invoices = FakeInvoiceRepo()
     packs = FakePackRepo()
+    leagues = FakeLeagueReconciler()
     service = StripeWebhookService(
         db,
         user_repo=repo,
@@ -113,8 +122,10 @@ def _build(user):
         events=events,
         invoices=invoices,
         packs=packs,
+        leagues=leagues,
     )
     service._test_packs = packs
+    service._test_leagues = leagues
     return service, db, events, invoices
 
 
@@ -288,6 +299,30 @@ async def test_subscription_updated_past_due_marks_status_no_downgrade():
 
 
 # ── customer.subscription.deleted ───────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_tier_change_reconciles_leagues():
+    """A tier write triggers league reconciliation with the NEW tier."""
+    user = _make_user(tier="pro", credits=200)
+    user.stripe_subscription_id = "sub_1"
+    service, *_ = _build(user)
+    await service.process(
+        _event("customer.subscription.updated",
+                _sub_obj(price="price_standard", status="active"))
+    )
+    assert (user.id, "standard") in service._test_leagues.calls
+
+
+@pytest.mark.asyncio
+async def test_subscription_deleted_reconciles_to_intro():
+    user = _make_user(tier="pro", credits=200)
+    user.stripe_subscription_id = "sub_1"
+    service, *_ = _build(user)
+    await service.process(
+        _event("customer.subscription.deleted", _sub_obj(status="canceled"))
+    )
+    assert (user.id, "intro") in service._test_leagues.calls
+
 
 @pytest.mark.asyncio
 async def test_subscription_deleted_is_the_only_downgrade_credits_persist():

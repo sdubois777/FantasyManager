@@ -1,4 +1,5 @@
 import { render, screen, fireEvent, waitFor, act } from '@testing-library/react'
+import { MemoryRouter } from 'react-router-dom'
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 
 vi.mock('../api/billing', () => ({
@@ -54,6 +55,25 @@ describe('BillingNotice', () => {
     await waitFor(() =>
       expect(redirectTo).toHaveBeenCalledWith('https://checkout.stripe.com/pack')
     )
+  })
+
+  it('league-suspended event → parked prompt with a Manage-leagues link', () => {
+    render(
+      <MemoryRouter>
+        <BillingNotice />
+      </MemoryRouter>
+    )
+    act(() => {
+      window.dispatchEvent(
+        new CustomEvent('billing:league-suspended', {
+          detail: { message: 'This league is parked over your plan limit.' },
+        })
+      )
+    })
+    expect(screen.getByText('League parked')).toBeInTheDocument()
+    expect(screen.getByText(/parked over your plan limit/i)).toBeInTheDocument()
+    const link = screen.getByRole('link', { name: /Manage leagues/i })
+    expect(link).toHaveAttribute('href', '/account')
   })
 
   it('can be dismissed', () => {

@@ -110,15 +110,26 @@ export default function ChangePlanCard({ currentTier, onApplied }) {
               now.
             </p>
           ) : (
-            <p className="text-sm text-gray-200">
-              You'll keep {TIER_LABELS[currentTier] || currentTier} until{' '}
-              <span className="font-semibold">{formatDate(preview.effective)}</span>, then
-              move to{' '}
-              <span className="font-semibold">
-                {TIER_LABELS[preview.target_tier] || preview.target_tier}
-              </span>
-              . No charge today.
-            </p>
+            <>
+              <p className="text-sm text-gray-200">
+                You'll keep {TIER_LABELS[currentTier] || currentTier} until{' '}
+                <span className="font-semibold">{formatDate(preview.effective)}</span>, then
+                move to{' '}
+                <span className="font-semibold">
+                  {TIER_LABELS[preview.target_tier] || preview.target_tier}
+                </span>
+                . No charge today.
+              </p>
+              {preview.max_active_leagues != null &&
+                preview.active_leagues > preview.max_active_leagues && (
+                  <p className="mt-2 text-sm text-yellow-500">
+                    {TIER_LABELS[preview.target_tier] || preview.target_tier} allows{' '}
+                    {preview.max_active_leagues} active leagues; you have{' '}
+                    {preview.active_leagues}. You'll choose which stay active when this
+                    takes effect on {formatDate(preview.effective)}.
+                  </p>
+                )}
+            </>
           )}
 
           <div className="mt-3 flex items-center gap-2">

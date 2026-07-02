@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import time
 import uuid
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from httpx import ASGITransport, AsyncClient
@@ -261,6 +261,10 @@ async def test_checkout_pack_uses_fresh_idempotency_key_each_attempt(stripe_conf
 async def test_change_plan_preview_upgrade(stripe_configured, monkeypatch):
     from backend.services.billing import stripe_gateway
     monkeypatch.setattr(stripe_gateway, "subscription_snapshot", lambda sid: _snap())
+    monkeypatch.setattr(
+        "backend.repositories.league_repo.LeagueRepository.count_active",
+        AsyncMock(return_value=1),
+    )
     captured = {}
     monkeypatch.setattr(
         stripe_gateway, "preview_upgrade_amount",
@@ -289,6 +293,10 @@ async def test_change_plan_preview_downgrade(stripe_configured, monkeypatch):
     monkeypatch.setattr(
         stripe_gateway, "subscription_snapshot", lambda sid: _snap(price_id="price_pro")
     )
+    monkeypatch.setattr(
+        "backend.repositories.league_repo.LeagueRepository.count_active",
+        AsyncMock(return_value=3),
+    )
     user = _make_user(tier="pro", subscription_id="sub_1")
     _override_auth(user)
     try:
@@ -302,6 +310,8 @@ async def test_change_plan_preview_downgrade(stripe_configured, monkeypatch):
     assert data["amount_due_today"] == 0
     assert data["proration_date"] is None
     assert data["effective"].startswith("20")  # ISO period-end date
+    assert data["active_leagues"] == 3          # over the standard cap of 2
+    assert data["max_active_leagues"] == 2
 
 
 @pytest.mark.asyncio

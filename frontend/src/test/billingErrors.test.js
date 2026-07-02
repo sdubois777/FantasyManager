@@ -50,6 +50,23 @@ describe('api client billing gate events', () => {
     expect(events[0].detail.available).toBe(3)
   })
 
+  it('dispatches billing:league-suspended on 403 league_suspended', async () => {
+    const original = api.defaults.adapter
+    api.defaults.adapter = async (config) =>
+      Promise.reject(Object.assign(new Error('forbidden'), {
+        config,
+        response: { status: 403, data: { error: 'league_suspended', message: 'parked' } },
+      }))
+
+    const events = await captureEvent('billing:league-suspended', async () => {
+      await expect(api.get('/whatever')).rejects.toBeTruthy()
+    })
+    api.defaults.adapter = original
+
+    expect(events).toHaveLength(1)
+    expect(events[0].detail.message).toBe('parked')
+  })
+
   it('does NOT dispatch a billing event for an unrelated 403', async () => {
     const original = api.defaults.adapter
     api.defaults.adapter = async (config) =>
