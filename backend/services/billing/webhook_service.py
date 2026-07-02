@@ -33,17 +33,19 @@ class WebhookResult:
 
 
 class StripeWebhookService:
-    def __init__(self, db, *, user_repo, user_service, events, invoices):
+    def __init__(self, db, *, user_repo, user_service, events, invoices, packs):
         self._db = db
         self._users = user_repo
         self._user_service = user_service
         self._events = events
         self._invoices = invoices
+        self._packs = packs
 
     @classmethod
     def from_session(cls, db) -> "StripeWebhookService":
         from backend.repositories.billing_repo import (
             GrantedInvoiceRepository,
+            GrantedPackSessionRepository,
             ProcessedStripeEventRepository,
         )
         from backend.repositories.user_repo import UserRepository
@@ -56,6 +58,7 @@ class StripeWebhookService:
             user_service=UserService(repo),
             events=ProcessedStripeEventRepository(db),
             invoices=GrantedInvoiceRepository(db),
+            packs=GrantedPackSessionRepository(db),
         )
 
     async def process(self, event: dict) -> WebhookResult:
@@ -123,6 +126,13 @@ class StripeWebhookService:
             credits = _as_int(metadata.get("credits"))
             if credits is None or credits <= 0:
                 logger.warning("Stripe checkout: pack with no credits meta")
+                return
+            # §6 pack idempotency: grant once per checkout session id, even if the
+            # completed event is redelivered under a different event id.
+            session_id = obj.get("id")
+            is_new = await self._packs.record_grant(session_id, user.id, credits)
+            if not is_new:
+                logger.info("Stripe pack session %s already granted", session_id)
                 return
             await self._users.update_credits(user.id, credits)
 

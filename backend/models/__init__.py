@@ -11,7 +11,7 @@ from backend.models.user_preference import UserPreference
 from backend.models.market_value_metadata import MarketValueMetadata
 from backend.models.league_auction_history import LeagueAuctionHistory
 from backend.models.user import User, CreditUsageLog
-from backend.models.billing import ProcessedStripeEvent, GrantedMonthlyInvoice
+from backend.models.billing import ProcessedStripeEvent, GrantedMonthlyInvoice, GrantedPackSession
 from backend.models.user_league import UserLeague
 from backend.models.platform_credential import PlatformCredential
 from backend.models.market_value_historic import MarketValueHistoric
@@ -38,6 +38,7 @@ __all__ = [
     "CreditUsageLog",
     "ProcessedStripeEvent",
     "GrantedMonthlyInvoice",
+    "GrantedPackSession",
     "UserLeague",
     "PlatformCredential",
     "MarketValueHistoric",

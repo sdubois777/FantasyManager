@@ -42,6 +42,17 @@ class FakeInvoiceRepo:
         return True
 
 
+class FakePackRepo:
+    def __init__(self):
+        self.granted = {}
+
+    async def record_grant(self, session_id, user_id, credits):
+        if session_id in self.granted:
+            return False
+        self.granted[session_id] = (user_id, credits)
+        return True
+
+
 class FakeUserRepo:
     """Duck-types the UserRepository methods the webhook + UserService touch."""
 
@@ -94,13 +105,16 @@ def _build(user):
     db.commit = AsyncMock()
     events = FakeEventRepo()
     invoices = FakeInvoiceRepo()
+    packs = FakePackRepo()
     service = StripeWebhookService(
         db,
         user_repo=repo,
         user_service=UserService(repo),
         events=events,
         invoices=invoices,
+        packs=packs,
     )
+    service._test_packs = packs
     return service, db, events, invoices
 
 
@@ -157,6 +171,7 @@ async def test_checkout_payment_grants_pack_credits_no_tier_change():
     service, *_ = _build(user)
 
     obj = {
+        "id": "cs_pack_1",
         "customer": "cus_1",
         "mode": "payment",
         "metadata": {"pack": "medium", "credits": "175"},
@@ -165,6 +180,25 @@ async def test_checkout_payment_grants_pack_credits_no_tier_change():
 
     assert user.tier == "intro"
     assert user.credits_remaining == 25 + 175
+    assert "cs_pack_1" in service._test_packs.granted
+
+
+@pytest.mark.asyncio
+async def test_pack_grant_idempotent_on_session_id():
+    """A redelivered pack completion under a DIFFERENT event id grants once."""
+    user = _make_user(tier="intro", credits=25)
+    service, *_ = _build(user)
+
+    obj = {
+        "id": "cs_pack_9",
+        "customer": "cus_1",
+        "mode": "payment",
+        "metadata": {"pack": "small", "credits": "75"},
+    }
+    await service.process(_event("checkout.session.completed", obj, event_id="evt_a"))
+    await service.process(_event("checkout.session.completed", obj, event_id="evt_b"))
+
+    assert user.credits_remaining == 25 + 75  # granted exactly once
 
 
 # ── customer.subscription.created ───────────────────────────────────────
@@ -209,6 +243,21 @@ async def test_subscription_updated_tier_change_no_bonus():
     )
     assert user.tier == "pro"
     assert user.credits_remaining == 100  # plan swap grants no signup bonus
+    assert user.subscription_status == "active"
+
+
+@pytest.mark.asyncio
+async def test_subscription_updated_same_price_keeps_tier_scheduled_downgrade():
+    """During a scheduled downgrade the item price stays the same until period-end,
+    so subscription.updated carries the CURRENT price -> tier must NOT drop early."""
+    user = _make_user(tier="pro", credits=200)
+    service, *_ = _build(user)
+
+    await service.process(
+        _event("customer.subscription.updated",
+                _sub_obj(price="price_pro", status="active"))
+    )
+    assert user.tier == "pro"  # unchanged — the drop only fires at period-end
     assert user.subscription_status == "active"
 
 
