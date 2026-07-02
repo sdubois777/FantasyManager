@@ -33,13 +33,14 @@ class WebhookResult:
 
 
 class StripeWebhookService:
-    def __init__(self, db, *, user_repo, user_service, events, invoices, packs):
+    def __init__(self, db, *, user_repo, user_service, events, invoices, packs, leagues):
         self._db = db
         self._users = user_repo
         self._user_service = user_service
         self._events = events
         self._invoices = invoices
         self._packs = packs
+        self._leagues = leagues  # LeagueReconciler
 
     @classmethod
     def from_session(cls, db) -> "StripeWebhookService":
@@ -48,7 +49,9 @@ class StripeWebhookService:
             GrantedPackSessionRepository,
             ProcessedStripeEventRepository,
         )
+        from backend.repositories.league_repo import LeagueRepository
         from backend.repositories.user_repo import UserRepository
+        from backend.services.league_reconcile import LeagueReconciler
         from backend.services.user_service import UserService
 
         repo = UserRepository(db)
@@ -59,6 +62,7 @@ class StripeWebhookService:
             events=ProcessedStripeEventRepository(db),
             invoices=GrantedInvoiceRepository(db),
             packs=GrantedPackSessionRepository(db),
+            leagues=LeagueReconciler(LeagueRepository(db)),
         )
 
     async def process(self, event: dict) -> WebhookResult:
@@ -121,6 +125,7 @@ class StripeWebhookService:
                 user, tier, grant_signup_bonus=True, commit=False
             )
             await self._users.set_subscription_status(user.id, "active")
+            await self._leagues.reconcile_for_tier(user.id, tier)
 
         elif mode == "payment":
             credits = _as_int(metadata.get("credits"))
@@ -152,6 +157,7 @@ class StripeWebhookService:
                 user, tier, grant_signup_bonus=False, commit=False
             )
         await self._users.set_subscription_status(user.id, "active")
+        await self._leagues.reconcile_for_tier(user.id, tier or user.tier)
 
     async def _on_subscription_updated(self, obj: dict) -> None:
         """Tier change vs cancel-scheduled vs past_due — kept distinct. No downgrade."""
@@ -177,6 +183,9 @@ class StripeWebhookService:
                 await self._user_service.upgrade_tier(
                     user, tier, grant_signup_bonus=False, commit=False
                 )
+                # Restore parked leagues on a tier RISE; a drop leaves the
+                # computed over-limit state (reconcile never auto-parks).
+                await self._leagues.reconcile_for_tier(user.id, tier)
 
     async def _on_subscription_deleted(self, obj: dict) -> None:
         """The ONLY downgrade. Tier -> intro, credits persist, clear sub id."""
@@ -188,6 +197,9 @@ class StripeWebhookService:
         )
         await self._users.set_stripe_subscription_id(user.id, None)
         await self._users.set_subscription_status(user.id, "active")
+        # Drop to intro (cap 1). Never auto-parks — if active > 1 the account is
+        # in the computed over-limit "must choose" state until the user resolves.
+        await self._leagues.reconcile_for_tier(user.id, "intro")
 
     async def _on_invoice_payment_succeeded(self, obj: dict) -> None:
         """Grant monthly credits ONLY on a real renewal, once per invoice."""

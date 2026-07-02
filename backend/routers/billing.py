@@ -181,6 +181,8 @@ class ChangePlanPreviewResponse(BaseModel):
     effective: str                 # "now" (upgrade) | ISO period-end (downgrade)
     proration_date: Optional[int]  # echo for confirm (upgrade only)
     target_tier: str
+    active_leagues: int            # user's current active-league count
+    max_active_leagues: Optional[int]  # target tier's cap (None = unlimited)
 
 
 class ChangePlanConfirmResponse(BaseModel):
@@ -212,12 +214,19 @@ def _change_plan_context(user: User, target_tier: str):
 async def change_plan_preview(
     body: ChangePlanRequest,
     user: User = Depends(get_current_user),
+    db=Depends(get_db),
 ):
     """Preview a tier change. Charges nothing, changes nothing. Upgrades return the
     exact prorated amount due today plus the proration_date to reuse on confirm;
-    downgrades return the period-end effective date."""
+    downgrades return the period-end effective date. Also reports the user's active-
+    league count vs the target cap so the UI can warn about a forced chooser."""
     _require_stripe()
     is_up, target_price, snap = _change_plan_context(user, body.target_tier)
+
+    from backend.models.user import TIER_LIMITS
+    from backend.repositories.league_repo import LeagueRepository
+    active_leagues = await LeagueRepository(db).count_active(user.id)
+    max_active = TIER_LIMITS.get(body.target_tier, {}).get("max_leagues")
 
     if is_up:
         proration_date = int(time.time())
@@ -232,6 +241,7 @@ async def change_plan_preview(
             direction="upgrade", amount_due_today=amount, currency="usd",
             effective="now", proration_date=proration_date,
             target_tier=body.target_tier,
+            active_leagues=active_leagues, max_active_leagues=max_active,
         )
 
     effective = datetime.fromtimestamp(
@@ -240,6 +250,7 @@ async def change_plan_preview(
     return ChangePlanPreviewResponse(
         direction="downgrade", amount_due_today=0, currency="usd",
         effective=effective, proration_date=None, target_tier=body.target_tier,
+        active_leagues=active_leagues, max_active_leagues=max_active,
     )
 
 

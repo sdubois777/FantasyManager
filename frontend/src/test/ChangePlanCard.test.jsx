@@ -59,6 +59,31 @@ describe('ChangePlanCard', () => {
     expect(onApplied).not.toHaveBeenCalled()
   })
 
+  it('downgrade over the active-league cap shows the chooser warning', async () => {
+    previewChangePlan.mockResolvedValue({
+      direction: 'downgrade', amount_due_today: 0, currency: 'usd',
+      effective: '2026-08-01T00:00:00+00:00', proration_date: null,
+      target_tier: 'standard', active_leagues: 3, max_active_leagues: 2,
+    })
+    render(<ChangePlanCard currentTier="pro" onApplied={() => {}} />)
+    fireEvent.click(screen.getByRole('button', { name: /Change to.*Standard/i }))
+    await waitFor(() => expect(previewChangePlan).toHaveBeenCalledWith('standard'))
+    expect(screen.getByText(/allows 2 active leagues; you have 3/i)).toBeInTheDocument()
+    expect(screen.getByText(/choose which stay active/i)).toBeInTheDocument()
+  })
+
+  it('downgrade within the cap shows no chooser warning', async () => {
+    previewChangePlan.mockResolvedValue({
+      direction: 'downgrade', amount_due_today: 0, currency: 'usd',
+      effective: '2026-08-01T00:00:00+00:00', proration_date: null,
+      target_tier: 'standard', active_leagues: 1, max_active_leagues: 2,
+    })
+    render(<ChangePlanCard currentTier="pro" onApplied={() => {}} />)
+    fireEvent.click(screen.getByRole('button', { name: /Change to.*Standard/i }))
+    await waitFor(() => expect(previewChangePlan).toHaveBeenCalledWith('standard'))
+    expect(screen.queryByText(/choose which stay active/i)).not.toBeInTheDocument()
+  })
+
   it('offers only the tiers other than the current one', () => {
     render(<ChangePlanCard currentTier="pro" onApplied={() => {}} />)
     expect(screen.getByRole('button', { name: /Change to.*Intro/i })).toBeInTheDocument()

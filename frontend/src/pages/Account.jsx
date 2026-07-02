@@ -6,6 +6,7 @@ import { apiClient } from '../api/client'
 import { createPortal, redirectTo } from '../api/billing'
 import ChangePlanCard from '../components/billing/ChangePlanCard'
 import BuyCreditsCard from '../components/billing/BuyCreditsCard'
+import LeagueChooser from '../components/billing/LeagueChooser'
 import { SCORING_LABELS, TIER_LABELS } from '../lib/constants'
 
 const SUBSCRIPTION_STATUS_COPY = {
@@ -168,9 +169,10 @@ function LeagueCard({ league }) {
   const scoringLabel = SCORING_LABELS[league.scoring] || league.scoring?.toUpperCase() || '—'
 
   const isFinished = !league.is_active
+  const isParked = league.suspended
 
   return (
-    <div className={`bg-gray-800 rounded-lg p-4 ${isFinished ? 'opacity-75' : ''}`}>
+    <div className={`bg-gray-800 rounded-lg p-4 ${isFinished || isParked ? 'opacity-75' : ''}`}>
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
         <div className="min-w-0">
           <div className="font-medium flex flex-wrap items-center gap-2">
@@ -178,6 +180,11 @@ function LeagueCard({ league }) {
             {isFinished && (
               <span className="text-xs text-gray-500 bg-gray-700 px-2 py-0.5 rounded">
                 {league.season_year} Season &middot; Finished
+              </span>
+            )}
+            {isParked && !isFinished && (
+              <span className="text-xs text-yellow-400 bg-yellow-500/10 border border-yellow-500/30 px-2 py-0.5 rounded">
+                Parked &middot; re-upgrade to reactivate
               </span>
             )}
           </div>
@@ -293,6 +300,10 @@ export default function AccountPage() {
             Confirming your upgrade…
           </div>
         )}
+
+        {/* Forced over-limit chooser — self-gates on the limit-state (renders only
+            when the account is over its active-league cap after a downgrade). */}
+        <LeagueChooser />
 
         {/* Plan */}
         <section className="bg-gray-900 rounded-xl border border-gray-800 p-6 mb-6">

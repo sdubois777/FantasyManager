@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { Link } from 'react-router-dom'
 import { createCheckout, createPackCheckout, createPortal, redirectTo } from '../api/billing'
 import { TIER_LABELS } from '../lib/constants'
 
@@ -18,11 +19,14 @@ export default function BillingNotice() {
   useEffect(() => {
     const onFeature = (e) => setNotice({ kind: 'feature', ...e.detail })
     const onCredits = (e) => setNotice({ kind: 'credits', ...e.detail })
+    const onSuspended = (e) => setNotice({ kind: 'suspended', ...e.detail })
     window.addEventListener('billing:feature-required', onFeature)
     window.addEventListener('billing:insufficient-credits', onCredits)
+    window.addEventListener('billing:league-suspended', onSuspended)
     return () => {
       window.removeEventListener('billing:feature-required', onFeature)
       window.removeEventListener('billing:insufficient-credits', onCredits)
+      window.removeEventListener('billing:league-suspended', onSuspended)
     }
   }, [])
 
@@ -44,12 +48,20 @@ export default function BillingNotice() {
     }
   }
 
-  const isFeature = notice.kind === 'feature'
+  const kind = notice.kind
+  const isFeature = kind === 'feature'
+  const isSuspended = kind === 'suspended'
   const requiredTier = notice.required_tier
-  const title = isFeature ? 'Upgrade required' : 'Out of credits'
+  const title = isFeature
+    ? 'Upgrade required'
+    : isSuspended
+      ? 'League parked'
+      : 'Out of credits'
   const message = isFeature
     ? `This feature needs the ${TIER_LABELS[requiredTier] || requiredTier} plan.`
-    : `You need ${notice.required} credits but have ${notice.available}.`
+    : isSuspended
+      ? (notice.message || 'This league is parked over your plan limit.')
+      : `You need ${notice.required} credits but have ${notice.available}.`
 
   return (
     <div className="fixed bottom-4 right-4 z-50 w-80 max-w-[calc(100vw-2rem)] rounded-xl border border-gray-700 bg-gray-900 shadow-xl p-4">
@@ -70,7 +82,7 @@ export default function BillingNotice() {
       {error && <p className="mt-2 text-xs text-red-400">{error}</p>}
 
       <div className="mt-3 flex items-center gap-2">
-        {isFeature ? (
+        {isFeature && (
           <button
             disabled={busy}
             onClick={() => go(() => createCheckout(requiredTier))}
@@ -78,23 +90,33 @@ export default function BillingNotice() {
           >
             {busy ? 'Starting…' : `Upgrade to ${requiredTier}`}
           </button>
-        ) : (
-          <button
-            disabled={busy}
-            onClick={() => go(() => createPackCheckout('small'))}
-            className="bg-brand hover:bg-brand-hover disabled:opacity-50 text-white text-sm font-semibold px-3 py-2 rounded-lg transition-colors"
-          >
-            {busy ? 'Starting…' : 'Buy credits'}
-          </button>
         )}
-        {!isFeature && (
-          <button
-            disabled={busy}
-            onClick={() => go(createPortal)}
-            className="text-sm text-gray-400 hover:text-gray-200 px-2 py-2"
+        {isSuspended && (
+          <Link
+            to="/account"
+            onClick={dismiss}
+            className="bg-brand hover:bg-brand-hover text-white text-sm font-semibold px-3 py-2 rounded-lg transition-colors"
           >
-            Manage plan
-          </button>
+            Manage leagues
+          </Link>
+        )}
+        {kind === 'credits' && (
+          <>
+            <button
+              disabled={busy}
+              onClick={() => go(() => createPackCheckout('small'))}
+              className="bg-brand hover:bg-brand-hover disabled:opacity-50 text-white text-sm font-semibold px-3 py-2 rounded-lg transition-colors"
+            >
+              {busy ? 'Starting…' : 'Buy credits'}
+            </button>
+            <button
+              disabled={busy}
+              onClick={() => go(createPortal)}
+              className="text-sm text-gray-400 hover:text-gray-200 px-2 py-2"
+            >
+              Manage plan
+            </button>
+          </>
         )}
       </div>
     </div>

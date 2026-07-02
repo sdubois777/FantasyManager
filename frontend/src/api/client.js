@@ -90,6 +90,12 @@ api.interceptors.response.use(
         new CustomEvent('billing:insufficient-credits', { detail: error.response.data })
       )
     }
+    // A parked (over-cap) league was used for a tier-gated action.
+    if (status === 403 && code === 'league_suspended') {
+      window.dispatchEvent(
+        new CustomEvent('billing:league-suspended', { detail: error.response.data })
+      )
+    }
     return Promise.reject(error)
   },
 )
