@@ -7,13 +7,29 @@
  * removes it; the opponent selector and the rest of the page are permanent.
  */
 import { useMemo, useState } from 'react'
-import { useQuery, useMutation } from '@tanstack/react-query'
+import { Link } from 'react-router-dom'
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import {
-  ArrowLeftRight, TrendingUp, TrendingDown, Minus, Lightbulb, Scale, X,
+  ArrowLeftRight, TrendingUp, TrendingDown, Minus, Lightbulb, Scale, Lock, X,
 } from 'lucide-react'
 import { fetchTradeLeague, analyzeTrade, fetchTradeIdeas } from '../api/trade'
+import { useMe } from '../hooks/useMe'
+import { CREDIT_COSTS } from '../lib/constants'
 import VerdictPanel from '../components/trade/VerdictPanel'
 import SilenceExplainer from '../components/trade/SilenceExplainer'
+
+// Proactive locked affordance — the tier lacks this feature (and demo is off).
+// Display only; the backend gate is the boundary.
+function UpgradeInline({ label, tier }) {
+  return (
+    <Link
+      to="/account"
+      className="inline-flex items-center gap-2 rounded-md border border-brand-accent/40 bg-brand/10 px-4 py-2.5 text-sm font-medium text-brand-accent transition-colors hover:bg-brand/20"
+    >
+      <Lock size={14} /> {`${label} needs ${tier} — Upgrade`}
+    </Link>
+  )
+}
 
 const TREND = {
   rising: { Icon: TrendingUp, cls: 'text-emerald-400' },
@@ -116,10 +132,19 @@ export default function Trade() {
   const effOppId = (opponentId && opponentId !== effMyId) ? opponentId : otherTeams[0]?.team_id
   const opponent = useMemo(() => otherTeams.find((t) => t.team_id === effOppId), [otherTeams, effOppId])
 
+  const qc = useQueryClient()
+  const { tierLimits } = useMe()
+  // Refresh the shared credit balance (sidebar) after a spend.
+  const refreshCredits = () => qc.invalidateQueries({ queryKey: ['me'] })
+
   const analyzeMut = useMutation({
     mutationFn: () => analyzeTrade({ myTeamId: effMyId, give, get: getIds }),
+    onSuccess: refreshCredits,
   })
-  const ideasMut = useMutation({ mutationFn: () => fetchTradeIdeas({ myTeamId: effMyId }) })
+  const ideasMut = useMutation({
+    mutationFn: () => fetchTradeIdeas({ myTeamId: effMyId }),
+    onSuccess: refreshCredits,
+  })
 
   // Switching perspective/opponent clears staged players (they belong to the
   // previous roster) — done in the handlers to avoid setState-in-effect.
@@ -150,6 +175,13 @@ export default function Trade() {
   }
 
   const ideas = ideasMut.data
+
+  // Demo bypasses the backend gate + credit charge; reflect that in the UI. When
+  // demo is OFF and the tier lacks the feature, show a proactive locked CTA.
+  const demo = !!league.demo_mode
+  const analyzeLocked = !demo && tierLimits && tierLimits.trade_analyzer === false
+  const ideasLocked = !demo && tierLimits && tierLimits.trade_finder === false
+  const costLabel = (n) => (demo ? 'demo · no charge' : `${n} cr`)
 
   return (
     <div className="mx-auto max-w-6xl space-y-4 p-4 lg:p-6">
@@ -236,14 +268,20 @@ export default function Trade() {
                 <div className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-slate-500">You get</div>
                 <Chips ids={getIds} team={opponent} accent="get" onRemove={toggle(setGetIds)} />
               </div>
-              <button
-                type="button"
-                disabled={give.length === 0 || getIds.length === 0 || analyzeMut.isPending}
-                onClick={() => analyzeMut.mutate()}
-                className="min-h-11 rounded-md bg-brand px-4 py-2 font-medium text-white transition-colors hover:bg-brand-hover disabled:cursor-not-allowed disabled:opacity-40"
-              >
-                {analyzeMut.isPending ? 'Analyzing…' : 'Analyze my trade'}
-              </button>
+              {analyzeLocked ? (
+                <UpgradeInline label="Trade analyzer" tier="Standard" />
+              ) : (
+                <button
+                  type="button"
+                  disabled={give.length === 0 || getIds.length === 0 || analyzeMut.isPending}
+                  onClick={() => analyzeMut.mutate()}
+                  className="min-h-11 rounded-md bg-brand px-4 py-2 font-medium text-white transition-colors hover:bg-brand-hover disabled:cursor-not-allowed disabled:opacity-40"
+                >
+                  {analyzeMut.isPending
+                    ? 'Analyzing…'
+                    : `Analyze my trade · ${costLabel(CREDIT_COSTS.trade_analysis)}`}
+                </button>
+              )}
             </div>
           </div>
 
@@ -258,14 +296,20 @@ export default function Trade() {
 
       {tab === 'ideas' && (
         <div className="space-y-3">
-          <button
-            type="button"
-            disabled={ideasMut.isPending}
-            onClick={() => ideasMut.mutate()}
-            className="min-h-11 rounded-md border border-brand-accent/40 bg-brand/10 px-4 py-2.5 font-medium text-brand-accent transition-colors hover:bg-brand/20 disabled:opacity-40"
-          >
-            {ideasMut.isPending ? 'Finding trades…' : 'Give me trade ideas'}
-          </button>
+          {ideasLocked ? (
+            <UpgradeInline label="Trade finder" tier="Pro" />
+          ) : (
+            <button
+              type="button"
+              disabled={ideasMut.isPending}
+              onClick={() => ideasMut.mutate()}
+              className="min-h-11 rounded-md border border-brand-accent/40 bg-brand/10 px-4 py-2.5 font-medium text-brand-accent transition-colors hover:bg-brand/20 disabled:opacity-40"
+            >
+              {ideasMut.isPending
+                ? 'Finding trades…'
+                : `Give me trade ideas · ${costLabel(CREDIT_COSTS.trade_finder)}`}
+            </button>
+          )}
 
           {ideasMut.isError && (
             <div className="rounded-md border border-red-500/30 bg-red-500/5 px-3 py-2 text-sm text-red-300">
